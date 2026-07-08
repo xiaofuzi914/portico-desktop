@@ -2,7 +2,9 @@
 
 use app_models::{AppError, McpServerConfig, PluginId, PluginManifest, Skill};
 use app_security::{PermissionRequest, PermissionResult};
+use autoagents_adapter::McpToolAdapter;
 use serde_json::Value;
+use std::sync::Arc;
 use tauri::State;
 
 use crate::AppState;
@@ -177,6 +179,47 @@ pub async fn list_mcp_tools(
         })
         .collect();
     Ok(ApiResponse::ok(summaries))
+}
+
+/// Refresh the list of tools exposed by enabled MCP servers and re-register them
+/// with the agent tool registry.
+///
+/// # Errors
+///
+/// Returns an error response if MCP tools cannot be listed.
+#[tauri::command]
+pub async fn refresh_mcp_tools(
+    state: State<'_, AppState>,
+) -> Result<ApiResponse<()>, String> {
+    let manager = state.runtime.mcp_manager();
+    let tools = {
+        let guard = manager.lock().await;
+        guard.refresh_tools().await;
+        guard.list_tools().await
+    }
+    .map_err(|err| err.to_string())?;
+
+    let manager_arc = {
+        let guard = manager.lock().await;
+        Arc::new(guard.clone())
+    };
+
+    // Drop stale MCP tools (prefixed with `{numeric_server_id}_`) before
+    // re-registering the current set.
+    state.tool_registry.retain(|name, _| {
+        name.split_once('_')
+            .is_none_or(|(prefix, _)| prefix.parse::<i64>().is_err())
+    });
+
+    for tool in tools {
+        state.tool_registry.register(Arc::new(McpToolAdapter::new(
+            tool,
+            Arc::clone(&manager_arc),
+            state.security.clone(),
+        )));
+    }
+
+    Ok(ApiResponse::ok(()))
 }
 
 /// Invoke an MCP tool by name, routing the request through the permission engine.

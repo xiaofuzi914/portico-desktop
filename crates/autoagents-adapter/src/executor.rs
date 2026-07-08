@@ -272,7 +272,7 @@ mod tests {
     async fn executor_emits_tool_events_when_asked_for_tool() {
         let (_executor, storage, event_bus, run_id, thread_id, workspace_id) = setup().await;
         let llm: Arc<dyn LLMProvider> = Arc::new(MockLlmProvider::new());
-        let mut tools = PorticoToolRegistry::new();
+        let tools = PorticoToolRegistry::new();
         tools.register(Arc::new(MockPorticoTool));
         let executor = AutoAgentsExecutor::new(llm, Arc::new(tools));
         let mut stream = event_bus.subscribe(run_id).expect("subscribe");

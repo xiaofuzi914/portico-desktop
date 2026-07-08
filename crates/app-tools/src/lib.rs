@@ -1,5 +1,6 @@
 //! Tool abstractions and permission hooks for Portico.
 
+pub mod filesystem;
 pub mod git;
 pub mod terminal;
 

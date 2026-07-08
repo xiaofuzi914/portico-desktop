@@ -13,6 +13,7 @@ app-runtime = { workspace = true }
 app-models = { workspace = true }
 app-security = { workspace = true }
 app-tools = { workspace = true }
+app-plugins = { workspace = true }
 autoagents = { workspace = true }
 autoagents-core = { workspace = true }
 autoagents-llm = { workspace = true }

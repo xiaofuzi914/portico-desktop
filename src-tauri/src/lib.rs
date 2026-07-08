@@ -9,10 +9,11 @@ use app_runtime::{
     AgentRunStatus, MemoryEventBus, NotificationCenter, PorticoRuntimeHandle,
     SqliteModelProviderRegistry, SqliteStorage, Storage, StorageRepoRootProvider,
 };
-use app_tools::{git::GitTool, terminal::TerminalManager};
+use app_tools::{filesystem::FilesystemTool, git::GitTool, terminal::TerminalManager};
 use app_workflows::{AgentRegistry, AutomationScheduler, Orchestrator};
 use autoagents_adapter::{
-    GitToolAdapter, PorticoToolRegistry, TerminalToolAdapter, build_default_executor,
+    FilesystemToolAdapter, GitToolAdapter, McpToolAdapter, PorticoToolRegistry,
+    TerminalToolAdapter, build_default_executor,
 };
 use tauri::{Emitter, Manager};
 use tauri_plugin_notification::NotificationExt;
@@ -36,6 +37,10 @@ pub struct AppState {
     pub browser_registry: BrowserWindowRegistry,
     /// Secure keychain-backed store for provider API keys.
     pub secret_store: Arc<dyn app_security::SecretStore>,
+    /// Product-level tool registry exposed to agent runs.
+    pub tool_registry: Arc<PorticoToolRegistry>,
+    /// Security context used for permission and audit decisions.
+    pub security: Arc<app_security::SecurityContext>,
 }
 
 /// Run the Tauri application.
@@ -77,7 +82,7 @@ pub fn run() {
                     Arc::new(app_runtime::SqliteAuditLogger::new(storage.clone())),
                 ));
 
-                let mut tools = PorticoToolRegistry::new();
+                let tools = PorticoToolRegistry::new();
                 tools.register(Arc::new(GitToolAdapter::new(Arc::new(GitTool::new(
                     security.clone(),
                     Arc::new(StorageRepoRootProvider::new(storage.clone())),
@@ -85,22 +90,59 @@ pub fn run() {
                 tools.register(Arc::new(TerminalToolAdapter::new(Arc::new(
                     TerminalManager::new(security.clone()),
                 ))));
+                let fs_adapter = FilesystemToolAdapter::new(Arc::new(FilesystemTool::new(
+                    security.clone(),
+                    Arc::new(StorageRepoRootProvider::new(storage.clone())),
+                )));
+                tools.register(fs_adapter.read_tool());
+                tools.register(fs_adapter.write_tool());
+                tools.register(fs_adapter.edit_tool());
+                tools.register(fs_adapter.list_tool());
+                tools.register(fs_adapter.search_tool());
                 let tools = Arc::new(tools);
 
-                let executor = build_default_executor(registry.clone(), tools, secret_store.clone())
-                    .await
-                    .unwrap_or_else(|err| {
-                        eprintln!("failed to build AutoAgents executor, falling back to mock: {err}");
-                        None
-                    })
-                    .map(|exec| Arc::new(exec) as Arc<dyn app_runtime::AgentExecutor>);
+                let executor = build_default_executor(
+                    registry.clone(),
+                    Arc::clone(&tools),
+                    secret_store.clone(),
+                )
+                .await
+                .unwrap_or_else(|err| {
+                    eprintln!("failed to build AutoAgents executor, falling back to mock: {err}");
+                    None
+                })
+                .map(|exec| Arc::new(exec) as Arc<dyn app_runtime::AgentExecutor>);
 
                 let runtime = PorticoRuntimeHandle::new(storage, event_bus, registry, executor)
                     .await?
-                    .with_security(security);
-                Ok::<_, app_models::AppError>(runtime)
+                    .with_security(security.clone());
+
+                // Register MCP tools from configured servers so agents can call them.
+                {
+                    let mcp_manager = runtime.mcp_manager();
+                    let guard = mcp_manager.lock().await;
+                    let manager_arc = Arc::new(guard.clone());
+                    match guard.list_tools().await {
+                        Ok(mcp_tools) => {
+                            for tool in mcp_tools {
+                                tools.register(Arc::new(McpToolAdapter::new(
+                                    tool,
+                                    Arc::clone(&manager_arc),
+                                    security.clone(),
+                                )));
+                            }
+                        }
+                        Err(err) => {
+                            eprintln!("failed to list MCP tools at startup: {err}");
+                        }
+                    }
+                }
+
+                Ok::<_, app_models::AppError>((runtime, tools, security))
             })
             .expect("failed to initialize Portico runtime");
+
+        let (runtime, tool_registry, security) = runtime;
 
             let scheduler = Arc::new(AutomationScheduler::new(
                 runtime.task_queue(),
@@ -126,6 +168,8 @@ pub fn run() {
                 scheduler,
                 browser_registry: commands::browser::new_registry(),
                 secret_store,
+                tool_registry,
+                security,
             });
 
             // Automation scheduler ticker: check for due automations every minute.
@@ -365,6 +409,7 @@ pub fn run() {
             commands::plugins::remove_mcp_server,
             commands::plugins::list_mcp_tools,
             commands::plugins::invoke_mcp_tool,
+            commands::plugins::refresh_mcp_tools,
             commands::browser::open_browser_window,
             commands::browser::close_browser_window,
             commands::browser::list_browser_windows,

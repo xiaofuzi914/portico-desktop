@@ -8,14 +8,16 @@
 pub mod event_mapping;
 pub mod executor;
 pub mod mock_llm;
+pub mod mcp_bridge;
 pub mod provider_factory;
 pub mod tool_adapter;
 
 pub use event_mapping::map_autoagents_event;
 pub use executor::AutoAgentsExecutor;
 pub use mock_llm::MockLlmProvider;
+pub use mcp_bridge::McpToolAdapter;
 pub use provider_factory::{build_default_executor, build_llm_provider};
-pub use tool_adapter::{GitToolAdapter, PorticoToolRegistry, TerminalToolAdapter};
+pub use tool_adapter::{FilesystemToolAdapter, GitToolAdapter, PorticoToolRegistry, TerminalToolAdapter};
 
 use app_models::{
     AgentRun, AgentRunId, AgentRunStatus, AppError, RunEvent, Thread, ThreadId, Workspace,

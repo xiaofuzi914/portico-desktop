@@ -37,12 +37,16 @@ type PendingMap = Arc<Mutex<HashMap<i64, oneshot::Sender<Result<Value, String>>>
 pub struct McpToolInfo {
     /// Tool name, prefixed with the owning server id (`{server_id}_{tool_name}`).
     pub name: String,
+    /// Bare tool name as reported by the server.
+    pub tool_name: String,
     /// Human-readable description.
     pub description: String,
     /// Server that owns the tool.
     pub server_id: i64,
     /// Whether invoking the tool may mutate external state.
     pub side_effects: bool,
+    /// JSON schema describing the tool's input arguments.
+    pub input_schema: Option<Value>,
 }
 
 /// MCP client manager backed by a real JSON-RPC client.
@@ -227,9 +231,11 @@ impl McpClientManager {
                             .into_iter()
                             .map(|tool| McpToolInfo {
                                 name: format!("{}_{}", config.id, tool.name),
+                                tool_name: tool.name.clone(),
                                 description: tool.description,
                                 server_id: config.id,
                                 side_effects: Self::is_write_tool(&tool.name),
+                                input_schema: tool.input_schema,
                             })
                             .collect();
                         inner.tool_cache.insert(config.id, infos.clone());
@@ -372,6 +378,8 @@ struct McpTool {
     name: String,
     #[serde(default)]
     description: String,
+    #[serde(default, rename = "inputSchema")]
+    input_schema: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -786,7 +794,7 @@ for line in sys.stdin:
         if method == "initialize":
             print(f'{{"jsonrpc":"2.0","id":{req_id},"result":{{"protocolVersion":"2024-11-05","capabilities":{{}},"serverInfo":{{"name":"echo"}}}}}}', flush=True)
         elif method == "tools/list":
-            print(f'{{"jsonrpc":"2.0","id":{req_id},"result":{{"tools":[{{"name":"echo","description":"Echo input"}},{{"name":"write_file","description":"Write a file"}}]}}}}', flush=True)
+            print(f'{{"jsonrpc":"2.0","id":{req_id},"result":{{"tools":[{{"name":"echo","description":"Echo input","inputSchema":{{"type":"object","properties":{{"input":{{"type":"string"}}}}}}}},{{"name":"write_file","description":"Write a file"}}]}}}}', flush=True)
         elif method == "tools/call":
             print(f'{{"jsonrpc":"2.0","id":{req_id},"result":{{"content":[{{"type":"text","text":"pong"}}]}}}}', flush=True)
     except Exception:
@@ -813,6 +821,11 @@ for line in sys.stdin:
         let tools = manager.list_tools().await.expect("list tools");
         assert_eq!(tools.len(), 2);
         assert!(tools.iter().any(|t| t.name == "1_echo" && !t.side_effects));
+        assert!(tools.iter().any(|t| {
+            t.name == "1_echo"
+                && t.tool_name == "echo"
+                && t.input_schema.as_ref().is_some_and(|s| s.get("type").is_some())
+        }));
         assert!(tools.iter().any(|t| t.name == "1_write_file" && t.side_effects));
         assert!(tools.iter().all(|t| t.server_id == 1));
     }
