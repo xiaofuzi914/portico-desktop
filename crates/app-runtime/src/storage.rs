@@ -10,10 +10,7 @@ use app_models::{
 use async_trait::async_trait;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use sqlx::{
-    SqlitePool,
-    sqlite::{SqliteConnectOptions, SqlitePoolOptions},
-};
+use sqlx::{SqlitePool, sqlite::SqlitePoolOptions};
 
 use std::path::Path;
 
@@ -340,12 +337,26 @@ impl SqliteStorage {
             })?;
         }
 
-        let options = SqliteConnectOptions::new().filename(path).create_if_missing(true);
-        let pool = SqlitePoolOptions::new().connect_with(options).await.map_err(|e| {
-            AppError::Internal {
-                message: format!("failed to connect to sqlite: {e}"),
-            }
+        let path_str = path.to_str().ok_or_else(|| AppError::Internal {
+            message: "database path is not valid UTF-8".to_owned(),
         })?;
+        let pool = SqlitePoolOptions::new()
+            .max_connections(8)
+            .after_connect(|conn, _meta| {
+                Box::pin(async move {
+                    sqlx::query(
+                        "PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;",
+                    )
+                    .execute(conn)
+                    .await?;
+                    Ok(())
+                })
+            })
+            .connect(path_str)
+            .await
+            .map_err(|e| AppError::Internal {
+                message: format!("failed to connect to sqlite: {e}"),
+            })?;
 
         sqlx::migrate!("./migrations")
             .run(&pool)
@@ -363,13 +374,21 @@ impl SqliteStorage {
     ///
     /// Returns an error if the in-memory database cannot be set up.
     pub async fn open_in_memory() -> Result<Self, AppError> {
-        let pool =
-            SqlitePoolOptions::new()
-                .connect(":memory:")
-                .await
-                .map_err(|e| AppError::Internal {
-                    message: format!("failed to connect to in-memory sqlite: {e}"),
-                })?;
+        let pool = SqlitePoolOptions::new()
+            .max_connections(8)
+            .after_connect(|conn, _meta| {
+                Box::pin(async move {
+                    sqlx::query("PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;")
+                        .execute(conn)
+                        .await?;
+                    Ok(())
+                })
+            })
+            .connect(":memory:")
+            .await
+            .map_err(|e| AppError::Internal {
+                message: format!("failed to connect to in-memory sqlite: {e}"),
+            })?;
 
         sqlx::migrate!("./migrations")
             .run(&pool)
@@ -1718,11 +1737,15 @@ struct AgentRunRow {
 
 impl From<AgentRunRow> for AgentRun {
     fn from(row: AgentRunRow) -> Self {
+        let status = row.status.as_str().try_into().unwrap_or_else(|_| {
+            tracing::error!(status = %row.status, "failed to deserialize AgentRun status");
+            AgentRunStatus::Failed
+        });
         Self {
             id: AgentRunId(row.id),
             thread_id: ThreadId(row.thread_id),
             workspace_id: WorkspaceId(row.workspace_id),
-            status: row.status.as_str().try_into().unwrap_or(AgentRunStatus::Failed),
+            status,
             created_at: row.created_at,
             started_at: row.started_at,
             completed_at: row.completed_at,
@@ -1743,7 +1766,10 @@ struct RunEventRow {
 
 impl From<RunEventRow> for RunEvent {
     fn from(row: RunEventRow) -> Self {
-        let payload = serde_json::from_str(&row.payload).unwrap_or(serde_json::Value::Null);
+        let payload = serde_json::from_str(&row.payload).unwrap_or_else(|e| {
+            tracing::error!(error = %e, "failed to deserialize RunEvent payload");
+            serde_json::Value::Null
+        });
         Self {
             id: row.id,
             run_id: AgentRunId(row.run_id),
@@ -1793,11 +1819,15 @@ struct SubagentRunRow {
 
 impl From<SubagentRunRow> for SubagentRun {
     fn from(row: SubagentRunRow) -> Self {
+        let status = row.status.as_str().try_into().unwrap_or_else(|_| {
+            tracing::error!(status = %row.status, "failed to deserialize SubagentRun status");
+            AgentRunStatus::Failed
+        });
         Self {
             id: AgentRunId(row.id),
             parent_run_id: AgentRunId(row.parent_run_id),
             agent_name: row.agent_name,
-            status: row.status.as_str().try_into().unwrap_or(AgentRunStatus::Failed),
+            status,
             task_description: row.task_description,
             output_summary: row.output_summary,
             created_at: row.created_at,
@@ -1830,18 +1860,37 @@ struct BackgroundTaskRow {
 
 impl BackgroundTaskRow {
     fn into(self) -> BackgroundTask {
-        let payload = serde_json::from_str(&self.payload).unwrap_or(serde_json::Value::Null);
+        let payload = serde_json::from_str(&self.payload).unwrap_or_else(|e| {
+            tracing::error!(error = %e, "failed to deserialize BackgroundTask payload");
+            serde_json::Value::Null
+        });
+        let task_kind = self.task_kind.as_str().try_into().unwrap_or_else(|_| {
+            tracing::error!(task_kind = %self.task_kind, "failed to deserialize BackgroundTask task_kind");
+            TaskKind::Routine
+        });
+        let status = self.status.as_str().try_into().unwrap_or_else(|_| {
+            tracing::error!(status = %self.status, "failed to deserialize BackgroundTask status");
+            BackgroundTaskStatus::Failed
+        });
+        let attempts = u32::try_from(self.attempts).unwrap_or_else(|e| {
+            tracing::error!(error = %e, attempts = self.attempts, "failed to convert BackgroundTask attempts");
+            u32::default()
+        });
+        let max_attempts = u32::try_from(self.max_attempts).unwrap_or_else(|e| {
+            tracing::error!(error = %e, max_attempts = self.max_attempts, "failed to convert BackgroundTask max_attempts");
+            u32::default()
+        });
         BackgroundTask {
             id: BackgroundTaskId(self.id),
             workspace_id: WorkspaceId(self.workspace_id),
             thread_id: self.thread_id.map(ThreadId),
             run_id: self.run_id.map(AgentRunId),
-            task_kind: self.task_kind.as_str().try_into().unwrap_or(TaskKind::Routine),
+            task_kind,
             payload,
-            status: self.status.as_str().try_into().unwrap_or(BackgroundTaskStatus::Failed),
+            status,
             priority: self.priority,
-            attempts: u32::try_from(self.attempts).unwrap_or_default(),
-            max_attempts: u32::try_from(self.max_attempts).unwrap_or_default(),
+            attempts,
+            max_attempts,
             scheduled_at: self.scheduled_at,
             leased_at: self.leased_at,
             leased_by: self.leased_by,
@@ -1873,13 +1922,20 @@ struct AutomationRow {
 impl AutomationRow {
     fn into(self) -> Automation {
         let permission_policy =
-            serde_json::from_str(&self.permission_policy).unwrap_or(serde_json::Value::Null);
+            serde_json::from_str(&self.permission_policy).unwrap_or_else(|e| {
+                tracing::error!(error = %e, "failed to deserialize Automation permission_policy");
+                serde_json::Value::Null
+            });
+        let trigger = self.trigger.as_str().try_into().unwrap_or_else(|_| {
+            tracing::error!(trigger = %self.trigger, "failed to deserialize Automation trigger");
+            AutomationTrigger::ManualRoutine
+        });
         Automation {
             id: AutomationId(self.id),
             workspace_id: WorkspaceId(self.workspace_id),
             name: self.name,
             description: self.description,
-            trigger: self.trigger.as_str().try_into().unwrap_or(AutomationTrigger::ManualRoutine),
+            trigger,
             cron_expr: self.cron_expr,
             enabled: self.enabled != 0,
             permission_policy,
@@ -1906,6 +1962,10 @@ struct NotificationRow {
 
 impl NotificationRow {
     fn into(self) -> Notification {
+        let category = self.category.as_str().try_into().unwrap_or_else(|_| {
+            tracing::error!(category = %self.category, "failed to deserialize Notification category");
+            NotificationCategory::System
+        });
         Notification {
             id: NotificationId(self.id),
             workspace_id: WorkspaceId(self.workspace_id),
@@ -1913,7 +1973,7 @@ impl NotificationRow {
             run_id: self.run_id.map(AgentRunId),
             title: self.title,
             body: self.body,
-            category: self.category.as_str().try_into().unwrap_or(NotificationCategory::System),
+            category,
             read: self.read != 0,
             created_at: self.created_at,
         }
@@ -1936,16 +1996,32 @@ struct ApprovalRequestRow {
 
 impl ApprovalRequestRow {
     fn into(self) -> ApprovalRequest {
+        let workspace_id = self.workspace_id.map_or_else(
+            || {
+                tracing::error!("ApprovalRequest workspace_id is null, using nil fallback");
+                WorkspaceId(uuid::Uuid::nil())
+            },
+            WorkspaceId,
+        );
+        let thread_id = self.thread_id.map_or_else(
+            || {
+                tracing::error!("ApprovalRequest thread_id is null, using nil fallback");
+                ThreadId(uuid::Uuid::nil())
+            },
+            ThreadId,
+        );
+        let status = self.status.as_str().try_into().unwrap_or_else(|_| {
+            tracing::error!(status = %self.status, "failed to deserialize ApprovalRequest status");
+            ApprovalRequestStatus::Pending
+        });
         ApprovalRequest {
             id: ApprovalRequestId(self.id),
             run_id: AgentRunId(self.run_id),
-            workspace_id: self
-                .workspace_id
-                .map_or_else(|| WorkspaceId(uuid::Uuid::nil()), WorkspaceId),
-            thread_id: self.thread_id.map_or_else(|| ThreadId(uuid::Uuid::nil()), ThreadId),
+            workspace_id,
+            thread_id,
             action: self.action,
             resource: self.resource,
-            status: self.status.as_str().try_into().unwrap_or(ApprovalRequestStatus::Pending),
+            status,
             created_at: self.created_at,
             resolved_at: self.resolved_at,
             resolution_reason: self.resolution_reason,

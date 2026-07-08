@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use app_runtime::{
     AgentRunStatus, MemoryEventBus, NotificationCenter, PorticoRuntimeHandle,
-    SqliteModelProviderRegistry, SqliteStorage, Storage,
+    SqliteModelProviderRegistry, SqliteStorage, Storage, StorageRepoRootProvider,
 };
 use app_tools::{git::GitTool, terminal::TerminalManager};
 use app_workflows::{AgentRegistry, AutomationScheduler, Orchestrator};
@@ -80,6 +80,7 @@ pub fn run() {
                 let mut tools = PorticoToolRegistry::new();
                 tools.register(Arc::new(GitToolAdapter::new(Arc::new(GitTool::new(
                     security.clone(),
+                    Arc::new(StorageRepoRootProvider::new(storage.clone())),
                 )))));
                 tools.register(Arc::new(TerminalToolAdapter::new(Arc::new(
                     TerminalManager::new(security.clone()),

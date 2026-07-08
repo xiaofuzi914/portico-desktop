@@ -3,19 +3,60 @@
 use app_models::{AppError, WorkspaceId};
 use app_security::{AuditEvent, PermissionRequest, PermissionResult, SecurityContext};
 use async_trait::async_trait;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+
+/// Provides the set of filesystem roots under which git repositories are
+/// allowed to operate. Implementations are typically backed by the current
+/// set of workspace roots.
+#[async_trait]
+pub trait RepoRootProvider: Send + Sync {
+    /// Return the currently allowed repository root paths.
+    async fn allowed_repo_roots(&self) -> Vec<PathBuf>;
+}
+
+struct StaticRepoRootProvider {
+    roots: Vec<PathBuf>,
+}
+
+#[async_trait]
+impl RepoRootProvider for StaticRepoRootProvider {
+    async fn allowed_repo_roots(&self) -> Vec<PathBuf> {
+        self.roots.clone()
+    }
+}
 
 /// Product-level git tool guarded by security policies.
 #[derive(Clone)]
 pub struct GitTool {
     security: Arc<SecurityContext>,
+    repo_root_provider: Arc<dyn RepoRootProvider>,
 }
 
 impl GitTool {
-    /// Create a new git tool backed by a security context.
+    /// Create a new git tool backed by a security context and a repository root
+    /// provider.
+    ///
+    /// Production callers must supply a real provider (e.g. one backed by the
+    /// workspace storage). The empty-list case is treated as "no allowed roots",
+    /// which denies all repository paths.
     #[must_use]
-    pub const fn new(security: Arc<SecurityContext>) -> Self {
-        Self { security }
+    pub fn new(security: Arc<SecurityContext>, provider: Arc<dyn RepoRootProvider>) -> Self {
+        Self {
+            security,
+            repo_root_provider: provider,
+        }
+    }
+
+    /// Restrict git operations to repositories inside the given static root
+    /// paths. This is intended for tests; production code should use a dynamic
+    /// [`RepoRootProvider`].
+    #[must_use]
+    pub fn with_allowed_repo_roots(self, roots: Vec<PathBuf>) -> Self {
+        Self {
+            security: self.security,
+            repo_root_provider: Arc::new(StaticRepoRootProvider { roots }),
+        }
     }
 
     /// Run a git subcommand after policy checks.
@@ -26,6 +67,8 @@ impl GitTool {
         args: &[String],
         permission_action: &str,
     ) -> Result<String, AppError> {
+        self.validate_repo_path(repo_path).await?;
+
         let command_result = self.security.command_policy().allow_command("git", args);
         if let PermissionResult::Denied { ref reason } = command_result {
             self.audit(workspace_id, repo_path, permission_action, &command_result);
@@ -83,6 +126,32 @@ impl GitTool {
         self.audit(workspace_id, repo_path, permission_action, &outcome);
 
         result
+    }
+
+    async fn validate_repo_path(&self, repo_path: &str) -> Result<(), AppError> {
+        let allowed_roots = self.repo_root_provider.allowed_repo_roots().await;
+
+        let canonical = Path::new(repo_path)
+            .canonicalize()
+            .map_err(|e| AppError::PermissionDenied {
+                reason: format!("invalid git repository path {repo_path}: {e}"),
+            })?;
+
+        let allowed = allowed_roots.iter().any(|root| {
+            root.canonicalize()
+                .is_ok_and(|root| canonical.starts_with(&root))
+        });
+
+        if !allowed {
+            return Err(AppError::PermissionDenied {
+                reason: format!(
+                    "git repository path {} is outside allowed workspace roots",
+                    canonical.display()
+                ),
+            });
+        }
+
+        Ok(())
     }
 
     fn check_permission(
@@ -277,6 +346,14 @@ mod tests {
         ))
     }
 
+    fn test_git_tool(allowed_roots: Vec<PathBuf>) -> GitTool {
+        GitTool::new(
+            test_security(),
+            Arc::new(StaticRepoRootProvider { roots: Vec::new() }),
+        )
+        .with_allowed_repo_roots(allowed_roots)
+    }
+
     fn init_repo(path: &std::path::Path) {
         let output = std::process::Command::new("git")
             .arg("init")
@@ -308,7 +385,7 @@ mod tests {
         std::fs::create_dir_all(&tmp).unwrap();
         init_repo(&tmp);
 
-        let git = GitTool::new(test_security());
+        let git = test_git_tool(vec![tmp.clone()]);
         let status = git
             .status(WorkspaceId::default(), &tmp.to_string_lossy())
             .await
@@ -325,7 +402,7 @@ mod tests {
         let file_path = tmp.join("hello.txt");
         std::fs::write(&file_path, "world").unwrap();
 
-        let git = GitTool::new(test_security());
+        let git = test_git_tool(vec![tmp.clone()]);
         git.stage(
             WorkspaceId::default(),
             &tmp.to_string_lossy(),
@@ -368,7 +445,11 @@ mod tests {
         init_repo(&tmp);
         std::fs::write(tmp.join("f.txt"), "x").unwrap();
 
-        let git = GitTool::new(security);
+        let git = GitTool::new(
+            security,
+            Arc::new(StaticRepoRootProvider { roots: Vec::new() }),
+        )
+        .with_allowed_repo_roots(vec![tmp.clone()]);
         git.stage(
             WorkspaceId::default(),
             &tmp.to_string_lossy(),
@@ -382,5 +463,28 @@ mod tests {
 
         let events = audit.events().expect("read events");
         assert!(events.iter().any(|e| e.action == "git.commit"));
+    }
+
+    #[tokio::test]
+    async fn denies_repo_path_outside_allowed_roots() {
+        let allowed = std::env::temp_dir().join(format!(
+            "portico-git-allowed-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&allowed).unwrap();
+        init_repo(&allowed);
+
+        let outside = std::env::temp_dir().join(format!(
+            "portico-git-outside-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&outside).unwrap();
+        init_repo(&outside);
+
+        let git = test_git_tool(vec![allowed.clone()]);
+        let result = git
+            .status(WorkspaceId::default(), &outside.to_string_lossy())
+            .await;
+        assert!(matches!(result, Err(AppError::PermissionDenied { .. })));
     }
 }

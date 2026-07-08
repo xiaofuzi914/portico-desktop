@@ -7,6 +7,7 @@ use crate::{
     executor::{AgentExecutor, MockAgentExecutor},
     notification_center::NotificationCenter,
     provider_registry::ModelProviderRegistry,
+    repo_root_provider::StorageRepoRootProvider,
     storage::Storage,
     task_queue::BackgroundTaskQueue,
     workspace::WorkspaceManager,
@@ -80,7 +81,10 @@ impl PorticoRuntimeHandle {
         ));
         let worktree_manager = Arc::new(WorktreeManager::new(storage.clone()));
         let terminal_manager = Arc::new(TerminalManager::new(default_security.clone()));
-        let git_tool = Arc::new(GitTool::new(default_security.clone()));
+        let git_tool = Arc::new(GitTool::new(
+            default_security.clone(),
+            Arc::new(StorageRepoRootProvider::new(storage.clone())),
+        ));
         let memory_manager: Arc<dyn MemoryManager> =
             Arc::new(SqliteMemoryManager::new(storage.pool().clone()));
         let context_inspector = Arc::new(ContextInspector::new(memory_manager.clone()));
@@ -122,7 +126,10 @@ impl PorticoRuntimeHandle {
             (*security).clone(),
         ));
         self.terminal_manager = Some(Arc::new(TerminalManager::new(security.clone())));
-        self.git_tool = Some(Arc::new(GitTool::new(security)));
+        self.git_tool = Some(Arc::new(GitTool::new(
+            security,
+            Arc::new(StorageRepoRootProvider::new(self.storage.clone())),
+        )));
         self
     }
 
@@ -444,6 +451,7 @@ impl PorticoRuntimeHandle {
                         PermissionResult::Allowed,
                     ));
                 }
+                self.cancellation.lock().await.remove(&run_id);
                 Ok(())
             }
             Ok(Err(err)) => {
@@ -465,6 +473,7 @@ impl PorticoRuntimeHandle {
                         reason: err.to_string(),
                     },
                 ));
+                self.cancellation.lock().await.remove(&run_id);
                 Err(err)
             }
             Err(_) => {
@@ -493,6 +502,7 @@ impl PorticoRuntimeHandle {
                         reason: err.to_string(),
                     },
                 ));
+                self.cancellation.lock().await.remove(&run_id);
                 Err(err)
             }
         }

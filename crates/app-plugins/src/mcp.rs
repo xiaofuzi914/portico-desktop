@@ -613,8 +613,13 @@ impl HttpClient {
             .url
             .clone()
             .ok_or_else(|| internal_error("HTTP MCP server is missing a URL"))?;
+        let client = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(10))
+            .timeout(REQUEST_TIMEOUT)
+            .build()
+            .map_err(|e| internal_error(format!("failed to build MCP HTTP client: {e}")))?;
         Ok(Self {
-            client: reqwest::Client::new(),
+            client,
             url,
             session_id: None,
             initialized: false,
