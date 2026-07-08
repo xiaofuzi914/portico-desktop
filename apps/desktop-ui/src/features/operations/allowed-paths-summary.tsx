@@ -3,6 +3,7 @@ import { FolderLock } from "lucide-react";
 import { listWorkspaces } from "@/lib/tauri-api";
 import type { WorkspaceId } from "@/lib/schemas";
 import { useTranslation } from "@/lib/i18n-react";
+import { workspaceKeys } from "@/lib/query-keys";
 import { buildAllowedPathsSummary } from "./allowed-paths-summary-model";
 
 interface AllowedPathsSummaryProps {
@@ -16,7 +17,7 @@ export function AllowedPathsSummary({
 }: AllowedPathsSummaryProps) {
   const { t } = useTranslation();
   const { data: workspaces, isLoading } = useQuery({
-    queryKey: ["workspaces"],
+    queryKey: workspaceKeys.list(),
     queryFn: listWorkspaces,
   });
 

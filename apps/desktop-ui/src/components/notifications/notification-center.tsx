@@ -7,6 +7,7 @@ import { dismissNotification, listNotifications, markNotificationRead } from "@/
 import { asNotificationId, type Notification } from "@/lib/schemas";
 import { formatRelativeTime } from "@/lib/formatters";
 import { useTranslation } from "@/lib/i18n-react";
+import { notificationKeys } from "@/lib/query-keys";
 
 export function NotificationCenter() {
   const queryClient = useQueryClient();
@@ -15,21 +16,21 @@ export function NotificationCenter() {
   const ref = useRef<HTMLDivElement>(null);
 
   const { data: notifications, isLoading } = useQuery({
-    queryKey: ["notifications"],
+    queryKey: notificationKeys.list(null, true),
     queryFn: () => listNotifications(null, true),
   });
 
   const markRead = useMutation({
     mutationFn: (id: string) => markNotificationRead(asNotificationId(id)),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["notifications"] });
+      void queryClient.invalidateQueries({ queryKey: notificationKeys.list(null, true) });
     },
   });
 
   const dismiss = useMutation({
     mutationFn: (id: string) => dismissNotification(asNotificationId(id)),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["notifications"] });
+      void queryClient.invalidateQueries({ queryKey: notificationKeys.list(null, true) });
     },
   });
 

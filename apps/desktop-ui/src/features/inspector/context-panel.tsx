@@ -5,6 +5,8 @@ import { inspectContext, listWorkspaces } from "@/lib/tauri-api";
 import type { AgentRunId, ThreadId, WorkspaceId } from "@/lib/schemas";
 import type { ReactNode } from "react";
 import { useTranslation } from "@/lib/i18n-react";
+import { EmptyState, InlineError, PanelLoading } from "./panel-primitives";
+import { runKeys, workspaceKeys } from "@/lib/query-keys";
 
 interface ContextPanelProps {
   workspaceId: WorkspaceId;
@@ -21,7 +23,7 @@ export function ContextPanel({ workspaceId, threadId, runId }: ContextPanelProps
     isLoading: loadingWorkspaces,
     error: workspacesError,
   } = useQuery({
-    queryKey: ["workspaces"],
+    queryKey: workspaceKeys.list(),
     queryFn: listWorkspaces,
   });
 
@@ -35,16 +37,7 @@ export function ContextPanel({ workspaceId, threadId, runId }: ContextPanelProps
     isLoading: loadingContext,
     error: contextError,
   } = useQuery({
-    queryKey: [
-      "workspaces",
-      workspaceId,
-      "threads",
-      threadId,
-      "runs",
-      runId ?? "none",
-      "context",
-      query,
-    ],
+    queryKey: runKeys.context(workspaceId, threadId, runId, query),
     queryFn: () => {
       if (!workspace || !runId) {
         throw new Error("Missing workspace root or run");
@@ -149,24 +142,4 @@ function MetaCard({ title, value }: { title: string; value: string }) {
       <p className="text-sm font-medium">{value}</p>
     </div>
   );
-}
-
-function InlineError({ title, message }: { title: string; message: string }) {
-  return (
-    <div className="p-3">
-      <div className="rounded border border-red-200 bg-red-50 p-3 text-xs text-red-700 dark:border-red-900 dark:bg-red-950">
-        <p className="font-semibold">{title}</p>
-        <p>{message}</p>
-      </div>
-    </div>
-  );
-}
-
-function PanelLoading() {
-  const { t } = useTranslation();
-  return <p className="text-muted-foreground p-3 text-xs">{t("inspector.loading")}</p>;
-}
-
-function EmptyState({ message }: { message: string }) {
-  return <p className="text-muted-foreground p-3 text-xs">{message}</p>;
 }

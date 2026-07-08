@@ -8,6 +8,7 @@ import { createMemory, deleteMemory, listMemories, updateMemory } from "@/lib/ta
 import { asWorkspaceId, memoryScopeSchema, type MemoryItem, type MemoryScope } from "@/lib/schemas";
 import { useMemo, useState } from "react";
 import { useTranslation } from "@/lib/i18n-react";
+import { workspaceKeys } from "@/lib/query-keys";
 
 export const Route = createFileRoute("/workspaces/$workspaceId/memory/")({
   component: MemoryPage,
@@ -29,14 +30,14 @@ function MemoryPage() {
   const [editValue, setEditValue] = useState("");
 
   const { data: memories, isLoading } = useQuery({
-    queryKey: ["workspaces", workspaceId, "memories"],
+    queryKey: workspaceKeys.memories(workspaceId),
     queryFn: () => listMemories(scope, workspaceId, null),
   });
 
   const create = useMutation({
     mutationFn: () => createMemory(scope, workspaceId, null, key, value, sensitive),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["workspaces", workspaceId, "memories"] });
+      void queryClient.invalidateQueries({ queryKey: workspaceKeys.memories(workspaceId) });
       setKey("");
       setValue("");
       setSensitive(false);
@@ -46,7 +47,7 @@ function MemoryPage() {
   const update = useMutation({
     mutationFn: ({ id, value }: { id: MemoryItem["id"]; value: string }) => updateMemory(id, value),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["workspaces", workspaceId, "memories"] });
+      void queryClient.invalidateQueries({ queryKey: workspaceKeys.memories(workspaceId) });
       setEditingId(null);
       setEditValue("");
     },
@@ -55,7 +56,7 @@ function MemoryPage() {
   const remove = useMutation({
     mutationFn: (id: MemoryItem["id"]) => deleteMemory(id),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["workspaces", workspaceId, "memories"] });
+      void queryClient.invalidateQueries({ queryKey: workspaceKeys.memories(workspaceId) });
     },
   });
 

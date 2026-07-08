@@ -8,6 +8,7 @@ import { formatRelativeTime } from "@/lib/formatters";
 import { asWorkspaceId } from "@/lib/schemas";
 import type { Workspace, WorkspaceId, Thread } from "@/lib/schemas";
 import { useTranslation } from "@/lib/i18n-react";
+import { workspaceKeys } from "@/lib/query-keys";
 import { typography } from "@/components/ui/typography";
 import { buildAgentHomeViewModel } from "./agent-home-view-models";
 
@@ -18,7 +19,7 @@ export function AgentClientPage() {
   const { workspaceId: workspaceIdParam } = routeApi.useSearch();
 
   const { data: workspaces, isLoading: workspacesLoading } = useQuery({
-    queryKey: ["workspaces"],
+    queryKey: workspaceKeys.list(),
     queryFn: listWorkspaces,
   });
 
@@ -86,7 +87,7 @@ function WorkspaceOverview({
   const queryClient = useQueryClient();
 
   const { data: threads, isLoading: threadsLoading } = useQuery({
-    queryKey: ["workspaces", workspaceId, "threads"],
+    queryKey: workspaceKeys.threads(workspaceId),
     queryFn: () => listThreads(workspaceId),
   });
   const homeViewModel = buildAgentHomeViewModel([workspace], threads ?? [], workspaceId);
@@ -94,7 +95,7 @@ function WorkspaceOverview({
   const create = useMutation({
     mutationFn: () => createThread(workspaceId, t("thread.defaultTitle")),
     onSuccess: (thread) => {
-      void queryClient.invalidateQueries({ queryKey: ["workspaces", workspaceId, "threads"] });
+      void queryClient.invalidateQueries({ queryKey: workspaceKeys.threads(workspaceId) });
       void navigate({
         to: "/workspaces/$workspaceId/threads/$threadId",
         params: { workspaceId, threadId: thread.id },

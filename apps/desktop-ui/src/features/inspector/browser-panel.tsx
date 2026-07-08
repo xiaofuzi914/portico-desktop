@@ -11,6 +11,8 @@ import {
 } from "@/lib/tauri-api";
 import type { BrowserAction, BrowserWindowId, WorkspaceId } from "@/lib/schemas";
 import { useTranslation } from "@/lib/i18n-react";
+import { InlineError, PanelLoading } from "./panel-primitives";
+import { browserWindowKeys } from "@/lib/query-keys";
 
 interface BrowserPanelProps {
   workspaceId: WorkspaceId;
@@ -28,20 +30,20 @@ export function BrowserPanel({ workspaceId }: BrowserPanelProps) {
   const [waitMs, setWaitMs] = useState(1000);
 
   const { data: windows, isLoading } = useQuery({
-    queryKey: ["browser-windows"],
+    queryKey: browserWindowKeys.list(),
     queryFn: listBrowserWindows,
     refetchInterval: 2000,
   });
 
   const open = useMutation({
     mutationFn: () => openBrowserWindow(workspaceId, url, title || undefined),
-    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["browser-windows"] }),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: browserWindowKeys.list() }),
   });
 
   const close = useMutation({
     mutationFn: (id: BrowserWindowId) => closeBrowserWindow(workspaceId, id),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["browser-windows"] });
+      void queryClient.invalidateQueries({ queryKey: browserWindowKeys.list() });
       setSelectedId(null);
     },
   });
@@ -196,18 +198,4 @@ export function BrowserPanel({ workspaceId }: BrowserPanelProps) {
   );
 }
 
-function InlineError({ title, message }: { title: string; message: string }) {
-  return (
-    <div className="p-3">
-      <div className="rounded border border-red-200 bg-red-50 p-3 text-xs text-red-700 dark:border-red-900 dark:bg-red-950">
-        <p className="font-semibold">{title}</p>
-        <p>{message}</p>
-      </div>
-    </div>
-  );
-}
 
-function PanelLoading() {
-  const { t } = useTranslation();
-  return <p className="text-muted-foreground p-3 text-xs">{t("inspector.loading")}</p>;
-}

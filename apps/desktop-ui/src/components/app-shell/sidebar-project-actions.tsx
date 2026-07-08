@@ -6,6 +6,7 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { createWorkspace } from "@/lib/tauri-api";
 import { deriveProjectNameFromPath, normalizeDirectorySelection } from "@/lib/path-picker";
 import { useTranslation } from "@/lib/i18n-react";
+import { workspaceKeys } from "@/lib/query-keys";
 
 export function SidebarProjectActions() {
   const { t } = useTranslation();
@@ -27,7 +28,7 @@ export function SidebarProjectActions() {
       return createWorkspace(deriveProjectNameFromPath(rootPath), rootPath, false);
     },
     onSuccess: (workspace) => {
-      void queryClient.invalidateQueries({ queryKey: ["workspaces"] });
+      void queryClient.invalidateQueries({ queryKey: workspaceKeys.list() });
       setOpen(false);
       if (workspace) {
         void navigate({ to: "/workspaces/$workspaceId", params: { workspaceId: workspace.id } });

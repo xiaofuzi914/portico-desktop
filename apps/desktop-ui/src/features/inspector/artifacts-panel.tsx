@@ -3,22 +3,25 @@ import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { ArtifactPreview as ArtifactPreviewComponent } from "@/components/artifact/artifact-preview";
 import { listRunEvents, parseRuntimeEvent, previewArtifact } from "@/lib/tauri-api";
-import type { AgentRunId, Artifact, ArtifactPreview, WorkspaceId } from "@/lib/schemas";
+import type { AgentRunId, Artifact, ArtifactPreview, ThreadId, WorkspaceId } from "@/lib/schemas";
 import { useTranslation } from "@/lib/i18n-react";
+import { EmptyState, InlineError, PanelLoading } from "./panel-primitives";
+import { runKeys } from "@/lib/query-keys";
 
 interface ArtifactsPanelProps {
   workspaceId: WorkspaceId;
+  threadId: ThreadId;
   runId?: AgentRunId;
 }
 
-export function ArtifactsPanel({ workspaceId, runId }: ArtifactsPanelProps) {
+export function ArtifactsPanel({ workspaceId, threadId, runId }: ArtifactsPanelProps) {
   const { t } = useTranslation();
   const {
     data: events,
     isLoading,
     error,
   } = useQuery({
-    queryKey: ["workspaces", workspaceId, "threads", "runs", runId ?? "none", "events"],
+    queryKey: runKeys.events(workspaceId, threadId, runId),
     queryFn: () => {
       if (!runId) throw new Error("No active run");
       return listRunEvents(runId);
@@ -99,22 +102,4 @@ function ArtifactItem({ workspaceId, artifact }: { workspaceId: WorkspaceId; art
   );
 }
 
-function InlineError({ title, message }: { title: string; message: string }) {
-  return (
-    <div className="p-3">
-      <div className="rounded border border-red-200 bg-red-50 p-3 text-xs text-red-700 dark:border-red-900 dark:bg-red-950">
-        <p className="font-semibold">{title}</p>
-        <p>{message}</p>
-      </div>
-    </div>
-  );
-}
 
-function PanelLoading() {
-  const { t } = useTranslation();
-  return <p className="text-muted-foreground p-3 text-xs">{t("inspector.loading")}</p>;
-}
-
-function EmptyState({ message }: { message: string }) {
-  return <p className="text-muted-foreground p-3 text-xs">{message}</p>;
-}

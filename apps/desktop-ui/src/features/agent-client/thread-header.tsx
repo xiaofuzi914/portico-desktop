@@ -1,9 +1,18 @@
 import { useQuery } from "@tanstack/react-query";
 import { Bot, Folder, GitBranch, MessageSquare } from "lucide-react";
-import { listThreads, listWorkspaces, listWorktrees } from "@/lib/tauri-api";
+import { Link } from "@tanstack/react-router";
+import type { ReactNode } from "react";
+import {
+  listModels,
+  listProviders,
+  listThreads,
+  listWorkspaces,
+  listWorktrees,
+} from "@/lib/tauri-api";
 import { cn } from "@/lib/utils";
 import type { AgentRunId, AgentRunStatus, ThreadId, WorkspaceId } from "@/lib/schemas";
 import { useTranslation } from "@/lib/i18n-react";
+import { modelKeys, providerKeys, workspaceKeys } from "@/lib/query-keys";
 import { typography } from "@/components/ui/typography";
 
 interface ThreadHeaderProps {
@@ -34,23 +43,49 @@ function RunStatusBadge({ status }: { status: AgentRunStatus }) {
 export function ThreadHeader({ workspaceId, threadId, runId, status }: ThreadHeaderProps) {
   const { t } = useTranslation();
   const { data: workspaces } = useQuery({
-    queryKey: ["workspaces"],
+    queryKey: workspaceKeys.list(),
     queryFn: listWorkspaces,
   });
 
   const { data: threads } = useQuery({
-    queryKey: ["workspaces", workspaceId, "threads"],
+    queryKey: workspaceKeys.threads(workspaceId),
     queryFn: () => listThreads(workspaceId),
   });
 
   const { data: worktrees } = useQuery({
-    queryKey: ["workspaces", workspaceId, "worktrees"],
+    queryKey: workspaceKeys.worktrees(workspaceId),
     queryFn: () => listWorktrees(workspaceId),
+  });
+
+  const { data: providers } = useQuery({
+    queryKey: providerKeys.list(),
+    queryFn: listProviders,
+  });
+
+  const enabledProvider = providers?.find((provider) => provider.enabled);
+
+  const { data: models } = useQuery({
+    queryKey: modelKeys.list(enabledProvider?.id ?? null),
+    queryFn: () => listModels(enabledProvider?.id),
+    enabled: !!enabledProvider,
   });
 
   const workspace = workspaces?.find((w) => w.id === workspaceId);
   const thread = threads?.find((t) => t.id === threadId);
   const worktree = worktrees?.find((candidate) => candidate.thread_id === threadId);
+
+  const modelValue: ReactNode = enabledProvider ? (
+    <span className="truncate">
+      {enabledProvider.display_name} / {models?.[0]?.model_name ?? t("agent.noModel")}
+    </span>
+  ) : (
+    <Link
+      to="/models"
+      className="text-foreground hover:underline truncate"
+    >
+      {t("agent.modelNotConfigured")}
+    </Link>
+  );
 
   return (
     <header className="bg-background/95 flex h-[68px] shrink-0 items-center justify-between gap-4 border-b px-6">
@@ -69,7 +104,7 @@ export function ThreadHeader({ workspaceId, threadId, runId, status }: ThreadHea
 
       <div className="hidden shrink-0 items-center gap-2 lg:flex">
         {status && <RunStatusBadge status={status} />}
-        <MetaPill icon={Bot} label={t("agent.model")} value={t("agent.default")} />
+        <MetaPill icon={Bot} label={t("agent.model")} value={modelValue} />
         <MetaPill
           icon={GitBranch}
           label={t("agent.worktree")}
@@ -92,7 +127,7 @@ function MetaPill({
 }: {
   icon: typeof Bot;
   label: string;
-  value: string;
+  value: ReactNode;
 }) {
   return (
     <span className="text-muted-foreground flex h-7 items-center gap-1 rounded-md border bg-muted/30 px-2 text-xs">

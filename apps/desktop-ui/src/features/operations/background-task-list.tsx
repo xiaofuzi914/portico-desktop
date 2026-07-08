@@ -11,6 +11,7 @@ import {
 } from "@/lib/schemas";
 import { formatRelativeTime } from "@/lib/formatters";
 import { useTranslation } from "@/lib/i18n-react";
+import { backgroundTaskKeys } from "@/lib/query-keys";
 
 export function BackgroundTaskList() {
   const queryClient = useQueryClient();
@@ -22,7 +23,7 @@ export function BackgroundTaskList() {
     : null;
 
   const { data: tasks, isLoading, refetch } = useQuery({
-    queryKey: ["background-tasks", workspaceIdFilter],
+    queryKey: backgroundTaskKeys.list(workspaceIdFilter),
     queryFn: () => listBackgroundTasks(workspaceIdFilter),
   });
 
@@ -31,7 +32,7 @@ export function BackgroundTaskList() {
       cancelBackgroundTask(asBackgroundTaskId(task.id)),
     onSuccess: () => {
       void queryClient.invalidateQueries({
-        queryKey: ["background-tasks", workspaceIdFilter],
+        queryKey: backgroundTaskKeys.list(workspaceIdFilter),
       });
     },
   });

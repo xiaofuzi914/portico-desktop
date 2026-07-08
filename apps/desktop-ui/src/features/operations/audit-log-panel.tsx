@@ -7,6 +7,7 @@ import { listAuditLog } from "@/lib/tauri-api";
 import { formatDateTime } from "@/lib/formatters";
 import { asAgentRunId, asThreadId, asWorkspaceId } from "@/lib/schemas";
 import { useTranslation } from "@/lib/i18n-react";
+import { auditKeys } from "@/lib/query-keys";
 import { AllowedPathsSummary } from "./allowed-paths-summary";
 
 export function AuditLogPanel() {
@@ -22,7 +23,11 @@ export function AuditLogPanel() {
   };
 
   const { data, isLoading, isError, error, refetch } = useQuery({
-    queryKey: ["audit-log", filters],
+    queryKey: auditKeys.log(
+      filters.workspaceId ? asWorkspaceId(filters.workspaceId) : null,
+      filters.threadId ? asThreadId(filters.threadId) : null,
+      filters.runId ? asAgentRunId(filters.runId) : null,
+    ),
     queryFn: () =>
       listAuditLog(
         filters.workspaceId ? asWorkspaceId(filters.workspaceId) : null,

@@ -1,5 +1,4 @@
-import { useState } from "react";
-import { useParams, useSearch } from "@tanstack/react-router";
+import { useParams, useSearch, useNavigate } from "@tanstack/react-router";
 import { asAgentRunId, asThreadId, asWorkspaceId } from "@/lib/schemas";
 import { InspectorTabs } from "@/features/inspector/inspector-tabs";
 import { isInspectorTab, type InspectorTab } from "@/features/inspector/inspector-state";
@@ -13,20 +12,35 @@ import { AuditPanel } from "@/features/inspector/audit-panel";
 import { useTranslation } from "@/lib/i18n-react";
 
 export function InspectorShell() {
-  const [activeTab, setActiveTab] = useState<InspectorTab>("files");
   const { t } = useTranslation();
+  const navigate = useNavigate();
 
   const params = useParams({ strict: false }) as {
     workspaceId?: string;
     threadId?: string;
   };
-  const search = useSearch({ strict: false }) as { runId?: string };
+  const search = useSearch({ strict: false }) as {
+    runId?: string;
+    inspector?: string;
+  };
   const workspaceId = params.workspaceId ? asWorkspaceId(params.workspaceId) : undefined;
   const threadId = params.threadId ? asThreadId(params.threadId) : undefined;
   const runId = search.runId ? asAgentRunId(search.runId) : undefined;
 
-  function handleChange(tab: string) {
-    if (isInspectorTab(tab)) setActiveTab(tab);
+  const inspectorParam = search.inspector;
+  const activeTab: InspectorTab =
+    typeof inspectorParam === "string" && isInspectorTab(inspectorParam)
+      ? inspectorParam
+      : "files";
+
+  function handleChange(tab: InspectorTab) {
+    void navigate({
+      search: (prev: { inspector?: string; runId?: string }) => ({
+        ...prev,
+        inspector: tab,
+      }),
+      replace: true,
+    } as never);
   }
 
   return (
@@ -60,9 +74,16 @@ export function InspectorShell() {
               ))}
             {activeTab === "browser" && <BrowserPanel workspaceId={workspaceId} />}
             {activeTab === "desktop" && <DesktopPanel workspaceId={workspaceId} />}
-            {activeTab === "artifacts" && (
-              <ArtifactsPanel workspaceId={workspaceId} runId={runId} />
-            )}
+            {activeTab === "artifacts" &&
+              (threadId ? (
+                <ArtifactsPanel
+                  workspaceId={workspaceId}
+                  threadId={threadId}
+                  runId={runId}
+                />
+              ) : (
+                <TabPlaceholder message={t("inspector.startRunArtifacts")} />
+              ))}
             {activeTab === "audit" && (
               <AuditPanel workspaceId={workspaceId} threadId={threadId} runId={runId} />
             )}

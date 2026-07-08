@@ -6,6 +6,7 @@ import { NotificationCenter } from "@/components/notifications/notification-cent
 import { listThreads, listWorkspaces } from "@/lib/tauri-api";
 import { asThreadId, asWorkspaceId } from "@/lib/schemas";
 import { useTranslation } from "@/lib/i18n-react";
+import { workspaceKeys } from "@/lib/query-keys";
 import { LanguageToggle } from "./language-toggle";
 
 export function AppTopbar() {
@@ -18,13 +19,13 @@ export function AppTopbar() {
   const { t } = useTranslation();
 
   const { data: workspaces } = useQuery({
-    queryKey: ["workspaces"],
+    queryKey: workspaceKeys.list(),
     queryFn: listWorkspaces,
     enabled: !!workspaceId,
   });
 
   const { data: threads } = useQuery({
-    queryKey: ["workspaces", workspaceId, "threads"],
+    queryKey: workspaceKeys.threads(workspaceId!),
     queryFn: () => listThreads(workspaceId!),
     enabled: !!workspaceId,
   });

@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Folder, FolderOpen } from "lucide-react";
 import { listWorkspaces } from "@/lib/tauri-api";
 import { useTranslation } from "@/lib/i18n-react";
+import { workspaceKeys } from "@/lib/query-keys";
 import { buildSidebarProjectItems } from "./sidebar-projects-model";
 import { useEffect, useMemo, useState } from "react";
 import type { WorkspaceId } from "@/lib/schemas";
@@ -26,7 +27,7 @@ export function SidebarProjects({ activeWorkspaceId }: SidebarProjectsProps) {
     readRunningWorkspaceIds(),
   );
   const { data: workspaces, isLoading } = useQuery({
-    queryKey: ["workspaces"],
+    queryKey: workspaceKeys.list(),
     queryFn: listWorkspaces,
   });
 

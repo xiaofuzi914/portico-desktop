@@ -6,6 +6,7 @@ import { listRunEvents } from "@/lib/tauri-api";
 import { useRuntimeEvents } from "@/lib/tauri-events";
 import type { AgentRunId, ThreadId, WorkspaceId } from "@/lib/schemas";
 import { useTranslation } from "@/lib/i18n-react";
+import { runKeys } from "@/lib/query-keys";
 import { mapRunEventToBlock, mergeRunEvents } from "./event-view-models";
 import { ConversationEventBlock } from "./conversation-event-block";
 
@@ -43,7 +44,7 @@ export function ConversationTimeline({
 }: ConversationTimelineProps) {
   const { t } = useTranslation();
   const { data: persistedEvents, isLoading } = useQuery({
-    queryKey: ["workspaces", workspaceId, "threads", threadId, "runs", runId ?? "none", "events"],
+    queryKey: runKeys.events(workspaceId, threadId, runId),
     queryFn: () => (runId ? listRunEvents(runId) : Promise.resolve([])),
     enabled: !!runId,
   });

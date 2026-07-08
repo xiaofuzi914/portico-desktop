@@ -13,6 +13,7 @@ import {
 import { formatDateTime } from "@/lib/formatters";
 import type { DiagnosticsBundle } from "@/lib/schemas";
 import { useTranslation } from "@/lib/i18n-react";
+import { migrationKeys } from "@/lib/query-keys";
 
 export const Route = createFileRoute("/settings/")({
   component: SettingsPage,
@@ -40,7 +41,7 @@ function SettingsPage() {
   });
 
   const migrationsQuery = useQuery({
-    queryKey: ["migrations"],
+    queryKey: migrationKeys.list(),
     queryFn: listMigrations,
     enabled: false,
   });
@@ -48,7 +49,7 @@ function SettingsPage() {
   const rollbackMutation = useMutation({
     mutationFn: rollbackLastMigration,
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["migrations"] });
+      void queryClient.invalidateQueries({ queryKey: migrationKeys.list() });
     },
   });
 

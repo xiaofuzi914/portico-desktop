@@ -7,6 +7,7 @@ import { listSkills } from "@/lib/tauri-api";
 import { featureReadiness } from "@/lib/feature-readiness";
 import type { Skill } from "@/lib/schemas";
 import { useTranslation } from "@/lib/i18n-react";
+import { skillKeys } from "@/lib/query-keys";
 
 export function SkillCapabilitiesPanel() {
   const { t } = useTranslation();
@@ -14,7 +15,7 @@ export function SkillCapabilitiesPanel() {
   const [argumentsJson, setArgumentsJson] = useState("{}");
 
   const { data: skills, isLoading } = useQuery({
-    queryKey: ["skills"],
+    queryKey: skillKeys.list(),
     queryFn: () => listSkills(),
   });
 

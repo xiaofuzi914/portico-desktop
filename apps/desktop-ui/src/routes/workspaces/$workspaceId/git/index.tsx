@@ -16,6 +16,7 @@ import {
 import { asWorkspaceId } from "@/lib/schemas";
 import { useMemo, useState } from "react";
 import { useTranslation } from "@/lib/i18n-react";
+import { gitKeys } from "@/lib/query-keys";
 
 export const Route = createFileRoute("/workspaces/$workspaceId/git/")({
   component: GitPage,
@@ -31,13 +32,13 @@ function GitPage() {
   const [branchName, setBranchName] = useState("");
 
   const { data: statusText, isLoading: statusLoading } = useQuery({
-    queryKey: ["git", workspaceId, repoPath, "status"],
+    queryKey: gitKeys.status(workspaceId, repoPath),
     queryFn: () => gitStatus(workspaceId, repoPath),
     enabled: !!repoPath,
   });
 
   const { data: diffText, isLoading: diffLoading } = useQuery({
-    queryKey: ["git", workspaceId, repoPath, "diff"],
+    queryKey: gitKeys.diff(workspaceId, repoPath),
     queryFn: () => gitDiff(workspaceId, repoPath),
     enabled: !!repoPath,
   });
@@ -50,8 +51,8 @@ function GitPage() {
     mutationFn: () => gitStage(workspaceId, repoPath, Array.from(selectedFiles)),
     onSuccess: () => {
       setSelectedFiles(new Set());
-      void queryClient.invalidateQueries({ queryKey: ["git", workspaceId, repoPath, "status"] });
-      void queryClient.invalidateQueries({ queryKey: ["git", workspaceId, repoPath, "diff"] });
+      void queryClient.invalidateQueries({ queryKey: gitKeys.status(workspaceId, repoPath) });
+      void queryClient.invalidateQueries({ queryKey: gitKeys.diff(workspaceId, repoPath) });
     },
   });
 
@@ -59,7 +60,7 @@ function GitPage() {
     mutationFn: () => gitUnstage(workspaceId, repoPath, Array.from(selectedFiles)),
     onSuccess: () => {
       setSelectedFiles(new Set());
-      void queryClient.invalidateQueries({ queryKey: ["git", workspaceId, repoPath, "status"] });
+      void queryClient.invalidateQueries({ queryKey: gitKeys.status(workspaceId, repoPath) });
     },
   });
 
@@ -67,8 +68,8 @@ function GitPage() {
     mutationFn: () => gitCommit(workspaceId, repoPath, commitMessage),
     onSuccess: () => {
       setCommitMessage("");
-      void queryClient.invalidateQueries({ queryKey: ["git", workspaceId, repoPath, "status"] });
-      void queryClient.invalidateQueries({ queryKey: ["git", workspaceId, repoPath, "diff"] });
+      void queryClient.invalidateQueries({ queryKey: gitKeys.status(workspaceId, repoPath) });
+      void queryClient.invalidateQueries({ queryKey: gitKeys.diff(workspaceId, repoPath) });
     },
   });
 
@@ -76,14 +77,14 @@ function GitPage() {
     mutationFn: () => gitBranch(workspaceId, repoPath, branchName || undefined),
     onSuccess: () => {
       setBranchName("");
-      void queryClient.invalidateQueries({ queryKey: ["git", workspaceId, repoPath, "status"] });
+      void queryClient.invalidateQueries({ queryKey: gitKeys.status(workspaceId, repoPath) });
     },
   });
 
   const push = useMutation({
     mutationFn: () => gitPush(workspaceId, repoPath),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["git", workspaceId, repoPath, "status"] });
+      void queryClient.invalidateQueries({ queryKey: gitKeys.status(workspaceId, repoPath) });
     },
   });
 

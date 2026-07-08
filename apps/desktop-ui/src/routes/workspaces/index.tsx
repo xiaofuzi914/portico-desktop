@@ -12,6 +12,7 @@ import { typography } from "@/components/ui/typography";
 import { deriveProjectNameFromPath, normalizeDirectorySelection } from "@/lib/path-picker";
 import { buildProjectOverviewItems } from "./-overview-model";
 import { formatRelativeTime } from "@/lib/formatters";
+import { workspaceKeys } from "@/lib/query-keys";
 
 const searchSchema = z.object({
   mode: z.enum(["new"]).optional(),
@@ -29,7 +30,7 @@ function WorkspacesPage() {
   const queryClient = useQueryClient();
   const [addProjectError, setAddProjectError] = useState<string | null>(null);
   const { data: workspaces, isLoading: workspacesLoading } = useQuery({
-    queryKey: ["workspaces"],
+    queryKey: workspaceKeys.list(),
     queryFn: listWorkspaces,
   });
 
@@ -46,7 +47,7 @@ function WorkspacesPage() {
       return createWorkspace(deriveProjectNameFromPath(rootPath), rootPath, false);
     },
     onSuccess: (workspace) => {
-      void queryClient.invalidateQueries({ queryKey: ["workspaces"] });
+      void queryClient.invalidateQueries({ queryKey: workspaceKeys.list() });
       if (workspace) {
         void navigate({ to: "/workspaces/$workspaceId", params: { workspaceId: workspace.id } });
       }
@@ -229,7 +230,7 @@ function NewProjectForm() {
   const create = useMutation({
     mutationFn: () => createWorkspace(name, rootPath || ".", false),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["workspaces"] });
+      void queryClient.invalidateQueries({ queryKey: workspaceKeys.list() });
       setName("");
       setRootPath("");
     },

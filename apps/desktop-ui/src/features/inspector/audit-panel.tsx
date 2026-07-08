@@ -2,6 +2,8 @@ import { useQuery } from "@tanstack/react-query";
 import { listAuditLog } from "@/lib/tauri-api";
 import type { AgentRunId, ThreadId, WorkspaceId } from "@/lib/schemas";
 import { useTranslation } from "@/lib/i18n-react";
+import { auditKeys } from "@/lib/query-keys";
+import { EmptyState, InlineError, PanelLoading } from "./panel-primitives";
 import { AllowedPathsSummary } from "@/features/operations/allowed-paths-summary";
 
 interface AuditPanelProps {
@@ -15,7 +17,7 @@ export function AuditPanel({ workspaceId, threadId, runId }: AuditPanelProps) {
   const hasIds = !!workspaceId || !!threadId || !!runId;
 
   const { data, isLoading, error } = useQuery({
-    queryKey: ["audit-log", workspaceId ?? null, threadId ?? null, runId ?? null],
+    queryKey: auditKeys.log(workspaceId ?? null, threadId ?? null, runId ?? null),
     queryFn: () => listAuditLog(workspaceId ?? null, threadId ?? null, runId ?? null),
     enabled: hasIds,
   });
@@ -58,22 +60,4 @@ export function AuditPanel({ workspaceId, threadId, runId }: AuditPanelProps) {
   );
 }
 
-function InlineError({ title, message }: { title: string; message: string }) {
-  return (
-    <div className="p-3">
-      <div className="rounded border border-red-200 bg-red-50 p-3 text-xs text-red-700 dark:border-red-900 dark:bg-red-950">
-        <p className="font-semibold">{title}</p>
-        <p>{message}</p>
-      </div>
-    </div>
-  );
-}
 
-function PanelLoading() {
-  const { t } = useTranslation();
-  return <p className="text-muted-foreground p-3 text-xs">{t("inspector.loading")}</p>;
-}
-
-function EmptyState({ message }: { message: string }) {
-  return <p className="text-muted-foreground p-3 text-xs">{message}</p>;
-}

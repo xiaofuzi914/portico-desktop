@@ -2,11 +2,12 @@ import { useQuery } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { listMcpServers } from "@/lib/tauri-api";
 import { useTranslation } from "@/lib/i18n-react";
+import { mcpKeys } from "@/lib/query-keys";
 
 export function McpCapabilitiesPanel() {
   const { t } = useTranslation();
   const { data: mcpServers, isLoading } = useQuery({
-    queryKey: ["mcp-servers"],
+    queryKey: mcpKeys.list(),
     queryFn: listMcpServers,
   });
 

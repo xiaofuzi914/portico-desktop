@@ -5,6 +5,8 @@ import { Input } from "@/components/ui/input";
 import { captureScreen, clickMouse, focusApp, moveMouse, typeText } from "@/lib/tauri-api";
 import type { WorkspaceId } from "@/lib/schemas";
 import { useTranslation } from "@/lib/i18n-react";
+import { InlineError } from "./panel-primitives";
+import { desktopKeys } from "@/lib/query-keys";
 
 interface DesktopPanelProps {
   workspaceId: WorkspaceId;
@@ -18,7 +20,7 @@ export function DesktopPanel({ workspaceId }: DesktopPanelProps) {
   const [appName, setAppName] = useState("");
 
   const capture = useQuery({
-    queryKey: ["desktop-capture", workspaceId],
+    queryKey: desktopKeys.capture(workspaceId),
     queryFn: () => captureScreen(workspaceId),
     enabled: false,
   });
@@ -140,13 +142,4 @@ export function DesktopPanel({ workspaceId }: DesktopPanelProps) {
   );
 }
 
-function InlineError({ title, message }: { title: string; message: string }) {
-  return (
-    <div className="p-3">
-      <div className="rounded border border-red-200 bg-red-50 p-3 text-xs text-red-700 dark:border-red-900 dark:bg-red-950">
-        <p className="font-semibold">{title}</p>
-        <p>{message}</p>
-      </div>
-    </div>
-  );
-}
+

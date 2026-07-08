@@ -17,6 +17,8 @@ import {
 } from "@/lib/tauri-api";
 import { asAutomationId, asWorkspaceId, type Automation } from "@/lib/schemas";
 import { useTranslation } from "@/lib/i18n-react";
+import { automationKeys, workspaceKeys } from "@/lib/query-keys";
+import { ErrorAlert } from "@/components/ui/error-alert";
 
 export function AutomationSummary() {
   const queryClient = useQueryClient();
@@ -25,7 +27,7 @@ export function AutomationSummary() {
   const [editing, setEditing] = useState<Automation | null>(null);
 
   const { data: workspaces } = useQuery({
-    queryKey: ["workspaces"],
+    queryKey: workspaceKeys.list(),
     queryFn: listWorkspaces,
   });
 
@@ -37,7 +39,7 @@ export function AutomationSummary() {
     (workspaces?.[0] ? asWorkspaceId(workspaces[0].id) : null);
 
   const { data: automations, isLoading } = useQuery({
-    queryKey: ["automations", listWorkspaceId],
+    queryKey: automationKeys.list(listWorkspaceId),
     queryFn: () => listAutomations(listWorkspaceId),
   });
 
@@ -55,7 +57,7 @@ export function AutomationSummary() {
     },
     onSuccess: () => {
       void queryClient.invalidateQueries({
-        queryKey: ["automations", listWorkspaceId],
+        queryKey: automationKeys.list(listWorkspaceId),
       });
       setEditing(null);
     },
@@ -74,7 +76,7 @@ export function AutomationSummary() {
     },
     onSuccess: () => {
       void queryClient.invalidateQueries({
-        queryKey: ["automations", listWorkspaceId],
+        queryKey: automationKeys.list(listWorkspaceId),
       });
       setEditing(null);
     },
@@ -85,7 +87,7 @@ export function AutomationSummary() {
       deleteAutomation(asAutomationId(automation.id)),
     onSuccess: () => {
       void queryClient.invalidateQueries({
-        queryKey: ["automations", listWorkspaceId],
+        queryKey: automationKeys.list(listWorkspaceId),
       });
     },
   });
@@ -95,10 +97,12 @@ export function AutomationSummary() {
       runAutomationNow(asAutomationId(automation.id)),
     onSuccess: () => {
       void queryClient.invalidateQueries({
-        queryKey: ["automations", listWorkspaceId],
+        queryKey: automationKeys.list(listWorkspaceId),
       });
     },
   });
+
+  const automationError = create.error ?? update.error ?? remove.error ?? runNow.error;
 
   const handleSubmit = (data: AutomationFormData) => {
     if (editing) {
@@ -132,7 +136,7 @@ export function AutomationSummary() {
               variant="outline"
               onClick={() =>
                 void queryClient.invalidateQueries({
-                  queryKey: ["automations", listWorkspaceId],
+                  queryKey: automationKeys.list(listWorkspaceId),
                 })
               }
             >
@@ -141,6 +145,15 @@ export function AutomationSummary() {
           </div>
         </CardContent>
       </Card>
+
+      {automationError && (
+        <ErrorAlert
+          title={t("operations.automationMutationFailed")}
+          message={
+            automationError instanceof Error ? automationError.message : String(automationError)
+          }
+        />
+      )}
 
       <Card>
         <CardHeader>

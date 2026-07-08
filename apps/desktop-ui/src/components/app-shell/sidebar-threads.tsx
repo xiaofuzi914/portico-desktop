@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { createThread, listThreads } from "@/lib/tauri-api";
 import type { WorkspaceId } from "@/lib/schemas";
 import { useTranslation } from "@/lib/i18n-react";
+import { workspaceKeys } from "@/lib/query-keys";
 
 interface SidebarThreadsProps {
   workspaceId: WorkspaceId;
@@ -15,13 +16,13 @@ export function SidebarThreads({ workspaceId }: SidebarThreadsProps) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { data: threads, isLoading } = useQuery({
-    queryKey: ["workspaces", workspaceId, "threads"],
+    queryKey: workspaceKeys.threads(workspaceId),
     queryFn: () => listThreads(workspaceId),
   });
   const create = useMutation({
     mutationFn: () => createThread(workspaceId, t("thread.defaultTitle")),
     onSuccess: (thread) => {
-      void queryClient.invalidateQueries({ queryKey: ["workspaces", workspaceId, "threads"] });
+      void queryClient.invalidateQueries({ queryKey: workspaceKeys.threads(workspaceId) });
       void navigate({
         to: "/workspaces/$workspaceId/threads/$threadId",
         params: { workspaceId, threadId: thread.id },

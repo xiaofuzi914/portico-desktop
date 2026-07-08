@@ -21,6 +21,8 @@ import {
   type ProviderKind,
 } from "@/lib/schemas";
 import { useTranslation } from "@/lib/i18n-react";
+import { modelKeys, providerKeys, usageKeys } from "@/lib/query-keys";
+import { ErrorAlert } from "@/components/ui/error-alert";
 
 const PROVIDER_KINDS: ProviderKind[] = [...providerKindSchema.options];
 
@@ -53,18 +55,18 @@ export function ModelCapabilitiesPanel() {
   const [capabilities, setCapabilities] = useState<ModelCapability>(defaultCapabilities);
 
   const { data: providers, isLoading: providersLoading } = useQuery({
-    queryKey: ["providers"],
+    queryKey: providerKeys.list(),
     queryFn: listProviders,
   });
 
   const { data: models, isLoading: modelsLoading } = useQuery({
-    queryKey: ["models", selectedProviderId],
+    queryKey: modelKeys.list(selectedProviderId),
     queryFn: () => listModels(selectedProviderId ?? undefined),
     enabled: selectedProviderId !== null,
   });
 
   const { data: usageSummary } = useQuery({
-    queryKey: ["usage-summary"],
+    queryKey: usageKeys.summary(),
     queryFn: getUsageSummary,
   });
 
@@ -72,7 +74,7 @@ export function ModelCapabilitiesPanel() {
     mutationFn: () =>
       createProvider(providerKind, providerName, providerBaseUrl || null, providerKeyRef),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["providers"] });
+      void queryClient.invalidateQueries({ queryKey: providerKeys.list() });
       setProviderName("");
       setProviderBaseUrl("");
       setProviderKeyRef("");
@@ -82,8 +84,8 @@ export function ModelCapabilitiesPanel() {
   const deleteProviderMutation = useMutation({
     mutationFn: (id: ProviderId) => deleteProvider(id),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["providers"] });
-      void queryClient.invalidateQueries({ queryKey: ["models"] });
+      void queryClient.invalidateQueries({ queryKey: providerKeys.list() });
+      void queryClient.invalidateQueries({ queryKey: modelKeys.list() });
       setSelectedProviderId(null);
     },
   });
@@ -96,7 +98,7 @@ export function ModelCapabilitiesPanel() {
       return createModel(selectedProviderId, modelName, modelDisplayName, capabilities);
     },
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["models", selectedProviderId] });
+      void queryClient.invalidateQueries({ queryKey: modelKeys.list(selectedProviderId) });
       setModelName("");
       setModelDisplayName("");
       setCapabilities(defaultCapabilities);
@@ -106,11 +108,15 @@ export function ModelCapabilitiesPanel() {
   const deleteModelMutation = useMutation({
     mutationFn: (id: string) => deleteModel(asModelId(id)),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["models", selectedProviderId] });
+      void queryClient.invalidateQueries({ queryKey: modelKeys.list(selectedProviderId) });
     },
   });
 
   const selectedProvider = providers?.find((p) => p.id === selectedProviderId);
+
+  const providerMutationError =
+    createProviderMutation.error ?? deleteProviderMutation.error;
+  const modelMutationError = createModelMutation.error ?? deleteModelMutation.error;
 
   const updateCapability = <K extends keyof ModelCapability>(key: K, value: ModelCapability[K]) => {
     setCapabilities((prev) => ({ ...prev, [key]: value }));
@@ -163,6 +169,17 @@ export function ModelCapabilitiesPanel() {
               {t("capabilities.addProvider")}
             </Button>
           </form>
+
+          {providerMutationError && (
+            <ErrorAlert
+              title={t("capabilities.providerMutationFailed")}
+              message={
+                providerMutationError instanceof Error
+                  ? providerMutationError.message
+                  : String(providerMutationError)
+              }
+            />
+          )}
 
           {providersLoading ? (
             <p className="text-muted-foreground">{t("capabilities.loadingProviders")}</p>
@@ -299,6 +316,17 @@ export function ModelCapabilitiesPanel() {
                 />
               </div>
             </form>
+
+            {modelMutationError && (
+              <ErrorAlert
+                title={t("capabilities.modelMutationFailed")}
+                message={
+                  modelMutationError instanceof Error
+                    ? modelMutationError.message
+                    : String(modelMutationError)
+                }
+              />
+            )}
 
             {modelsLoading ? (
               <p className="text-muted-foreground">{t("capabilities.loadingModels")}</p>

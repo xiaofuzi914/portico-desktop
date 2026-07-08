@@ -22,6 +22,7 @@ import {
   type PluginPermissions,
 } from "@/lib/schemas";
 import { useTranslation } from "@/lib/i18n-react";
+import { mcpKeys, pluginKeys } from "@/lib/query-keys";
 
 function defaultMcpConfig(): Omit<McpServerConfig, "id"> {
   return {
@@ -49,12 +50,12 @@ export function PluginCapabilitiesPanel() {
   const [envValue, setEnvValue] = useState("");
 
   const { data: plugins, isLoading: pluginsLoading } = useQuery({
-    queryKey: ["plugins"],
+    queryKey: pluginKeys.list(),
     queryFn: listPlugins,
   });
 
   const { data: mcpServers, isLoading: mcpServersLoading } = useQuery({
-    queryKey: ["mcp-servers"],
+    queryKey: mcpKeys.list(),
     queryFn: listMcpServers,
   });
 
@@ -74,7 +75,7 @@ export function PluginCapabilitiesPanel() {
       return installPlugin(result.data);
     },
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["plugins"] });
+      void queryClient.invalidateQueries({ queryKey: pluginKeys.list() });
       setManifestJson("");
     },
     onError: (err) => {
@@ -86,14 +87,14 @@ export function PluginCapabilitiesPanel() {
     mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) =>
       enablePlugin(asPluginId(id), enabled),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["plugins"] });
+      void queryClient.invalidateQueries({ queryKey: pluginKeys.list() });
     },
   });
 
   const uninstall = useMutation({
     mutationFn: (id: string) => uninstallPlugin(asPluginId(id)),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["plugins"] });
+      void queryClient.invalidateQueries({ queryKey: pluginKeys.list() });
     },
   });
 
@@ -106,7 +107,7 @@ export function PluginCapabilitiesPanel() {
       return addMcpServer(result.data);
     },
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["mcp-servers"] });
+      void queryClient.invalidateQueries({ queryKey: mcpKeys.list() });
       setMcpConfig(defaultMcpConfig());
       setEnvKey("");
       setEnvValue("");
@@ -116,7 +117,7 @@ export function PluginCapabilitiesPanel() {
   const removeMcp = useMutation({
     mutationFn: (id: number) => removeMcpServer(id),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["mcp-servers"] });
+      void queryClient.invalidateQueries({ queryKey: mcpKeys.list() });
     },
   });
 

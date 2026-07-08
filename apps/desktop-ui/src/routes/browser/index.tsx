@@ -20,6 +20,7 @@ import {
   type WorkspaceId,
 } from "@/lib/schemas";
 import { useTranslation } from "@/lib/i18n-react";
+import { browserWindowKeys, workspaceKeys } from "@/lib/query-keys";
 
 export const Route = createFileRoute("/browser/")({
   component: BrowserPage,
@@ -47,7 +48,7 @@ function BrowserPage() {
   const [workspaceFilter, setWorkspaceFilter] = useState("");
 
   const { data: workspaces } = useQuery({
-    queryKey: ["workspaces"],
+    queryKey: workspaceKeys.list(),
     queryFn: listWorkspaces,
   });
 
@@ -58,7 +59,7 @@ function BrowserPage() {
       : null;
 
   const { data: windows, isLoading } = useQuery({
-    queryKey: ["browser-windows"],
+    queryKey: browserWindowKeys.list(),
     queryFn: listBrowserWindows,
   });
 
@@ -68,7 +69,7 @@ function BrowserPage() {
       return openBrowserWindow(workspaceId, url, title || undefined);
     },
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["browser-windows"] });
+      void queryClient.invalidateQueries({ queryKey: browserWindowKeys.list() });
       setTitle("");
     },
   });
@@ -79,7 +80,7 @@ function BrowserPage() {
       return closeBrowserWindow(workspaceId, id);
     },
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["browser-windows"] });
+      void queryClient.invalidateQueries({ queryKey: browserWindowKeys.list() });
       if (selectedId === close.variables) {
         setSelectedId("");
       }

@@ -5,6 +5,8 @@ import { Input } from "@/components/ui/input";
 import { createTerminal, executeTerminalCommand, readTerminalHistory } from "@/lib/tauri-api";
 import type { TerminalId, ThreadId } from "@/lib/schemas";
 import { useTranslation } from "@/lib/i18n-react";
+import { InlineError, PanelLoading } from "./panel-primitives";
+import { terminalKeys } from "@/lib/query-keys";
 
 interface TerminalPanelProps {
   threadId: ThreadId;
@@ -33,7 +35,7 @@ export function TerminalPanel({ threadId }: TerminalPanelProps) {
   }, [threadId]);
 
   const { data: history, isLoading: loadingHistory } = useQuery({
-    queryKey: ["terminals", terminalId, "history"],
+    queryKey: terminalKeys.history(terminalId),
     queryFn: () => readTerminalHistory(terminalId!),
     enabled: !!terminalId,
     refetchInterval: 1000,
@@ -46,7 +48,7 @@ export function TerminalPanel({ threadId }: TerminalPanelProps) {
     },
     onSuccess: () => {
       void queryClient.invalidateQueries({
-        queryKey: ["terminals", terminalId, "history"],
+        queryKey: terminalKeys.history(terminalId),
       });
       setCommand("");
     },
@@ -103,18 +105,4 @@ export function TerminalPanel({ threadId }: TerminalPanelProps) {
   );
 }
 
-function InlineError({ title, message }: { title: string; message: string }) {
-  return (
-    <div className="p-3">
-      <div className="rounded border border-red-200 bg-red-50 p-3 text-xs text-red-700 dark:border-red-900 dark:bg-red-950">
-        <p className="font-semibold">{title}</p>
-        <p>{message}</p>
-      </div>
-    </div>
-  );
-}
 
-function PanelLoading() {
-  const { t } = useTranslation();
-  return <p className="text-muted-foreground p-3 text-xs">{t("inspector.loading")}</p>;
-}

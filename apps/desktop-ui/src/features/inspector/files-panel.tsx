@@ -5,6 +5,8 @@ import { Button } from "@/components/ui/button";
 import { gitDiff, gitStatus, listWorkspaces } from "@/lib/tauri-api";
 import type { WorkspaceId } from "@/lib/schemas";
 import { useTranslation } from "@/lib/i18n-react";
+import { InlineError, PanelLoading } from "./panel-primitives";
+import { workspaceKeys } from "@/lib/query-keys";
 
 interface FilesPanelProps {
   workspaceId: WorkspaceId;
@@ -19,7 +21,7 @@ export function FilesPanel({ workspaceId }: FilesPanelProps) {
     isLoading: loadingWorkspaces,
     error: workspacesError,
   } = useQuery({
-    queryKey: ["workspaces"],
+    queryKey: workspaceKeys.list(),
     queryFn: listWorkspaces,
   });
 
@@ -35,7 +37,7 @@ export function FilesPanel({ workspaceId }: FilesPanelProps) {
     isLoading: loadingStatus,
     error: statusError,
   } = useQuery({
-    queryKey: ["workspaces", workspaceId, "git-status", repoPath],
+    queryKey: workspaceKeys.gitStatus(workspaceId, repoPath),
     queryFn: () => gitStatus(workspaceId, repoPath),
     enabled: !!repoPath,
   });
@@ -45,17 +47,17 @@ export function FilesPanel({ workspaceId }: FilesPanelProps) {
     isLoading: loadingDiff,
     error: diffError,
   } = useQuery({
-    queryKey: ["workspaces", workspaceId, "git-diff", repoPath],
+    queryKey: workspaceKeys.gitDiff(workspaceId, repoPath),
     queryFn: () => gitDiff(workspaceId, repoPath),
     enabled: !!repoPath,
   });
 
   function handleRefresh() {
     void queryClient.invalidateQueries({
-      queryKey: ["workspaces", workspaceId, "git-status"],
+      queryKey: workspaceKeys.gitStatus(workspaceId),
     });
     void queryClient.invalidateQueries({
-      queryKey: ["workspaces", workspaceId, "git-diff"],
+      queryKey: workspaceKeys.gitDiff(workspaceId),
     });
   }
 
@@ -123,18 +125,4 @@ function GitCard({
   );
 }
 
-function InlineError({ title, message }: { title: string; message: string }) {
-  return (
-    <div className="p-3">
-      <div className="rounded border border-red-200 bg-red-50 p-3 text-xs text-red-700 dark:border-red-900 dark:bg-red-950">
-        <p className="font-semibold">{title}</p>
-        <p>{message}</p>
-      </div>
-    </div>
-  );
-}
 
-function PanelLoading() {
-  const { t } = useTranslation();
-  return <p className="text-muted-foreground p-3 text-xs">{t("inspector.loading")}</p>;
-}

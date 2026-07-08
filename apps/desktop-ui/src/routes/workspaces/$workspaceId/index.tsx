@@ -21,6 +21,7 @@ import { asWorkspaceId } from "@/lib/schemas";
 import { useEffect, useMemo, useRef } from "react";
 import { useTranslation } from "@/lib/i18n-react";
 import { typography } from "@/components/ui/typography";
+import { workspaceKeys } from "@/lib/query-keys";
 import { ConversationComposer } from "@/features/agent-client/conversation-composer";
 
 export const Route = createFileRoute("/workspaces/$workspaceId/")({
@@ -35,7 +36,7 @@ function ProjectDetailPage() {
   const { t } = useTranslation();
 
   const { data: workspaces, isLoading: workspaceLoading } = useQuery({
-    queryKey: ["workspaces"],
+    queryKey: workspaceKeys.list(),
     queryFn: listWorkspaces,
   });
 
@@ -45,14 +46,14 @@ function ProjectDetailPage() {
   );
 
   const { data: threads, isLoading: threadsLoading } = useQuery({
-    queryKey: ["workspaces", workspaceId, "threads"],
+    queryKey: workspaceKeys.threads(workspaceId),
     queryFn: () => listThreads(workspaceId),
   });
 
   const create = useMutation({
     mutationFn: () => createThread(workspaceId, t("thread.defaultTitle")),
     onSuccess: (thread) => {
-      void queryClient.invalidateQueries({ queryKey: ["workspaces", workspaceId, "threads"] });
+      void queryClient.invalidateQueries({ queryKey: workspaceKeys.threads(workspaceId) });
       void navigate({
         to: "/workspaces/$workspaceId/threads/$threadId",
         params: { workspaceId, threadId: thread.id },
@@ -77,7 +78,7 @@ function ProjectDetailPage() {
   const trust = useMutation({
     mutationFn: (trusted: boolean) => trustWorkspace(workspaceId, trusted),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["workspaces"] });
+      void queryClient.invalidateQueries({ queryKey: workspaceKeys.list() });
     },
   });
   const createErrorMessage =

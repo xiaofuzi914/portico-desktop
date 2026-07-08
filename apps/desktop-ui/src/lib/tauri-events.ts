@@ -19,27 +19,67 @@ function isTauriAvailable(): boolean {
 
 type Listener = () => void;
 
-class RuntimeEventStore {
-  private events: RuntimeEvent[] = [];
+const MAX_RUN_SHARDS = 8;
+
+function eventRunId(event: RuntimeEvent): AgentRunId | undefined {
+  if (event.kind === "RunStarted") {
+    return event.data.run.id;
+  }
+  return event.data.run_id;
+}
+
+export class RuntimeEventStore {
+  private runs = new Map<AgentRunId, RuntimeEvent[]>();
+  private runAccessOrder: AgentRunId[] = [];
   private listeners = new Set<Listener>();
 
-  getEvents(): RuntimeEvent[] {
-    return this.events;
+  getEvents(runId?: AgentRunId): RuntimeEvent[] {
+    if (runId) {
+      return this.runs.get(runId) ?? [];
+    }
+    return Array.from(this.runs.values()).flat();
   }
 
   addEvent(event: RuntimeEvent): void {
-    this.events = [...this.events, event];
+    const runId = eventRunId(event);
+    if (!runId) return;
+
+    const existing = this.runs.get(runId) ?? [];
+    this.runs.set(runId, [...existing, event]);
+    this.touchRun(runId);
+    this.enforceRunLimit();
     this.emit();
   }
 
   clearEvents(): void {
-    this.events = [];
+    this.runs.clear();
+    this.runAccessOrder = [];
+    this.emit();
+  }
+
+  clearRun(runId: AgentRunId): void {
+    this.runs.delete(runId);
+    this.runAccessOrder = this.runAccessOrder.filter((id) => id !== runId);
     this.emit();
   }
 
   subscribe(listener: Listener): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
+  }
+
+  private touchRun(runId: AgentRunId): void {
+    this.runAccessOrder = this.runAccessOrder.filter((id) => id !== runId);
+    this.runAccessOrder.push(runId);
+  }
+
+  private enforceRunLimit(): void {
+    while (this.runAccessOrder.length > MAX_RUN_SHARDS) {
+      const oldest = this.runAccessOrder.shift();
+      if (oldest) {
+        this.runs.delete(oldest);
+      }
+    }
   }
 
   private emit(): void {
@@ -72,11 +112,11 @@ export async function listenToRuntimeEvents(): Promise<UnlistenFn> {
 /**
  * Select events for a specific run from the global store.
  */
-export function selectEventsForRun(events: RuntimeEvent[], runId: AgentRunId): RuntimeEvent[] {
-  return events.filter((event) => {
-    const data = event.data as Record<string, unknown> | undefined;
-    return data?.run_id === runId;
-  });
+export function selectEventsForRun(
+  events: RuntimeEvent[],
+  runId: AgentRunId,
+): RuntimeEvent[] {
+  return events.filter((event) => eventRunId(event) === runId);
 }
 
 /**
@@ -89,7 +129,7 @@ export function useRuntimeEvents(runId: AgentRunId | undefined): RuntimeEvent[] 
     if (!runId) return;
 
     const update = () => {
-      setEvents(selectEventsForRun(runtimeEventStore.getEvents(), runId));
+      setEvents(runtimeEventStore.getEvents(runId));
     };
 
     update();

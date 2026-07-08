@@ -5,17 +5,21 @@ import { cancelRun, pauseRun, resumeRun, startRun, submitMessage } from "@/lib/t
 import { useRuntimeEvents } from "@/lib/tauri-events";
 import { asAgentRunId, asThreadId, asWorkspaceId } from "@/lib/schemas";
 import type { AgentRunId, AgentRunStatus } from "@/lib/schemas";
+import { workspaceKeys, runKeys } from "@/lib/query-keys";
+import { useTranslation } from "@/lib/i18n-react";
 import { ConversationComposer } from "@/features/agent-client/conversation-composer";
 import { ConversationTimeline } from "@/features/agent-client/conversation-timeline";
 import { RunControls } from "@/features/agent-client/run-controls";
 import { ThreadHeader } from "@/features/agent-client/thread-header";
 import { updateWorkspaceRunActivity } from "@/components/app-shell/workspace-activity-store";
+import { ErrorAlert } from "@/components/ui/error-alert";
 
 export const Route = createFileRoute("/workspaces/$workspaceId/threads/$threadId/")({
   component: ThreadPage,
 });
 
 function ThreadPage() {
+  const { t } = useTranslation();
   const { workspaceId: workspaceIdParam, threadId: threadIdParam } = Route.useParams();
   const workspaceId = asWorkspaceId(workspaceIdParam);
   const threadId = asThreadId(threadIdParam);
@@ -37,7 +41,7 @@ function ThreadPage() {
     onSuccess: (run) => {
       setActiveRunId(run.id);
       setActiveRunStatus(run.status);
-      void queryClient.invalidateQueries({ queryKey: ["workspaces", workspaceId, "threads"] });
+      void queryClient.invalidateQueries({ queryKey: workspaceKeys.threads(workspaceId) });
     },
   });
 
@@ -49,7 +53,7 @@ function ThreadPage() {
     onSuccess: () => {
       if (activeRunId) {
         void queryClient.invalidateQueries({
-          queryKey: ["workspaces", workspaceId, "threads", threadId, "runs", activeRunId, "events"],
+          queryKey: runKeys.events(workspaceId, threadId, activeRunId),
         });
       }
     },
@@ -87,6 +91,8 @@ function ThreadPage() {
   const controlsIsPending =
     start.isPending || cancel.isPending || pause.isPending || resume.isPending;
 
+  const controlError = start.error ?? cancel.error ?? pause.error ?? resume.error;
+
   return (
     <div className="flex h-full flex-col overflow-hidden">
       <ThreadHeader
@@ -105,6 +111,15 @@ function ThreadPage() {
         />
 
         <div className="bg-surface/70 min-h-[var(--composer-min-height)] shrink-0 border-t px-6 py-4">
+          {controlError && (
+            <ErrorAlert
+              title={t("agent.runControlFailed")}
+              message={
+                controlError instanceof Error ? controlError.message : String(controlError)
+              }
+              className="mb-3"
+            />
+          )}
           <ConversationComposer
             runId={activeRunId}
             onSubmit={(content) => submit.mutate(content)}

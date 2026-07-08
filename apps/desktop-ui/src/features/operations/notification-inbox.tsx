@@ -15,6 +15,7 @@ import {
 } from "@/lib/schemas";
 import { formatRelativeTime } from "@/lib/formatters";
 import { useTranslation } from "@/lib/i18n-react";
+import { notificationKeys } from "@/lib/query-keys";
 
 export function NotificationInbox() {
   const queryClient = useQueryClient();
@@ -27,7 +28,7 @@ export function NotificationInbox() {
     : null;
 
   const { data: notifications, isLoading, refetch } = useQuery({
-    queryKey: ["notifications", workspaceIdFilter, unreadOnly],
+    queryKey: notificationKeys.list(workspaceIdFilter, unreadOnly),
     queryFn: () => listNotifications(workspaceIdFilter, unreadOnly),
   });
 
@@ -36,7 +37,7 @@ export function NotificationInbox() {
       markNotificationRead(asNotificationId(notification.id)),
     onSuccess: () => {
       void queryClient.invalidateQueries({
-        queryKey: ["notifications", workspaceIdFilter, unreadOnly],
+        queryKey: notificationKeys.list(workspaceIdFilter, unreadOnly),
       });
     },
   });
@@ -46,7 +47,7 @@ export function NotificationInbox() {
       dismissNotification(asNotificationId(notification.id)),
     onSuccess: () => {
       void queryClient.invalidateQueries({
-        queryKey: ["notifications", workspaceIdFilter, unreadOnly],
+        queryKey: notificationKeys.list(workspaceIdFilter, unreadOnly),
       });
     },
   });

@@ -15,6 +15,7 @@ import {
 } from "@/lib/tauri-api";
 import { asWorkspaceId, type DesktopCapture, type WorkspaceId } from "@/lib/schemas";
 import { useTranslation } from "@/lib/i18n-react";
+import { workspaceKeys } from "@/lib/query-keys";
 
 export const Route = createFileRoute("/desktop/")({
   component: DesktopPage,
@@ -30,7 +31,7 @@ function DesktopPage() {
   const [workspaceFilter, setWorkspaceFilter] = useState("");
 
   const { data: workspaces } = useQuery({
-    queryKey: ["workspaces"],
+    queryKey: workspaceKeys.list(),
     queryFn: listWorkspaces,
   });
 
