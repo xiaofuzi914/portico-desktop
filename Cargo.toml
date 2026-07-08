@@ -73,6 +73,9 @@ tauri-plugin-log = "2.3"
 # Storage
 sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "migrate", "chrono", "uuid"] }
 
+# Secrets
+keyring = { version = "3", features = ["apple-native"] }
+
 [workspace.lints.rust]
 unsafe_code = "forbid"
 

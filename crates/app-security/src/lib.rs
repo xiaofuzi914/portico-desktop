@@ -12,12 +12,14 @@ pub mod command;
 pub mod network;
 pub mod permission;
 pub mod redaction;
+pub mod secrets;
 
 pub use audit::MemoryAuditLogger;
 pub use command::DefaultCommandPolicy;
 pub use network::DefaultNetworkPolicy;
 pub use permission::PolicyPermissionEngine;
 pub use redaction::DefaultSecretRedactor;
+pub use secrets::{InMemorySecretStore, KeyringSecretStore, SecretStore};
 
 /// Decides whether a requested action is allowed by policy.
 pub trait PermissionEngine: Send + Sync {

@@ -34,6 +34,8 @@ pub struct AppState {
     pub scheduler: Arc<AutomationScheduler>,
     /// In-app browser window registry.
     pub browser_registry: BrowserWindowRegistry,
+    /// Secure keychain-backed store for provider API keys.
+    pub secret_store: Arc<dyn app_security::SecretStore>,
 }
 
 /// Run the Tauri application.
@@ -61,6 +63,9 @@ pub fn run() {
             std::fs::create_dir_all(&app_data_dir).expect("failed to create app data dir");
             let db_path = app_data_dir.join("portico.sqlite");
 
+            let secret_store: Arc<dyn app_security::SecretStore> =
+                Arc::new(app_security::KeyringSecretStore);
+
             let runtime = tauri::async_runtime::block_on(async {
                 let storage = Arc::new(SqliteStorage::open(&db_path).await?);
                 let event_bus = Arc::new(MemoryEventBus::default());
@@ -81,7 +86,7 @@ pub fn run() {
                 ))));
                 let tools = Arc::new(tools);
 
-                let executor = build_default_executor(registry.clone(), tools)
+                let executor = build_default_executor(registry.clone(), tools, secret_store.clone())
                     .await
                     .unwrap_or_else(|err| {
                         eprintln!("failed to build AutoAgents executor, falling back to mock: {err}");
@@ -119,6 +124,7 @@ pub fn run() {
                 notification_center,
                 scheduler,
                 browser_registry: commands::browser::new_registry(),
+                secret_store,
             });
 
             // Automation scheduler ticker: check for due automations every minute.
@@ -311,6 +317,8 @@ pub fn run() {
             commands::model::delete_model,
             commands::model::get_usage_summary,
             commands::model::check_budget,
+            commands::secrets::set_provider_secret,
+            commands::secrets::delete_provider_secret,
             commands::orchestrator::list_agents,
             commands::orchestrator::plan_subagents,
             commands::orchestrator::execute_subagents,

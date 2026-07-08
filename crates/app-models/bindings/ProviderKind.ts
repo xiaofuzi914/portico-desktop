@@ -3,4 +3,4 @@
 /**
  * Supported provider backends.
  */
-export type ProviderKind = "OpenAI" | "Anthropic" | "DeepSeek" | "Google" | "Groq" | "OpenRouter" | "AzureOpenAI" | "Ollama" | "Custom";
+export type ProviderKind = "OpenAI" | "Anthropic" | "Moonshot" | "DeepSeek" | "Google" | "Groq" | "OpenRouter" | "AzureOpenAI" | "Ollama" | "Custom";

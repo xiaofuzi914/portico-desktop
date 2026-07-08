@@ -14,6 +14,7 @@ pub mod notification;
 pub mod orchestrator;
 pub mod plugins;
 pub mod run;
+pub mod secrets;
 pub mod security;
 pub mod terminal;
 pub mod thread;

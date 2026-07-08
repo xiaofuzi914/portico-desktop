@@ -15,5 +15,6 @@ workspace = true
 app-models = { workspace = true }
 async-trait = { workspace = true }
 chrono = { workspace = true }
+keyring = { workspace = true }
 regex = "1"
 serde = { workspace = true }

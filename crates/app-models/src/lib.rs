@@ -400,6 +400,7 @@ impl Default for ModelId {
 pub enum ProviderKind {
     OpenAI,
     Anthropic,
+    Moonshot,
     DeepSeek,
     Google,
     Groq,
@@ -416,6 +417,7 @@ impl ProviderKind {
         match self {
             Self::OpenAI => "OpenAI",
             Self::Anthropic => "Anthropic",
+            Self::Moonshot => "Moonshot",
             Self::DeepSeek => "DeepSeek",
             Self::Google => "Google",
             Self::Groq => "Groq",
@@ -434,6 +436,7 @@ impl TryFrom<&str> for ProviderKind {
         match value {
             "OpenAI" => Ok(Self::OpenAI),
             "Anthropic" => Ok(Self::Anthropic),
+            "Moonshot" => Ok(Self::Moonshot),
             "DeepSeek" => Ok(Self::DeepSeek),
             "Google" => Ok(Self::Google),
             "Groq" => Ok(Self::Groq),
