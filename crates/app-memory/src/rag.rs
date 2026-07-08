@@ -1,4 +1,4 @@
-//! Simple in-memory RAG vector index for Phase 7.
+//! In-memory RAG vector index used as a query cache.
 
 use app_models::{AppError, RagChunk, WorkspaceId};
 
@@ -10,20 +10,41 @@ const CHUNK_OVERLAP: usize = 50;
 const EMBEDDING_DIM: usize = 64;
 
 /// A single stored document chunk with its embedding.
-#[derive(Debug, Clone)]
-struct StoredChunk {
-    id: i64,
-    document_path: String,
-    chunk_index: usize,
-    content: String,
-    workspace_id: WorkspaceId,
-    embedding: Vec<f32>,
+#[derive(Debug, Clone, PartialEq)]
+pub struct StoredChunk {
+    pub(crate) id: i64,
+    pub(crate) document_path: String,
+    pub(crate) chunk_index: usize,
+    pub(crate) content: String,
+    pub(crate) workspace_id: WorkspaceId,
+    pub(crate) embedding: Vec<f32>,
 }
 
-/// In-memory vector index for RAG retrieval.
+impl StoredChunk {
+    /// Create a new stored chunk.
+    #[must_use]
+    pub const fn new(
+        id: i64,
+        document_path: String,
+        chunk_index: usize,
+        content: String,
+        workspace_id: WorkspaceId,
+        embedding: Vec<f32>,
+    ) -> Self {
+        Self {
+            id,
+            document_path,
+            chunk_index,
+            content,
+            workspace_id,
+            embedding,
+        }
+    }
+}
+
+/// In-memory vector index for RAG retrieval, backed by `SqliteRagStore`.
 #[derive(Debug, Clone, Default)]
 pub struct RagIndex {
-    next_id: i64,
     chunks: Vec<StoredChunk>,
 }
 
@@ -31,78 +52,69 @@ impl RagIndex {
     /// Create an empty RAG index.
     #[must_use]
     pub const fn new() -> Self {
-        Self {
-            next_id: 1,
-            chunks: Vec::new(),
-        }
+        Self { chunks: Vec::new() }
     }
 
-    /// Chunk `content` and add it to the index under `workspace_id`.
+    /// Replace all chunks in the index.
+    pub fn replace_chunks(&mut self, chunks: Vec<StoredChunk>) {
+        self.chunks = chunks;
+    }
+
+    /// Append chunks to the index.
+    pub fn append_chunks(&mut self, chunks: Vec<StoredChunk>) {
+        self.chunks.extend(chunks);
+    }
+
+    /// Split `content` into overlapping text chunks.
+    #[must_use]
+    pub fn split_document(content: &str) -> Vec<String> {
+        Self::split_text(content)
+    }
+
+    /// Build stored chunks from split text and corresponding embeddings.
     ///
     /// # Errors
     ///
-    /// Returns an error if embedding fails or the document is empty.
-    pub fn add_document(
-        &mut self,
+    /// Returns an error if text and embedding counts differ.
+    pub fn build_chunks(
         workspace_id: WorkspaceId,
         path: &str,
-        content: &str,
-        embed_fn: impl Fn(&str) -> Vec<f32>,
-    ) -> Result<(), AppError> {
-        if content.is_empty() {
+        contents: Vec<String>,
+        embeddings: Vec<Vec<f32>>,
+    ) -> Result<Vec<StoredChunk>, AppError> {
+        if contents.len() != embeddings.len() {
             return Err(AppError::Internal {
-                message: "cannot index empty document".to_owned(),
+                message: format!(
+                    "chunk count {} does not match embedding count {}",
+                    contents.len(),
+                    embeddings.len()
+                ),
             });
         }
 
-        let mut chunk_index = 0usize;
-        let mut start = 0usize;
-        let chars: Vec<char> = content.chars().collect();
-
-        while start < chars.len() {
-            let end = (start + CHUNK_SIZE).min(chars.len());
-            let chunk: String = chars[start..end].iter().collect();
-            let embedding = embed_fn(&chunk);
-
-            if embedding.is_empty() {
-                return Err(AppError::Internal {
-                    message: "embedding produced empty vector".to_owned(),
-                });
-            }
-
-            self.chunks.push(StoredChunk {
-                id: self.next_id,
+        Ok(contents
+            .into_iter()
+            .zip(embeddings)
+            .enumerate()
+            .map(|(chunk_index, (content, embedding))| StoredChunk {
+                id: 0,
                 document_path: path.to_owned(),
                 chunk_index,
-                content: chunk,
+                content,
                 workspace_id,
                 embedding,
-            });
-            self.next_id += 1;
-            chunk_index += 1;
-
-            if end == chars.len() {
-                break;
-            }
-            start = end.saturating_sub(CHUNK_OVERLAP);
-            if start >= chars.len() {
-                break;
-            }
-        }
-
-        Ok(())
+            })
+            .collect())
     }
 
-    /// Search the index for chunks semantically similar to `query`.
+    /// Search the index for chunks semantically similar to `query_embedding`.
     #[must_use]
     pub fn search(
         &self,
         workspace_id: WorkspaceId,
-        query: &str,
-        embed_fn: impl Fn(&str) -> Vec<f32>,
+        query_embedding: &[f32],
         top_n: usize,
     ) -> Vec<RagChunk> {
-        let query_embedding = embed_fn(query);
         if query_embedding.is_empty() {
             return Vec::new();
         }
@@ -112,7 +124,7 @@ impl RagIndex {
             .iter()
             .filter(|chunk| chunk.workspace_id == workspace_id)
             .map(|chunk| {
-                let score = cosine_similarity(&query_embedding, &chunk.embedding);
+                let score = cosine_similarity(query_embedding, &chunk.embedding);
                 (score, chunk)
             })
             .filter(|(score, _)| score.is_finite())
@@ -131,6 +143,29 @@ impl RagIndex {
                 score,
             })
             .collect()
+    }
+
+    /// Split text into overlapping chunks.
+    fn split_text(content: &str) -> Vec<String> {
+        let mut result = Vec::new();
+        let mut start = 0usize;
+        let chars: Vec<char> = content.chars().collect();
+
+        while start < chars.len() {
+            let end = (start + CHUNK_SIZE).min(chars.len());
+            let chunk: String = chars[start..end].iter().collect();
+            result.push(chunk);
+
+            if end == chars.len() {
+                break;
+            }
+            start = end.saturating_sub(CHUNK_OVERLAP);
+            if start >= chars.len() {
+                break;
+            }
+        }
+
+        result
     }
 }
 
@@ -187,22 +222,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn add_and_search_document() {
-        let mut index = RagIndex::new();
+    fn build_chunks_splits_and_pairs_embeddings() {
         let workspace_id = WorkspaceId::new();
+        let contents = vec![
+            "Rust is a fast systems programming language.".to_owned(),
+            "It guarantees memory safety.".to_owned(),
+        ];
+        let embeddings = vec![
+            simple_hash_embedding("chunk0"),
+            simple_hash_embedding("chunk1"),
+        ];
+        let chunks = RagIndex::build_chunks(workspace_id, "/docs/readme.md", contents, embeddings).unwrap();
 
-        index
-            .add_document(
-                workspace_id,
-                "/docs/readme.md",
-                "The quick brown fox jumps over the lazy dog. Rust is a systems programming language.",
-                simple_hash_embedding,
-            )
-            .unwrap();
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].document_path, "/docs/readme.md");
+        assert_eq!(chunks[0].chunk_index, 0);
+        assert_eq!(chunks[1].chunk_index, 1);
+    }
 
-        let results = index.search(workspace_id, "fox", simple_hash_embedding, 3);
-        assert!(!results.is_empty());
-        assert!(results[0].content.to_lowercase().contains("fox"));
+    #[test]
+    fn split_document_respects_overlap() {
+        let content = "a ".repeat(600);
+        let chunks = RagIndex::split_document(&content);
+        assert!(chunks.len() >= 2);
     }
 
     #[test]
@@ -211,23 +253,35 @@ mod tests {
         let ws_a = WorkspaceId::new();
         let ws_b = WorkspaceId::new();
 
-        index
-            .add_document(ws_a, "a.md", "content about alpha", simple_hash_embedding)
-            .unwrap();
-        index
-            .add_document(ws_b, "b.md", "content about beta", simple_hash_embedding)
-            .unwrap();
+        let embedding = simple_hash_embedding("alpha beta");
+        index.replace_chunks(vec![
+            StoredChunk {
+                id: 1,
+                document_path: "a.md".to_owned(),
+                chunk_index: 0,
+                content: "content about alpha".to_owned(),
+                workspace_id: ws_a,
+                embedding: embedding.clone(),
+            },
+            StoredChunk {
+                id: 2,
+                document_path: "b.md".to_owned(),
+                chunk_index: 0,
+                content: "content about beta".to_owned(),
+                workspace_id: ws_b,
+                embedding,
+            },
+        ]);
 
-        let results = index.search(ws_a, "alpha", simple_hash_embedding, 3);
+        let query = simple_hash_embedding("alpha");
+        let results = index.search(ws_a, &query, 3);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].document_path, "a.md");
     }
 
     #[test]
-    fn empty_document_errors() {
-        let mut index = RagIndex::new();
-        let workspace_id = WorkspaceId::new();
-        let result = index.add_document(workspace_id, "empty.md", "", simple_hash_embedding);
-        assert!(matches!(result, Err(AppError::Internal { .. })));
+    fn split_document_empty_returns_empty() {
+        let chunks = RagIndex::split_document("");
+        assert!(chunks.is_empty());
     }
 }

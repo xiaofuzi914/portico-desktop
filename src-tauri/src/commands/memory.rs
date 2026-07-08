@@ -162,6 +162,33 @@ pub async fn search_rag(
     top_n: usize,
 ) -> Result<ApiResponse<Vec<RagChunk>>, String> {
     Ok(ApiResponse::ok(
-        state.runtime.context_inspector().search_rag(workspace_id, &query, top_n),
+        state
+            .runtime
+            .context_inspector()
+            .search_rag(workspace_id, &query, top_n)
+            .await,
     ))
+}
+
+/// Rebuild the RAG index for a workspace using the current embedding provider.
+///
+/// # Errors
+///
+/// Returns an error response if the rebuild fails.
+#[tauri::command]
+pub async fn rebuild_rag_index(
+    state: State<'_, AppState>,
+    workspace_id: WorkspaceId,
+) -> Result<ApiResponse<usize>, String> {
+    Ok(
+        match state
+            .runtime
+            .context_inspector()
+            .rebuild_workspace(workspace_id)
+            .await
+        {
+            Ok(count) => ApiResponse::ok(count),
+            Err(err) => ApiResponse::err(err.to_string()),
+        },
+    )
 }

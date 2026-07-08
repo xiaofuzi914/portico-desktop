@@ -19,6 +19,8 @@ serde_json = { workspace = true }
 sqlx = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
+tracing = { workspace = true }
+reqwest = { workspace = true }
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 
 [dev-dependencies]

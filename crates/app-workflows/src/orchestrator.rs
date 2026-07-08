@@ -347,7 +347,7 @@ mod tests {
         let storage = Arc::new(SqliteStorage::open_in_memory().await.expect("open db"));
         let event_bus = Arc::new(MemoryEventBus::default());
         let registry = Arc::new(SqliteModelProviderRegistry::new(storage.pool().clone()));
-        let runtime = PorticoRuntimeHandle::new(storage, event_bus, registry, None)
+        let runtime = PorticoRuntimeHandle::new(storage, event_bus, registry, None, None)
             .await
             .expect("create runtime");
         let workspace = runtime

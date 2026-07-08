@@ -13,6 +13,12 @@ pub mod task_queue;
 pub mod workspace;
 pub mod worktree;
 
+// Re-export memory/embedding abstractions used by the Tauri bridge.
+pub use app_memory::{
+    EmbeddingProvider, HashEmbeddingProvider, OllamaEmbeddingProvider, OpenAiCompatEmbeddingProvider,
+    SqliteRagStore,
+};
+
 // Re-export product types from app-models so consumers only depend on app-runtime.
 pub use app_models::{
     AgentDefinition, AgentRun, AgentRunId, AgentRunStatus, AppError, ApprovalRequest,
@@ -153,7 +159,7 @@ mod tests {
         let storage = Arc::new(SqliteStorage::open_in_memory().await.expect("open db"));
         let event_bus = Arc::new(MemoryEventBus::default());
         let registry = Arc::new(SqliteModelProviderRegistry::new(storage.pool().clone()));
-        let runtime = PorticoRuntimeHandle::new(storage, event_bus, registry, None)
+        let runtime = PorticoRuntimeHandle::new(storage, event_bus, registry, None, None)
             .await
             .expect("create runtime");
         let workspace = runtime
@@ -269,7 +275,7 @@ mod tests {
             Arc::new(app_security::DefaultNetworkPolicy::new()),
             audit.clone(),
         ));
-        let runtime = PorticoRuntimeHandle::new(storage, event_bus, registry, None)
+        let runtime = PorticoRuntimeHandle::new(storage, event_bus, registry, None, None)
             .await
             .expect("create runtime")
             .with_security(security);
@@ -319,7 +325,7 @@ mod tests {
             Arc::new(app_security::DefaultNetworkPolicy::new()),
             audit.clone(),
         ));
-        let runtime = PorticoRuntimeHandle::new(storage, event_bus, registry, None)
+        let runtime = PorticoRuntimeHandle::new(storage, event_bus, registry, None, None)
             .await
             .expect("create runtime")
             .with_security(security);
@@ -350,7 +356,7 @@ mod tests {
             Arc::new(app_security::DefaultNetworkPolicy::new()),
             Arc::new(app_security::MemoryAuditLogger::new()),
         ));
-        let runtime = PorticoRuntimeHandle::new(storage, event_bus, registry, None)
+        let runtime = PorticoRuntimeHandle::new(storage, event_bus, registry, None, None)
             .await
             .expect("create runtime")
             .with_security(security);
@@ -401,7 +407,7 @@ mod tests {
             Arc::new(app_security::DefaultNetworkPolicy::new()),
             Arc::new(app_security::MemoryAuditLogger::new()),
         ));
-        let runtime = PorticoRuntimeHandle::new(storage, event_bus, registry, None)
+        let runtime = PorticoRuntimeHandle::new(storage, event_bus, registry, None, None)
             .await
             .expect("create runtime")
             .with_security(security);
@@ -449,7 +455,7 @@ mod tests {
             Arc::new(app_security::DefaultNetworkPolicy::new()),
             Arc::new(app_security::MemoryAuditLogger::new()),
         ));
-        let runtime = PorticoRuntimeHandle::new(storage, event_bus, registry, None)
+        let runtime = PorticoRuntimeHandle::new(storage, event_bus, registry, None, None)
             .await
             .expect("create runtime")
             .with_security(security);

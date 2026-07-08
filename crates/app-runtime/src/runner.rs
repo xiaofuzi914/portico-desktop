@@ -13,7 +13,7 @@ use crate::{
     workspace::WorkspaceManager,
     worktree::WorktreeManager,
 };
-use app_memory::{MemoryManager, SqliteMemoryManager};
+use app_memory::{EmbeddingProvider, MemoryManager, SqliteMemoryManager, SqliteRagStore};
 use app_models::{
     AgentRun, AgentRunId, AgentRunStatus, AppError, ApprovalRequest, ApprovalRequestId,
     ApprovalRequestStatus, BackgroundTask, BackgroundTaskId, BackgroundTaskStatus, Notification,
@@ -68,6 +68,7 @@ impl PorticoRuntimeHandle {
         event_bus: Arc<dyn EventBus>,
         registry: Arc<dyn ModelProviderRegistry>,
         executor: Option<Arc<dyn AgentExecutor>>,
+        embedding: Option<Arc<dyn EmbeddingProvider>>,
     ) -> Result<Self, AppError> {
         let default_security = Arc::new(SecurityContext::new(
             Arc::new(app_security::PolicyPermissionEngine::default_rules()),
@@ -87,7 +88,12 @@ impl PorticoRuntimeHandle {
         ));
         let memory_manager: Arc<dyn MemoryManager> =
             Arc::new(SqliteMemoryManager::new(storage.pool().clone()));
-        let context_inspector = Arc::new(ContextInspector::new(memory_manager.clone()));
+        let rag_store = SqliteRagStore::new(storage.pool().clone());
+        let context_inspector = Arc::new(ContextInspector::new(
+            memory_manager.clone(),
+            embedding,
+            rag_store,
+        ));
 
         let plugin_registry: Arc<dyn PluginRegistry> =
             Arc::new(SqlitePluginRegistry::new(storage.pool().clone()));

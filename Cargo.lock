@@ -147,11 +147,13 @@ dependencies = [
  "app-models",
  "async-trait",
  "chrono",
+ "reqwest",
  "serde",
  "serde_json",
  "sqlx",
  "tempfile",
  "tokio",
+ "tracing",
  "uuid",
  "xxhash-rust",
 ]
@@ -3961,6 +3963,7 @@ dependencies = [
  "tauri-plugin-notification",
  "tauri-plugin-shell",
  "tokio",
+ "tracing",
  "url",
  "uuid",
 ]

@@ -21,6 +21,7 @@ use tauri_plugin_notification::NotificationExt;
 use crate::commands::browser::BrowserWindowRegistry;
 
 pub mod commands;
+pub mod embedding_setup;
 pub mod error;
 
 /// Shared application state managed by Tauri.
@@ -113,9 +114,19 @@ pub fn run() {
                 })
                 .map(|exec| Arc::new(exec) as Arc<dyn app_runtime::AgentExecutor>);
 
-                let runtime = PorticoRuntimeHandle::new(storage, event_bus, registry, executor)
-                    .await?
-                    .with_security(security.clone());
+                let embedding =
+                    embedding_setup::build_embedding_provider(registry.clone(), &secret_store)
+                        .await?;
+
+                let runtime = PorticoRuntimeHandle::new(
+                    storage,
+                    event_bus,
+                    registry,
+                    executor,
+                    Some(embedding),
+                )
+                .await?
+                .with_security(security.clone());
 
                 // Register MCP tools from configured servers so agents can call them.
                 {
@@ -399,6 +410,7 @@ pub fn run() {
             commands::memory::load_instructions,
             commands::memory::inspect_context,
             commands::memory::search_rag,
+            commands::memory::rebuild_rag_index,
             commands::plugins::install_plugin,
             commands::plugins::list_plugins,
             commands::plugins::enable_plugin,

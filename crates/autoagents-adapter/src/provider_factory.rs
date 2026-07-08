@@ -291,9 +291,8 @@ mod tests {
         let store = InMemorySecretStore::new();
         let config = test_config(ProviderKind::OpenAI, "my-openai-key", None);
 
-        let err = match build_llm_provider(&config, None, &store) {
-            Err(err) => err,
-            Ok(_) => panic!("expected provider construction to fail"),
+        let Err(err) = build_llm_provider(&config, None, &store) else {
+            panic!("expected provider construction to fail");
         };
         assert!(
             err.to_string().contains("no API key found"),
@@ -337,9 +336,8 @@ mod tests {
         let store = InMemorySecretStore::new();
         let config = test_config(ProviderKind::Custom, "sk-custom", None);
 
-        let err = match build_llm_provider(&config, None, &store) {
-            Err(err) => err,
-            Ok(_) => panic!("expected provider construction to fail"),
+        let Err(err) = build_llm_provider(&config, None, &store) else {
+            panic!("expected provider construction to fail");
         };
         assert!(
             err.to_string().contains("Custom provider requires a base_url"),
@@ -365,9 +363,8 @@ mod tests {
         let store = InMemorySecretStore::new();
 
         let google = test_config(ProviderKind::Google, "ref", None);
-        let google_err = match build_llm_provider(&google, None, &store) {
-            Err(err) => err,
-            Ok(_) => panic!("expected Google provider to be unsupported"),
+        let Err(google_err) = build_llm_provider(&google, None, &store) else {
+            panic!("expected Google provider to be unsupported");
         };
         assert!(
             google_err.to_string().contains("not supported"),
@@ -375,9 +372,8 @@ mod tests {
         );
 
         let azure = test_config(ProviderKind::AzureOpenAI, "ref", None);
-        let azure_err = match build_llm_provider(&azure, None, &store) {
-            Err(err) => err,
-            Ok(_) => panic!("expected AzureOpenAI provider to be unsupported"),
+        let Err(azure_err) = build_llm_provider(&azure, None, &store) else {
+            panic!("expected AzureOpenAI provider to be unsupported");
         };
         assert!(
             azure_err.to_string().contains("not supported"),
