@@ -1,0 +1,29 @@
+[package]
+name = "app-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "Runtime and event bus abstractions for Portico."
+
+[lints]
+workspace = true
+
+[dependencies]
+app-memory = { workspace = true }
+app-models = { workspace = true }
+app-plugins = { workspace = true }
+app-security = { workspace = true }
+app-tools = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true }
+tokio-util = "0.7"
+chrono = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sqlx = { workspace = true }
+uuid = { workspace = true }
+ts-rs = { workspace = true }
+dirs = "6"

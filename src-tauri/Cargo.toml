@@ -1,0 +1,42 @@
+[package]
+name = "portico-tauri"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "Tauri 2 backend for Portico"
+build = "build.rs"
+
+[dependencies]
+tauri = { workspace = true }
+tauri-plugin-notification = { workspace = true }
+tauri-plugin-shell = { workspace = true }
+tauri-plugin-dialog = { workspace = true }
+tauri-plugin-log = { workspace = true }
+human-panic = "2"
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+sqlx = { workspace = true }
+url = "2"
+dirs = "6"
+screenshots = "0.8"
+enigo = "0.6"
+base64 = "0.22"
+app-runtime = { workspace = true }
+app-models = { workspace = true }
+app-security = { workspace = true }
+app-tools = { workspace = true }
+app-memory = { workspace = true }
+app-workflows = { workspace = true }
+autoagents-adapter = { workspace = true }
+
+[build-dependencies]
+tauri-build = { version = "2.5", features = [] }
+
+[lints]
+workspace = true

@@ -1,0 +1,28 @@
+[package]
+name = "app-plugins"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "Plugin extension abstractions for Portico."
+
+[lints]
+workspace = true
+
+[dependencies]
+app-models = { workspace = true }
+async-trait = { workspace = true }
+chrono = { workspace = true }
+futures = { version = "0.3", default-features = false, features = ["executor"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sqlx = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

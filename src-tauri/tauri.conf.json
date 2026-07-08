@@ -1,0 +1,48 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Portico",
+  "version": "0.1.0",
+  "identifier": "ai.portico.desktop",
+  "build": {
+    "frontendDist": "../apps/desktop-ui/dist",
+    "devUrl": "http://localhost:1420",
+    "beforeDevCommand": "pnpm --filter desktop-ui dev",
+    "beforeBuildCommand": "pnpm --filter desktop-ui build"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Portico",
+        "width": 1280,
+        "height": 800,
+        "resizable": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; connect-src 'self' https:; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "dmg",
+      "app",
+      "msi",
+      "nsis",
+      "deb",
+      "rpm",
+      "appimage"
+    ],
+    "category": "DeveloperTool",
+    "shortDescription": "Local-first personal desktop agent workbench.",
+    "longDescription": "Portico is a local-first desktop agent workbench for automating software engineering tasks across your codebase, terminal, browser, and desktop."
+  },
+  "plugins": {
+    "updater": {
+      "publicKey": "dW50cnVzdGVk",
+      "endpoints": [
+        "https://updates.portico.ai/v1/{{target}}/{{arch}}/{{current_version}}"
+      ]
+    }
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "name": "portico-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Portico - Local-first personal desktop agent workbench",
+  "type": "module",
+  "scripts": {
+    "dev": "pnpm --filter desktop-ui dev",
+    "tauri": "pnpm exec tauri",
+    "tauri:dev": "pnpm exec tauri dev",
+    "build": "turbo run build",
+    "typecheck": "turbo run typecheck",
+    "lint": "turbo run lint",
+    "format": "turbo run format",
+    "test": "turbo run test"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.4.0",
+    "turbo": "^2.4.0"
+  },
+  "packageManager": "pnpm@10.6.0"
+}
