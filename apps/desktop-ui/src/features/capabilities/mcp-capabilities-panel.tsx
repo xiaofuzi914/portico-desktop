@@ -1,14 +1,23 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { listMcpServers } from "@/lib/tauri-api";
+import { Button } from "@/components/ui/button";
+import { listMcpServers, refreshMcpTools } from "@/lib/tauri-api";
 import { useTranslation } from "@/lib/i18n-react";
 import { mcpKeys } from "@/lib/query-keys";
 
 export function McpCapabilitiesPanel() {
   const { t } = useTranslation();
+  const queryClient = useQueryClient();
   const { data: mcpServers, isLoading } = useQuery({
     queryKey: mcpKeys.list(),
     queryFn: listMcpServers,
+  });
+
+  const refreshTools = useMutation({
+    mutationFn: refreshMcpTools,
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: mcpKeys.list() });
+    },
   });
 
   return (
@@ -18,9 +27,29 @@ export function McpCapabilitiesPanel() {
           <CardTitle>{t("capabilities.registeredMcpServers")}</CardTitle>
         </CardHeader>
         <CardContent>
-          <p className="text-muted-foreground mb-4 text-sm">
-            {t("capabilities.mcpReadOnly")}
-          </p>
+          <div className="mb-4 flex items-center justify-between gap-4">
+            <p className="text-muted-foreground text-sm">
+              {t("capabilities.mcpReadOnly")}
+            </p>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => refreshTools.mutate()}
+              disabled={refreshTools.isPending}
+            >
+              {refreshTools.isPending
+                ? t("capabilities.refreshingMcpTools")
+                : t("capabilities.refreshMcpTools")}
+            </Button>
+          </div>
+
+          {refreshTools.error && (
+            <p className="text-destructive mb-4 text-sm">
+              {refreshTools.error instanceof Error
+                ? refreshTools.error.message
+                : String(refreshTools.error)}
+            </p>
+          )}
 
           {isLoading ? (
             <p className="text-muted-foreground">{t("capabilities.loadingMcpServers")}</p>

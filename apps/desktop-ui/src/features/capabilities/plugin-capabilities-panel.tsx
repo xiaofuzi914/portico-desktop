@@ -10,6 +10,7 @@ import {
   installPlugin,
   listMcpServers,
   listPlugins,
+  refreshMcpTools,
   removeMcpServer,
   uninstallPlugin,
 } from "@/lib/tauri-api";
@@ -108,6 +109,7 @@ export function PluginCapabilitiesPanel() {
     },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: mcpKeys.list() });
+      void refreshMcpTools();
       setMcpConfig(defaultMcpConfig());
       setEnvKey("");
       setEnvValue("");
@@ -118,6 +120,7 @@ export function PluginCapabilitiesPanel() {
     mutationFn: (id: number) => removeMcpServer(id),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: mcpKeys.list() });
+      void refreshMcpTools();
     },
   });
 

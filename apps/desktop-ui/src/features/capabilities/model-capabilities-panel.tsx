@@ -11,6 +11,7 @@ import {
   getUsageSummary,
   listModels,
   listProviders,
+  setProviderSecret,
 } from "@/lib/tauri-api";
 import {
   asModelId,
@@ -25,6 +26,16 @@ import { modelKeys, providerKeys, usageKeys } from "@/lib/query-keys";
 import { ErrorAlert } from "@/components/ui/error-alert";
 
 const PROVIDER_KINDS: ProviderKind[] = [...providerKindSchema.options];
+
+function defaultKeyReference(kind: ProviderKind): string {
+  return `${kind.toLowerCase()}-default`;
+}
+
+function providerKindLabel(kind: ProviderKind, notRunnable: string): string {
+  if (kind === "Moonshot") return "Moonshot (Kimi)";
+  if (kind === "Google" || kind === "AzureOpenAI") return `${kind} (${notRunnable})`;
+  return kind;
+}
 
 const defaultCapabilities: ModelCapability = {
   supports_streaming: true,
@@ -48,7 +59,11 @@ export function ModelCapabilitiesPanel() {
   const [providerKind, setProviderKind] = useState<ProviderKind>("OpenAI");
   const [providerName, setProviderName] = useState("");
   const [providerBaseUrl, setProviderBaseUrl] = useState("");
-  const [providerKeyRef, setProviderKeyRef] = useState("");
+  const [providerKeyRefName, setProviderKeyRefName] = useState(() => defaultKeyReference("OpenAI"));
+  const [providerApiKey, setProviderApiKey] = useState("");
+
+  const [editingKeyProviderId, setEditingKeyProviderId] = useState<ProviderId | null>(null);
+  const [editingKeyValue, setEditingKeyValue] = useState("");
 
   const [modelName, setModelName] = useState("");
   const [modelDisplayName, setModelDisplayName] = useState("");
@@ -71,13 +86,34 @@ export function ModelCapabilitiesPanel() {
   });
 
   const createProviderMutation = useMutation({
-    mutationFn: () =>
-      createProvider(providerKind, providerName, providerBaseUrl || null, providerKeyRef),
+    mutationFn: async () => {
+      const config = await createProvider(
+        providerKind,
+        providerName,
+        providerBaseUrl || null,
+        providerKeyRefName,
+      );
+      if (providerApiKey.trim()) {
+        await setProviderSecret(providerKeyRefName, providerApiKey.trim());
+      }
+      return config;
+    },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: providerKeys.list() });
       setProviderName("");
       setProviderBaseUrl("");
-      setProviderKeyRef("");
+      setProviderKeyRefName(defaultKeyReference(providerKind));
+      setProviderApiKey("");
+    },
+  });
+
+  const updateKeyMutation = useMutation({
+    mutationFn: ({ reference, key }: { reference: string; key: string }) =>
+      setProviderSecret(reference, key),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: providerKeys.list() });
+      setEditingKeyProviderId(null);
+      setEditingKeyValue("");
     },
   });
 
@@ -115,7 +151,7 @@ export function ModelCapabilitiesPanel() {
   const selectedProvider = providers?.find((p) => p.id === selectedProviderId);
 
   const providerMutationError =
-    createProviderMutation.error ?? deleteProviderMutation.error;
+    createProviderMutation.error ?? deleteProviderMutation.error ?? updateKeyMutation.error;
   const modelMutationError = createModelMutation.error ?? deleteModelMutation.error;
 
   const updateCapability = <K extends keyof ModelCapability>(key: K, value: ModelCapability[K]) => {
@@ -130,7 +166,7 @@ export function ModelCapabilitiesPanel() {
         </CardHeader>
         <CardContent className="space-y-4">
           <form
-            className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5"
+            className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3"
             onSubmit={(e) => {
               e.preventDefault();
               createProviderMutation.mutate();
@@ -139,12 +175,16 @@ export function ModelCapabilitiesPanel() {
             <select
               className="border-input bg-background h-9 rounded-md border px-3 text-sm"
               value={providerKind}
-              onChange={(e) => setProviderKind(e.target.value as ProviderKind)}
+              onChange={(e) => {
+                const kind = e.target.value as ProviderKind;
+                setProviderKind(kind);
+                setProviderKeyRefName(defaultKeyReference(kind));
+              }}
               required
             >
               {PROVIDER_KINDS.map((kind) => (
                 <option key={kind} value={kind}>
-                  {kind}
+                  {providerKindLabel(kind, t("capabilities.notRunnable"))}
                 </option>
               ))}
             </select>
@@ -155,19 +195,38 @@ export function ModelCapabilitiesPanel() {
               required
             />
             <Input
-              placeholder={t("capabilities.baseUrlOptional")}
+              placeholder={
+                providerKind === "Moonshot"
+                  ? "https://api.moonshot.cn/v1"
+                  : t("capabilities.baseUrlOptional")
+              }
               value={providerBaseUrl}
               onChange={(e) => setProviderBaseUrl(e.target.value)}
             />
             <Input
-              placeholder={t("capabilities.apiKeyReference")}
-              value={providerKeyRef}
-              onChange={(e) => setProviderKeyRef(e.target.value)}
+              placeholder={t("capabilities.apiKeyReferenceName")}
+              value={providerKeyRefName}
+              onChange={(e) => setProviderKeyRefName(e.target.value)}
               required
+            />
+            <Input
+              type="password"
+              placeholder={
+                providerKind === "Ollama"
+                  ? t("capabilities.apiKeyOptionalOllama")
+                  : t("capabilities.apiKey")
+              }
+              value={providerApiKey}
+              onChange={(e) => setProviderApiKey(e.target.value)}
             />
             <Button type="submit" disabled={createProviderMutation.isPending}>
               {t("capabilities.addProvider")}
             </Button>
+            {providerKind === "Ollama" && (
+              <p className="text-muted-foreground col-span-full text-xs">
+                {t("capabilities.ollamaKeyHint")}
+              </p>
+            )}
           </form>
 
           {providerMutationError && (
@@ -210,14 +269,60 @@ export function ModelCapabilitiesPanel() {
                       </span>
                     </span>
                   </button>
-                  <Button
-                    variant="destructive"
-                    size="sm"
-                    onClick={() => deleteProviderMutation.mutate(asProviderId(provider.id))}
-                    disabled={deleteProviderMutation.isPending}
-                  >
-                    {t("operations.delete")}
-                  </Button>
+                  <div className="flex items-center gap-2">
+                    {editingKeyProviderId === asProviderId(provider.id) ? (
+                      <>
+                        <Input
+                          type="password"
+                          className="h-8 w-40 sm:w-48"
+                          placeholder={t("capabilities.newApiKey")}
+                          value={editingKeyValue}
+                          onChange={(e) => setEditingKeyValue(e.target.value)}
+                        />
+                        <Button
+                          size="sm"
+                          onClick={() =>
+                            updateKeyMutation.mutate({
+                              reference: provider.api_key_reference,
+                              key: editingKeyValue,
+                            })
+                          }
+                          disabled={updateKeyMutation.isPending || !editingKeyValue.trim()}
+                        >
+                          {t("common.save")}
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => {
+                            setEditingKeyProviderId(null);
+                            setEditingKeyValue("");
+                          }}
+                        >
+                          {t("common.cancel")}
+                        </Button>
+                      </>
+                    ) : (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => {
+                          setEditingKeyProviderId(asProviderId(provider.id));
+                          setEditingKeyValue("");
+                        }}
+                      >
+                        {t("capabilities.updateKey")}
+                      </Button>
+                    )}
+                    <Button
+                      variant="destructive"
+                      size="sm"
+                      onClick={() => deleteProviderMutation.mutate(asProviderId(provider.id))}
+                      disabled={deleteProviderMutation.isPending}
+                    >
+                      {t("operations.delete")}
+                    </Button>
+                  </div>
                 </li>
               ))}
             </ul>
@@ -244,7 +349,11 @@ export function ModelCapabilitiesPanel() {
             >
               <div className="grid gap-3 sm:grid-cols-3">
                 <Input
-                  placeholder={t("capabilities.modelName")}
+                  placeholder={
+                    selectedProvider?.kind === "Moonshot"
+                      ? t("capabilities.moonshotModelName")
+                      : t("capabilities.modelName")
+                  }
                   value={modelName}
                   onChange={(e) => setModelName(e.target.value)}
                   required

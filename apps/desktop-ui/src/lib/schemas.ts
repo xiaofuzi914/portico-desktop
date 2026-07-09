@@ -56,6 +56,7 @@ export function asModelId(id: string): ModelId {
 export const providerKindSchema = z.enum([
   "OpenAI",
   "Anthropic",
+  "Moonshot",
   "DeepSeek",
   "Google",
   "Groq",

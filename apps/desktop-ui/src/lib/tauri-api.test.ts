@@ -23,6 +23,7 @@ import {
   createWorktree,
   deleteAutomation,
   deleteMemory,
+  deleteProviderSecret,
   deleteWorktree,
   dismissNotification,
   enablePlugin,
@@ -60,11 +61,14 @@ import {
   planSubagents,
   previewArtifact,
   readTerminalHistory,
+  rebuildRagIndex,
+  refreshMcpTools,
   removeMcpServer,
   rollbackLastMigration,
   runAutomationNow,
   searchRag,
   sendTestNotification,
+  setProviderSecret,
   setWorkspacePaths,
   trustWorkspace,
   typeText,
@@ -981,5 +985,41 @@ describe("tauri-api phase 12 commands", () => {
     mockOk(null);
     await rollbackLastMigration();
     expect(mockInvoke).toHaveBeenCalledWith("rollback_last_migration", undefined);
+  });
+});
+
+describe("tauri-api provider secret commands", () => {
+  it("sets a provider secret", async () => {
+    mockOk(null);
+    await setProviderSecret("openai-default", "sk-secret");
+    expect(mockInvoke).toHaveBeenCalledWith("set_provider_secret", {
+      apiKeyReference: "openai-default",
+      apiKey: "sk-secret",
+    });
+  });
+
+  it("deletes a provider secret", async () => {
+    mockOk(null);
+    await deleteProviderSecret("openai-default");
+    expect(mockInvoke).toHaveBeenCalledWith("delete_provider_secret", {
+      apiKeyReference: "openai-default",
+    });
+  });
+});
+
+describe("tauri-api refresh and rebuild commands", () => {
+  it("refreshes MCP tools", async () => {
+    mockOk(null);
+    await refreshMcpTools();
+    expect(mockInvoke).toHaveBeenCalledWith("refresh_mcp_tools", undefined);
+  });
+
+  it("rebuilds the RAG index for a workspace", async () => {
+    const workspaceId = asWorkspaceId("550e8400-e29b-41d4-a716-446655440000");
+    mockOk(null);
+    await rebuildRagIndex(workspaceId);
+    expect(mockInvoke).toHaveBeenCalledWith("rebuild_rag_index", {
+      workspace_id: workspaceId,
+    });
   });
 });

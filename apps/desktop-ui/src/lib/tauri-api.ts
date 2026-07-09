@@ -301,6 +301,17 @@ export function deleteProvider(id: ProviderId): Promise<void> {
   return invokeCommand<void>("delete_provider", { id });
 }
 
+export function setProviderSecret(
+  apiKeyReference: string,
+  apiKey: string,
+): Promise<void> {
+  return invokeCommand<void>("set_provider_secret", { apiKeyReference, apiKey });
+}
+
+export function deleteProviderSecret(apiKeyReference: string): Promise<void> {
+  return invokeCommand<void>("delete_provider_secret", { apiKeyReference });
+}
+
 export function listModels(providerId?: ProviderId): Promise<ModelInfo[]> {
   return invokeCommand<ModelInfo[]>("list_models", { provider_id: providerId ?? null });
 }
@@ -427,6 +438,10 @@ export function searchRag(workspaceId: WorkspaceId, query: string, topN = 5): Pr
   });
 }
 
+export function rebuildRagIndex(workspaceId: WorkspaceId): Promise<void> {
+  return invokeCommand<void>("rebuild_rag_index", { workspace_id: workspaceId });
+}
+
 // Plugin commands
 
 export function installPlugin(manifest: PluginManifest): Promise<PluginManifest> {
@@ -488,6 +503,10 @@ export function invokeMcpTool(
     name: toolName,
     arguments: arguments_,
   });
+}
+
+export function refreshMcpTools(): Promise<void> {
+  return invokeCommand<void>("refresh_mcp_tools");
 }
 
 // Orchestrator commands

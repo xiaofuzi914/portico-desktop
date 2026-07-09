@@ -259,6 +259,7 @@ describe("schemas", () => {
     const runId = asAgentRunId("550e8400-e29b-41d4-a716-446655440002");
 
     expect(providerKindSchema.safeParse("OpenAI").success).toBe(true);
+    expect(providerKindSchema.safeParse("Moonshot").success).toBe(true);
     expect(
       retryPolicySchema.safeParse({ max_retries: 3, initial_backoff_ms: 100, max_backoff_ms: 5000 })
         .success,

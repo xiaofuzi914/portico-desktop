@@ -4,7 +4,13 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { createMemory, deleteMemory, listMemories, updateMemory } from "@/lib/tauri-api";
+import {
+  createMemory,
+  deleteMemory,
+  listMemories,
+  rebuildRagIndex,
+  updateMemory,
+} from "@/lib/tauri-api";
 import { asWorkspaceId, memoryScopeSchema, type MemoryItem, type MemoryScope } from "@/lib/schemas";
 import { useMemo, useState } from "react";
 import { useTranslation } from "@/lib/i18n-react";
@@ -58,6 +64,10 @@ function MemoryPage() {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: workspaceKeys.memories(workspaceId) });
     },
+  });
+
+  const rebuildIndex = useMutation({
+    mutationFn: () => rebuildRagIndex(workspaceId),
   });
 
   const scopeOptions = useMemo(
@@ -146,7 +156,26 @@ function MemoryPage() {
           </form>
 
           <div>
-            <h3 className="mb-2 text-lg font-semibold">{t("memory.stored")}</h3>
+            <div className="mb-2 flex items-center justify-between gap-4">
+              <h3 className="text-lg font-semibold">{t("memory.stored")}</h3>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => rebuildIndex.mutate()}
+                disabled={rebuildIndex.isPending}
+              >
+                {rebuildIndex.isPending
+                  ? t("memory.rebuildingIndex")
+                  : t("memory.rebuildIndex")}
+              </Button>
+            </div>
+            {rebuildIndex.error && (
+              <p className="text-destructive mb-3 text-sm">
+                {rebuildIndex.error instanceof Error
+                  ? rebuildIndex.error.message
+                  : String(rebuildIndex.error)}
+              </p>
+            )}
             {isLoading ? (
               <p className="text-muted-foreground">{t("memory.loading")}</p>
             ) : memories?.length ? (
