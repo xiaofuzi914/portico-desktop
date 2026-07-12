@@ -39,10 +39,9 @@ describe("plugin-asset-url", () => {
 
   it("resolve bootstrap returns absolute asset URLs unchanged (no double-join)", () => {
     const prepared = prepareProviderHtml("<html><head></head><body></body></html>", "/tmp/plugin");
-    const match = prepared.match(/window\.__PORTICO_RESOLVE__ = function \(rel\) \{[\s\S]*?\n  \};/);
+    const match = prepared.match(/window\.__PORTICO_RESOLVE__ = function \(rel\) \{[\s\S]*?\n {2}\};/);
     expect(match).toBeTruthy();
     // Evaluate bootstrap in isolation
-    // eslint-disable-next-line no-new-func
     const run = new Function(`${prepared.match(/<script>([\s\S]*?)<\/script>/)?.[1] ?? ""}; return window.__PORTICO_RESOLVE__;`);
     const resolve = run() as (rel: string) => string;
     const absolute = "asset://localhost/%2Ftmp%2Fplugin%2Fvendor%2Fengine%2F_locales%2Fen%2Fmessages.json";
