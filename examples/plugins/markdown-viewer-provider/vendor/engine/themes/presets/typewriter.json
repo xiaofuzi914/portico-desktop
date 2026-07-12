@@ -1,0 +1,23 @@
+{
+  "id": "typewriter",
+  "name": "复古打字",
+  "name_en": "Typewriter",
+  "description": "Courier New 字体，紧凑的复古打字稿风格",
+  "description_en": "Courier New with a compact retro manuscript style",
+  "author": "docu.md Markdown Viewer",
+  "version": "1.0.0",
+  "fontScheme": {
+    "body": {
+      "fontFamily": "Courier New"
+    },
+    "headings": {},
+    "code": {
+      "fontFamily": "Courier New"
+    }
+  },
+  "layoutScheme": "regular",
+  "colorScheme": "sepia",
+  "tableStyle": "grid",
+  "codeTheme": "warm-book",
+  "diagramStyle": "handDrawn"
+}

@@ -1,12 +1,12 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Input } from "@/components/ui/input";
-import { inspectContext, listWorkspaces } from "@/lib/tauri-api";
+import { inspectContext } from "@/lib/tauri-api";
 import type { AgentRunId, ThreadId, WorkspaceId } from "@/lib/schemas";
 import type { ReactNode } from "react";
 import { useTranslation } from "@/lib/i18n-react";
 import { EmptyState, InlineError, PanelLoading } from "./panel-primitives";
-import { runKeys, workspaceKeys } from "@/lib/query-keys";
+import { runKeys } from "@/lib/query-keys";
 
 interface ContextPanelProps {
   workspaceId: WorkspaceId;
@@ -19,41 +19,25 @@ export function ContextPanel({ workspaceId, threadId, runId }: ContextPanelProps
   const [query, setQuery] = useState("");
 
   const {
-    data: workspaces,
-    isLoading: loadingWorkspaces,
-    error: workspacesError,
-  } = useQuery({
-    queryKey: workspaceKeys.list(),
-    queryFn: listWorkspaces,
-  });
-
-  const workspace = useMemo(
-    () => workspaces?.find((w) => w.id === workspaceId),
-    [workspaces, workspaceId],
-  );
-
-  const {
     data: context,
     isLoading: loadingContext,
     error: contextError,
   } = useQuery({
     queryKey: runKeys.context(workspaceId, threadId, runId, query),
     queryFn: () => {
-      if (!workspace || !runId) {
-        throw new Error("Missing workspace root or run");
+      if (!runId) {
+        throw new Error("Missing run");
       }
-      return inspectContext(runId, threadId, workspaceId, workspace.root_path, query);
+      return inspectContext(runId, threadId, workspaceId, query);
     },
-    enabled: !!workspace && !!runId,
+    enabled: !!runId,
   });
 
-  if (workspacesError) {
-    return <InlineError title={t("inspector.loadWorkspaceFailed")} message={workspacesError.message} />;
-  }
-  if (loadingWorkspaces) return <PanelLoading />;
   if (!runId) return <EmptyState message={t("inspector.startRunContext")} />;
   if (contextError) {
-    return <InlineError title={t("inspector.inspectContextFailed")} message={contextError.message} />;
+    return (
+      <InlineError title={t("inspector.inspectContextFailed")} message={contextError.message} />
+    );
   }
 
   return (
@@ -67,7 +51,10 @@ export function ContextPanel({ workspaceId, threadId, runId }: ContextPanelProps
       {loadingContext && <PanelLoading />}
       {context && (
         <>
-          <MetaCard title={t("inspector.estimatedTokens")} value={String(context.estimated_tokens)} />
+          <MetaCard
+            title={t("inspector.estimatedTokens")}
+            value={String(context.estimated_tokens)}
+          />
           {context.privacy_flags.length > 0 && (
             <div className="flex flex-wrap gap-1">
               {context.privacy_flags.map((flag) => (

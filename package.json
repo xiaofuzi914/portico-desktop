@@ -1,6 +1,7 @@
 {
   "name": "portico-desktop",
   "version": "0.1.0",
+  "license": "MIT OR Apache-2.0",
   "private": true,
   "description": "Portico - Local-first personal desktop agent workbench",
   "type": "module",
@@ -8,15 +9,21 @@
     "dev": "pnpm --filter desktop-ui dev",
     "tauri": "pnpm exec tauri",
     "tauri:dev": "pnpm exec tauri dev",
+    "tauri:e2e:desktop": "bash scripts/run-desktop-e2e.sh",
+    "tauri:build:macos:local": "APPLE_SIGNING_IDENTITY=- pnpm exec tauri build --bundles dmg",
+    "tauri:verify:macos:local": "bash scripts/verify-macos-dmg.sh",
     "build": "turbo run build",
     "typecheck": "turbo run typecheck",
     "lint": "turbo run lint",
     "format": "turbo run format",
-    "test": "turbo run test"
+    "format:check": "pnpm --filter desktop-ui format:check && pnpm --filter desktop-ui exec prettier --check ../../package.json ../../e2e/desktop/run.mjs",
+    "test": "turbo run test",
+    "test:coverage": "pnpm --filter desktop-ui test:coverage"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.4.0",
-    "turbo": "^2.4.0"
+    "turbo": "^2.4.0",
+    "webdriverio": "9.27.1"
   },
   "packageManager": "pnpm@10.6.0"
 }

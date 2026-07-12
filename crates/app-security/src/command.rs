@@ -75,8 +75,7 @@ impl CommandPolicy for DefaultCommandPolicy {
             let left_cmd = window[0].first().map_or("", String::as_str);
             let right_cmd = window[1].first().map_or("", String::as_str);
 
-            if matches!(left_cmd, "curl" | "wget") && matches!(right_cmd, "sh" | "bash" | "zsh")
-            {
+            if matches!(left_cmd, "curl" | "wget") && matches!(right_cmd, "sh" | "bash" | "zsh") {
                 return PermissionResult::Denied {
                     reason: "piping curl/wget output into a shell is not allowed".to_owned(),
                 };

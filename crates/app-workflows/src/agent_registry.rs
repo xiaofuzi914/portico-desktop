@@ -95,7 +95,9 @@ impl AgentRegistry {
             BuiltInAgent::Planner => AgentDefinition {
                 name: "planner".to_owned(),
                 description: "Breaks work into ordered sub-tasks.".to_owned(),
-                system_instructions: "Create a concise plan to accomplish the user's task."
+                system_instructions: "Create a concise, executable plan grounded in the real repo \
+(read key paths first). Prefer steps that a worker can implement immediately. \
+If the user also asked for a deliverable, structure the plan so the next role can finish it."
                     .to_owned(),
                 allowed_tools: vec![
                     "filesystem.read".to_owned(),
@@ -108,7 +110,8 @@ impl AgentRegistry {
             BuiltInAgent::Worker => AgentDefinition {
                 name: "worker".to_owned(),
                 description: "Writes code and makes filesystem changes.".to_owned(),
-                system_instructions: "Implement the requested change safely and accurately."
+                system_instructions: "Result-oriented implementer: produce the concrete deliverable \
+(code, docs, PlantUML files, patches). Read the workspace, then write. Do not end with only a plan."
                     .to_owned(),
                 allowed_tools: vec![
                     "filesystem.read".to_owned(),

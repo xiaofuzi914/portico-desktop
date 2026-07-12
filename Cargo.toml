@@ -25,7 +25,7 @@ license = "MIT OR Apache-2.0"
 description = "Portico - Local-first personal desktop agent workbench"
 repository = "https://github.com/portico-ai/portico-desktop"
 authors = ["Portico Team"]
-rust-version = "1.86"
+rust-version = "1.88"
 
 [workspace.dependencies]
 # Portico product crates
@@ -38,14 +38,15 @@ app-workflows = { path = "crates/app-workflows" }
 app-plugins = { path = "crates/app-plugins" }
 autoagents-adapter = { path = "crates/autoagents-adapter" }
 
-# AutoAgents dependencies (path relative to portico-desktop -> ../AutoAgents)
-autoagents = { path = "../AutoAgents/crates/autoagents", features = ["openai", "anthropic"] }
-autoagents-core = { path = "../AutoAgents/crates/autoagents-core" }
-autoagents-llm = { path = "../AutoAgents/crates/autoagents-llm", features = ["openai", "anthropic"] }
-autoagents-protocol = { path = "../AutoAgents/crates/autoagents-protocol" }
-autoagents-derive = { path = "../AutoAgents/crates/autoagents-derive" }
-autoagents-guardrails = { path = "../AutoAgents/crates/autoagents-guardrails" }
-autoagents-toolkit = { path = "../AutoAgents/crates/autoagents-toolkit" }
+# AutoAgents is pinned to one reviewed upstream revision so clean CI/release
+# checkouts do not depend on an untracked sibling directory.
+autoagents = { git = "https://github.com/liquidos-ai/AutoAgents.git", rev = "7d4f71b2aaf4fd2de6f64af37f7ad36fb0913c7e", features = ["openai", "anthropic"] }
+autoagents-core = { git = "https://github.com/liquidos-ai/AutoAgents.git", rev = "7d4f71b2aaf4fd2de6f64af37f7ad36fb0913c7e" }
+autoagents-llm = { git = "https://github.com/liquidos-ai/AutoAgents.git", rev = "7d4f71b2aaf4fd2de6f64af37f7ad36fb0913c7e", features = ["openai", "anthropic"] }
+autoagents-protocol = { git = "https://github.com/liquidos-ai/AutoAgents.git", rev = "7d4f71b2aaf4fd2de6f64af37f7ad36fb0913c7e" }
+autoagents-derive = { git = "https://github.com/liquidos-ai/AutoAgents.git", rev = "7d4f71b2aaf4fd2de6f64af37f7ad36fb0913c7e" }
+autoagents-guardrails = { git = "https://github.com/liquidos-ai/AutoAgents.git", rev = "7d4f71b2aaf4fd2de6f64af37f7ad36fb0913c7e" }
+autoagents-toolkit = { git = "https://github.com/liquidos-ai/AutoAgents.git", rev = "7d4f71b2aaf4fd2de6f64af37f7ad36fb0913c7e" }
 
 # Core ecosystem
 tokio = { version = "1.50.0", features = ["full"] }
@@ -55,29 +56,34 @@ thiserror = "2.0.18"
 anyhow = "1.0.101"
 async-trait = "0.1.89"
 uuid = { version = "1.21.0", features = ["v4", "serde"] }
+sha2 = "0.10"
 chrono = { version = "0.4.44", features = ["serde", "clock"] }
 tracing = "0.1.44"
 tracing-subscriber = "0.3.23"
+log = "0.4"
 
 # Serialization / schema
 ts-rs = { version = "10.1", features = ["chrono-impl", "uuid-impl"] }
 schemars = "0.8.19"
 
 # Tauri
-tauri = { version = "2.5", features = [] }
+tauri = { version = "2.5", features = ["protocol-asset"] }
 tauri-plugin-shell = "2.2"
 tauri-plugin-dialog = "2.2"
 tauri-plugin-notification = "2.2"
 tauri-plugin-log = "2.3"
 
 # Storage
-sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "migrate", "chrono", "uuid"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "migrate", "macros", "derive", "chrono", "uuid"] }
 
 # HTTP client
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 
-# Secrets
+# Secrets / crypto
 keyring = { version = "3", features = ["apple-native"] }
+aes-gcm = "0.10"
+rand = "0.8"
+hex = "0.4"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

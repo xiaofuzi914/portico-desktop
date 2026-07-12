@@ -3,16 +3,8 @@ import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import {
-  dismissNotification,
-  listNotifications,
-  markNotificationRead,
-} from "@/lib/tauri-api";
-import {
-  asNotificationId,
-  asWorkspaceId,
-  type Notification,
-} from "@/lib/schemas";
+import { dismissNotification, listNotifications, markNotificationRead } from "@/lib/tauri-api";
+import { asNotificationId, asWorkspaceId, type Notification } from "@/lib/schemas";
 import { formatRelativeTime } from "@/lib/formatters";
 import { useTranslation } from "@/lib/i18n-react";
 import { notificationKeys } from "@/lib/query-keys";
@@ -23,11 +15,13 @@ export function NotificationInbox() {
   const [workspaceId, setWorkspaceId] = useState("");
   const [unreadOnly, setUnreadOnly] = useState(false);
 
-  const workspaceIdFilter = workspaceId.trim()
-    ? asWorkspaceId(workspaceId.trim())
-    : null;
+  const workspaceIdFilter = workspaceId.trim() ? asWorkspaceId(workspaceId.trim()) : null;
 
-  const { data: notifications, isLoading, refetch } = useQuery({
+  const {
+    data: notifications,
+    isLoading,
+    refetch,
+  } = useQuery({
     queryKey: notificationKeys.list(workspaceIdFilter, unreadOnly),
     queryFn: () => listNotifications(workspaceIdFilter, unreadOnly),
   });
@@ -96,12 +90,9 @@ export function NotificationInbox() {
                           </span>
                         )}
                       </div>
-                      <p className="text-muted-foreground text-sm">
-                        {notification.body}
-                      </p>
+                      <p className="text-muted-foreground text-sm">{notification.body}</p>
                       <p className="text-muted-foreground mt-1 text-xs">
-                        {notification.category} ·{" "}
-                        {formatRelativeTime(notification.created_at)}
+                        {notification.category} · {formatRelativeTime(notification.created_at)}
                       </p>
                     </div>
                     <div className="flex items-center gap-2">

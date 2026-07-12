@@ -24,9 +24,17 @@
   --color-success: oklch(0.6 0.15 150);
   --color-success-foreground: oklch(0.985 0 0);
 
+  /* Live / running activity — not derived from near-black primary */
+  --color-running: oklch(0.58 0.15 245);
+  --color-running-soft: oklch(0.96 0.03 245);
+  --color-running-mid: oklch(0.9 0.06 245);
+  --color-running-ink: oklch(0.38 0.12 250);
+
   /* Layout tokens */
   --sidebar-width: 264px;
-  --inspector-width: 360px;
+  --sidebar-width-collapsed: 56px;
+  --inspector-width: 480px;
+  --inspector-width-collapsed: 44px;
   --topbar-height: 48px;
   --composer-min-height: 168px;
 
@@ -66,10 +74,395 @@
   .agent-panel {
     @apply border-border bg-background rounded-lg border shadow-xs;
   }
+
+  .markdown-preview {
+    @apply overflow-auto leading-6;
+  }
+
+  /* break-words only on prose — never on pre/code (breaks ASCII box art) */
+  .markdown-preview p,
+  .markdown-preview li,
+  .markdown-preview td,
+  .markdown-preview th,
+  .markdown-preview blockquote {
+    @apply break-words;
+  }
+
+  .markdown-preview h1 {
+    @apply mt-0 mb-4 border-b pb-2 text-2xl font-semibold;
+  }
+
+  .markdown-preview h2 {
+    @apply mt-6 mb-3 border-b pb-1 text-xl font-semibold;
+  }
+
+  .markdown-preview h3,
+  .markdown-preview h4 {
+    @apply mt-5 mb-2 text-base font-semibold;
+  }
+
+  .markdown-preview p,
+  .markdown-preview ul,
+  .markdown-preview ol,
+  .markdown-preview blockquote,
+  .markdown-preview pre,
+  .markdown-preview table {
+    @apply my-3;
+  }
+
+  .markdown-preview ul {
+    @apply list-disc pl-6;
+  }
+
+  .markdown-preview ol {
+    @apply list-decimal pl-6;
+  }
+
+  .markdown-preview blockquote {
+    @apply text-muted-foreground border-l-4 pl-4;
+  }
+
+  .markdown-preview a {
+    @apply underline underline-offset-2;
+  }
+
+  .markdown-preview :not(pre) > code {
+    @apply bg-muted rounded px-1 py-0.5 font-mono text-[0.875em];
+  }
+
+  /*
+   * Fenced blocks: preserve column alignment for architecture ASCII art.
+   * CJK-aware mono stack + no soft wrap + no word-break.
+   */
+  .markdown-preview pre.markdown-code-block,
+  .markdown-preview pre {
+    @apply bg-muted my-3 overflow-x-auto rounded-md border p-4;
+    font-family:
+      ui-monospace, "SF Mono", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New",
+      "Noto Sans Mono CJK SC", "Sarasa Mono SC", monospace;
+    font-size: 12px;
+    line-height: 1.35;
+    tab-size: 4;
+    white-space: pre;
+    word-break: normal;
+    overflow-wrap: normal;
+  }
+
+  .markdown-preview pre code {
+    @apply block bg-transparent p-0 font-[inherit] text-[length:inherit] leading-[inherit];
+    white-space: inherit;
+    word-break: inherit;
+    overflow-wrap: inherit;
+  }
+
+  /* Dedicated surface for detected box-drawing diagrams */
+  .markdown-preview pre.markdown-ascii-diagram {
+    @apply bg-background border-border;
+    max-width: 100%;
+  }
+
+  .markdown-preview table {
+    @apply w-full border-collapse;
+  }
+
+  .markdown-preview th,
+  .markdown-preview td {
+    @apply border px-3 py-1.5 text-left;
+  }
+
+  .markdown-preview img {
+    @apply h-auto max-w-full rounded-md;
+  }
+
+  .markdown-preview input[type="checkbox"] {
+    @apply mr-1.5;
+  }
+
+  /* Math / diagram surfaces */
+  .markdown-preview .katex-display {
+    @apply my-4 overflow-x-auto;
+  }
+
+  .markdown-preview .markdown-mermaid {
+    @apply bg-background my-4 rounded-md border p-0;
+  }
+
+  /* Dense diagrams: natural SVG size + horizontal scroll (do not squash to 100%). */
+  .markdown-preview .diagram-zoom-shell.markdown-mermaid,
+  .diagram-zoom-shell.markdown-mermaid {
+    position: relative;
+    overflow: hidden;
+  }
+
+  .diagram-zoom-scroll {
+    overflow: auto;
+    max-height: min(70vh, 560px);
+    padding: 1rem;
+    text-align: center;
+  }
+
+  .diagram-zoom-scroll svg {
+    max-width: none;
+    height: auto;
+    display: inline-block;
+    vertical-align: middle;
+  }
+
+  .diagram-zoom-open-btn {
+    position: absolute;
+    top: 0.5rem;
+    right: 0.5rem;
+    z-index: 2;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    border-radius: 9999px;
+    border: 1px solid color-mix(in oklch, var(--color-running) 35%, var(--color-border));
+    background: color-mix(in oklch, white 88%, var(--color-running-soft));
+    color: var(--color-running-ink);
+    padding: 0.25rem 0.55rem;
+    font-size: 0.6875rem;
+    font-weight: 600;
+    box-shadow: 0 1px 4px color-mix(in oklch, var(--color-running) 18%, transparent);
+    opacity: 0.92;
+    cursor: pointer;
+  }
+
+  .diagram-zoom-open-btn:hover {
+    opacity: 1;
+    background: white;
+  }
+
+  .diagram-lightbox-stage svg {
+    max-width: none;
+    height: auto;
+    background: white;
+    border-radius: 8px;
+    padding: 12px;
+    box-shadow: 0 12px 40px rgb(0 0 0 / 0.25);
+  }
+
+  .markdown-preview .markdown-mermaid-loading,
+  .markdown-preview .markdown-mermaid-error {
+    @apply text-muted-foreground;
+  }
+
+  .markdown-preview pre code.hljs {
+    @apply bg-transparent p-0;
+  }
+
+  /* --- Presentation modes (view-layer only; source content unchanged) --- */
+
+  /* Full-bleed reading canvas behind the paper card (document mode) */
+  .markdown-document-stage {
+    background:
+      radial-gradient(ellipse at top, #f5f2eb 0%, #ebe6dc 55%, #e3ddd2 100%);
+  }
+
+  .markdown-document-stage-inner {
+    @apply mx-auto w-full max-w-5xl;
+  }
+
+  .markdown-preview.markdown-font-sm {
+    font-size: 0.8125rem;
+  }
+
+  .markdown-preview.markdown-font-md {
+    font-size: 0.875rem;
+  }
+
+  .markdown-preview.markdown-font-lg {
+    font-size: 1rem;
+  }
+
+  .markdown-preview.markdown-diagram-emphasis pre.markdown-ascii-diagram,
+  .markdown-preview.markdown-diagram-emphasis .markdown-mermaid {
+    @apply my-5 border-2 p-5 shadow-sm;
+  }
+
+  .markdown-preview.markdown-diagram-emphasis pre.markdown-ascii-diagram {
+    font-size: 0.8em;
+    line-height: 1.3;
+  }
+
+  /*
+   * Document mode: full-width card inside a centered max-w-5xl stage.
+   * Do not use max-w-3xl on the article itself (left-rail empty void).
+   */
+  .markdown-preview.markdown-presentation-document {
+    @apply w-full max-w-none border-0 px-10 py-12 leading-7 shadow-none;
+    box-sizing: border-box;
+  }
+
+  .markdown-preview.markdown-presentation-document.markdown-paper-theme {
+    @apply bg-[#fbf9f5] text-[#1f1c17];
+    box-shadow:
+      0 0 0 1px #e8e2d6,
+      0 16px 48px #2a241818;
+    border-radius: 0.75rem;
+  }
+
+  /* Serif only on prose — never on code / mermaid / tables of diagrams */
+  .markdown-preview.markdown-presentation-document.markdown-paper-theme
+    :is(h1, h2, h3, h4, h5, h6, p, li, blockquote) {
+    font-family:
+      "Iowan Old Style", "Palatino Linotype", Palatino, "Noto Serif SC", "Songti SC", Georgia, serif;
+  }
+
+  .markdown-preview.markdown-presentation-document.markdown-paper-theme h1,
+  .markdown-preview.markdown-presentation-document.markdown-paper-theme h2 {
+    border-color: #d8d1c6;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+  }
+
+  .markdown-preview.markdown-presentation-document.markdown-paper-theme
+    :is(pre, code, .markdown-mermaid, .markdown-code-block, table, th, td) {
+    font-family:
+      ui-monospace, "SF Mono", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New",
+      "Noto Sans Mono CJK SC", monospace;
+  }
+
+  .markdown-preview.markdown-presentation-document.markdown-paper-theme pre.markdown-code-block,
+  .markdown-preview.markdown-presentation-document.markdown-paper-theme
+    pre.markdown-ascii-diagram {
+    @apply border-[#e0d8ca] bg-[#f3f0e9];
+  }
+
+  .markdown-preview.markdown-presentation-document.markdown-paper-theme .markdown-mermaid {
+    @apply border-[#e0d8ca] bg-white;
+  }
+
+  /* Preview mode stays edge-to-edge in the dialog (no narrow card) */
+  .markdown-preview.markdown-presentation-preview {
+    @apply w-full max-w-none;
+  }
 }
 
 @layer utilities {
   .scrollbar-stable {
     scrollbar-gutter: stable;
+  }
+}
+
+/* Active turn / running task affordances
+ * Uses dedicated --color-running* tokens (sky/indigo). Primary is near-black
+ * in this theme, so mixing primary produced muddy gray UI. */
+@layer components {
+  @keyframes portico-run-shimmer {
+    0% {
+      background-position: 0% 50%;
+    }
+    100% {
+      background-position: 200% 50%;
+    }
+  }
+
+  @keyframes portico-run-dot {
+    0%,
+    100% {
+      opacity: 0.55;
+      transform: scale(0.9);
+      box-shadow: 0 0 0 0 color-mix(in oklch, var(--color-running) 45%, transparent);
+    }
+    50% {
+      opacity: 1;
+      transform: scale(1.15);
+      box-shadow: 0 0 0 4px color-mix(in oklch, var(--color-running) 0%, transparent);
+    }
+  }
+
+  .conversation-block-running {
+    border-color: color-mix(in oklch, var(--color-running) 42%, var(--color-border));
+    background-image: linear-gradient(
+      110deg,
+      var(--color-running-soft) 0%,
+      oklch(0.97 0.04 220) 35%,
+      var(--color-running-mid) 55%,
+      var(--color-running-soft) 100%
+    );
+    background-size: 220% 100%;
+    animation: portico-run-shimmer 2.6s ease-in-out infinite;
+    box-shadow:
+      0 0 0 1px color-mix(in oklch, var(--color-running) 18%, transparent),
+      0 6px 18px -10px color-mix(in oklch, var(--color-running) 35%, transparent);
+  }
+
+  .conversation-running-pill {
+    color: var(--color-running-ink);
+    background: linear-gradient(
+      180deg,
+      oklch(0.97 0.035 245),
+      oklch(0.93 0.055 245)
+    );
+    border: 1px solid color-mix(in oklch, var(--color-running) 38%, white);
+    box-shadow: 0 1px 0 color-mix(in oklch, white 70%, transparent) inset;
+  }
+
+  .conversation-running-dot {
+    display: inline-block;
+    width: 0.45rem;
+    height: 0.45rem;
+    border-radius: 9999px;
+    background: var(--color-running);
+    animation: portico-run-dot 1.15s ease-in-out infinite;
+  }
+
+  /* Dot on filled blue badge (header Running pill) */
+  .run-status-running .conversation-running-dot {
+    background: white;
+    box-shadow: 0 0 0 1px color-mix(in oklch, white 35%, transparent);
+  }
+
+  .conversation-running-banner {
+    color: var(--color-running-ink);
+    background-image: linear-gradient(
+      90deg,
+      var(--color-running-soft),
+      oklch(0.93 0.05 230),
+      oklch(0.94 0.045 260),
+      var(--color-running-soft)
+    );
+    background-size: 220% 100%;
+    animation: portico-run-shimmer 2.6s ease-in-out infinite;
+    border: 1px solid color-mix(in oklch, var(--color-running) 32%, var(--color-border));
+    box-shadow: 0 1px 0 color-mix(in oklch, white 65%, transparent) inset;
+  }
+
+  .conversation-running-inline {
+    background-image: linear-gradient(
+      90deg,
+      color-mix(in oklch, var(--color-running) 8%, transparent),
+      color-mix(in oklch, var(--color-running) 16%, transparent),
+      color-mix(in oklch, var(--color-running) 8%, transparent)
+    );
+    background-size: 220% 100%;
+    animation: portico-run-shimmer 2.6s ease-in-out infinite;
+    border-radius: 0.5rem;
+  }
+
+  .conversation-composer-active {
+    border-color: color-mix(in oklch, var(--color-running) 45%, var(--color-border));
+    box-shadow: 0 0 0 1px color-mix(in oklch, var(--color-running) 12%, transparent);
+  }
+}
+
+@media print {
+  body * {
+    visibility: hidden !important;
+  }
+
+  .markdown-print-surface,
+  .markdown-print-surface * {
+    visibility: visible !important;
+  }
+
+  .markdown-print-surface {
+    display: block !important;
+    position: fixed;
+    inset: 0;
+    overflow: visible;
+    background: white;
+    padding: 24px;
   }
 }

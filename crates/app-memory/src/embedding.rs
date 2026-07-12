@@ -80,11 +80,11 @@ impl OpenAiCompatEmbeddingProvider {
         api_key: impl Into<String>,
         dimension: usize,
     ) -> Result<Self, AppError> {
-        let client = reqwest::Client::builder()
-            .timeout(EMBEDDING_TIMEOUT)
-            .build()
-            .map_err(|e| AppError::Internal {
-                message: format!("failed to build OpenAI embedding client: {e}"),
+        let client =
+            reqwest::Client::builder().timeout(EMBEDDING_TIMEOUT).build().map_err(|e| {
+                AppError::Internal {
+                    message: format!("failed to build OpenAI embedding client: {e}"),
+                }
             })?;
 
         let id = Box::leak(id.into().into_boxed_str());
@@ -138,11 +138,10 @@ impl OpenAiCompatEmbeddingProvider {
             let embedding = item.get("embedding").ok_or_else(|| AppError::Internal {
                 message: "embedding item missing 'embedding' field".to_owned(),
             })?;
-            let vector: Vec<f32> = serde_json::from_value(embedding.clone()).map_err(|e| {
-                AppError::Internal {
+            let vector: Vec<f32> =
+                serde_json::from_value(embedding.clone()).map_err(|e| AppError::Internal {
                     message: format!("failed to parse embedding vector: {e}"),
-                }
-            })?;
+                })?;
             indexed.push((index, vector));
         }
 
@@ -173,12 +172,8 @@ impl EmbeddingProvider for OpenAiCompatEmbeddingProvider {
 
         let status = response.status();
         if !status.is_success() {
-            let text = response
-                .text()
-                .await
-                .unwrap_or_else(|_| "<unreadable>".to_owned());
             return Err(AppError::Internal {
-                message: format!("OpenAI embedding request returned {status}: {text}"),
+                message: format!("OpenAI embedding request returned {status}"),
             });
         }
 
@@ -228,11 +223,11 @@ impl OllamaEmbeddingProvider {
         model: impl Into<String>,
         dimension: usize,
     ) -> Result<Self, AppError> {
-        let client = reqwest::Client::builder()
-            .timeout(EMBEDDING_TIMEOUT)
-            .build()
-            .map_err(|e| AppError::Internal {
-                message: format!("failed to build Ollama embedding client: {e}"),
+        let client =
+            reqwest::Client::builder().timeout(EMBEDDING_TIMEOUT).build().map_err(|e| {
+                AppError::Internal {
+                    message: format!("failed to build Ollama embedding client: {e}"),
+                }
             })?;
 
         let id = Box::leak(id.into().into_boxed_str());
@@ -271,32 +266,23 @@ impl EmbeddingProvider for OllamaEmbeddingProvider {
 
         for text in texts {
             let body = self.build_request_body(text);
-            let response = self
-                .client
-                .post(&url)
-                .json(&body)
-                .send()
-                .await
-                .map_err(|e| AppError::Internal {
+            let response = self.client.post(&url).json(&body).send().await.map_err(|e| {
+                AppError::Internal {
                     message: format!("Ollama embedding request failed: {e}"),
-                })?;
+                }
+            })?;
 
             let status = response.status();
             if !status.is_success() {
-                let text_err = response
-                    .text()
-                    .await
-                    .unwrap_or_else(|_| "<unreadable>".to_owned());
                 return Err(AppError::Internal {
-                    message: format!("Ollama embedding request returned {status}: {text_err}"),
+                    message: format!("Ollama embedding request returned {status}"),
                 });
             }
 
-            let payload: OllamaEmbeddingResponse = response.json().await.map_err(|e| {
-                AppError::Internal {
+            let payload: OllamaEmbeddingResponse =
+                response.json().await.map_err(|e| AppError::Internal {
                     message: format!("failed to parse Ollama embedding response: {e}"),
-                }
-            })?;
+                })?;
 
             embeddings.push(payload.embedding);
         }
@@ -370,7 +356,10 @@ mod tests {
             1536,
         )
         .unwrap();
-        assert_eq!(provider.embeddings_url(), "https://api.openai.com/v1/embeddings");
+        assert_eq!(
+            provider.embeddings_url(),
+            "https://api.openai.com/v1/embeddings"
+        );
     }
 
     #[test]
@@ -413,6 +402,9 @@ mod tests {
             768,
         )
         .unwrap();
-        assert_eq!(provider.embeddings_url(), "http://localhost:11434/api/embeddings");
+        assert_eq!(
+            provider.embeddings_url(),
+            "http://localhost:11434/api/embeddings"
+        );
     }
 }

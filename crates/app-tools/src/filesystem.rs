@@ -194,9 +194,10 @@ impl FilesystemTool {
         }
 
         let mut entries = Vec::new();
-        let mut read_dir = tokio::fs::read_dir(&canonical).await.map_err(|e| AppError::Internal {
-            message: format!("failed to read directory {}: {e}", canonical.display()),
-        })?;
+        let mut read_dir =
+            tokio::fs::read_dir(&canonical).await.map_err(|e| AppError::Internal {
+                message: format!("failed to read directory {}: {e}", canonical.display()),
+            })?;
 
         while let Some(entry) = read_dir.next_entry().await.map_err(|e| AppError::Internal {
             message: format!("failed to read directory entry: {e}"),
@@ -235,9 +236,13 @@ impl FilesystemTool {
     ) -> Result<Vec<SearchResult>, AppError> {
         let canonical_root = self.validate_existing_path(root).await?;
 
-        let metadata = tokio::fs::metadata(&canonical_root).await.map_err(|e| AppError::Internal {
-            message: format!("failed to read metadata for {}: {e}", canonical_root.display()),
-        })?;
+        let metadata =
+            tokio::fs::metadata(&canonical_root).await.map_err(|e| AppError::Internal {
+                message: format!(
+                    "failed to read metadata for {}: {e}",
+                    canonical_root.display()
+                ),
+            })?;
         if !metadata.is_dir() {
             return Err(AppError::Internal {
                 message: format!("search root is not a directory: {root}"),
@@ -245,8 +250,14 @@ impl FilesystemTool {
         }
 
         let mut results = Vec::new();
-        self.search_recursive(&canonical_root, &canonical_root, pattern, mode, &mut results)
-            .await?;
+        self.search_recursive(
+            &canonical_root,
+            &canonical_root,
+            pattern,
+            mode,
+            &mut results,
+        )
+        .await?;
         results.truncate(SEARCH_LIMIT);
         Ok(results)
     }
@@ -256,10 +267,9 @@ impl FilesystemTool {
     }
 
     fn is_path_allowed(canonical: &Path, roots: &[PathBuf]) -> bool {
-        roots.iter().any(|root| {
-            root.canonicalize()
-                .is_ok_and(|root| canonical.starts_with(&root))
-        })
+        roots
+            .iter()
+            .any(|root| root.canonicalize().is_ok_and(|root| canonical.starts_with(&root)))
     }
 
     async fn validate_existing_path(&self, path: &str) -> Result<PathBuf, AppError> {
@@ -328,7 +338,11 @@ impl FilesystemTool {
         Ok((resolved_target, canonical_parent))
     }
 
-    fn check_write_permission(&self, workspace_id: WorkspaceId, resource: &str) -> PermissionResult {
+    fn check_write_permission(
+        &self,
+        workspace_id: WorkspaceId,
+        resource: &str,
+    ) -> PermissionResult {
         let request = PermissionRequest {
             workspace_id,
             thread_id: None,
@@ -351,7 +365,10 @@ impl FilesystemTool {
             let reason = match result {
                 PermissionResult::Allowed => unreachable!(),
                 PermissionResult::Ask { ref request } => {
-                    format!("approval required for {} on {}", request.action, request.resource)
+                    format!(
+                        "approval required for {} on {}",
+                        request.action, request.resource
+                    )
                 }
                 PermissionResult::Denied { ref reason } => reason.clone(),
             };
@@ -552,9 +569,8 @@ fn matches_glob(pattern: &str, value: &str) -> bool {
                     match chars.next() {
                         Some(c) if c == next.unwrap() => {
                             // Lookahead: ensure the rest matches.
-                            let remaining_value: String = std::iter::once(c)
-                                .chain(chars.clone())
-                                .collect();
+                            let remaining_value: String =
+                                std::iter::once(c).chain(chars.clone()).collect();
                             let remaining_pattern: String = pattern_chars.clone().collect();
                             if matches_glob(&remaining_pattern, &remaining_value) {
                                 return true;
@@ -585,8 +601,8 @@ fn matches_glob(pattern: &str, value: &str) -> bool {
 mod tests {
     use super::*;
     use app_security::{
-        DefaultCommandPolicy, DefaultNetworkPolicy, MemoryAuditLogger,
-        PermissionEngine, PermissionRequest, PermissionResult,
+        DefaultCommandPolicy, DefaultNetworkPolicy, MemoryAuditLogger, PermissionEngine,
+        PermissionRequest, PermissionResult,
     };
 
     struct AllowAllEngine;
@@ -617,16 +633,16 @@ mod tests {
     }
 
     fn test_fs(allowed_roots: Vec<PathBuf>) -> FilesystemTool {
-        FilesystemTool::new(test_security(), Arc::new(StaticRepoRootProvider { roots: Vec::new() }))
-            .with_allowed_roots(allowed_roots)
+        FilesystemTool::new(
+            test_security(),
+            Arc::new(StaticRepoRootProvider { roots: Vec::new() }),
+        )
+        .with_allowed_roots(allowed_roots)
     }
 
     #[tokio::test]
     async fn read_file_returns_content() {
-        let tmp = std::env::temp_dir().join(format!(
-            "portico-fs-read-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let tmp = std::env::temp_dir().join(format!("portico-fs-read-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&tmp).unwrap();
         let file = tmp.join("hello.txt");
         std::fs::write(&file, "world").unwrap();
@@ -641,32 +657,23 @@ mod tests {
 
     #[tokio::test]
     async fn read_file_rejects_path_outside_roots() {
-        let allowed = std::env::temp_dir().join(format!(
-            "portico-fs-allowed-{}",
-            uuid::Uuid::new_v4()
-        ));
-        let outside = std::env::temp_dir().join(format!(
-            "portico-fs-outside-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let allowed =
+            std::env::temp_dir().join(format!("portico-fs-allowed-{}", uuid::Uuid::new_v4()));
+        let outside =
+            std::env::temp_dir().join(format!("portico-fs-outside-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&allowed).unwrap();
         std::fs::create_dir_all(&outside).unwrap();
         let file = outside.join("secret.txt");
         std::fs::write(&file, "x").unwrap();
 
         let fs = test_fs(vec![allowed]);
-        let result = fs
-            .read_file(WorkspaceId::default(), &file.to_string_lossy())
-            .await;
+        let result = fs.read_file(WorkspaceId::default(), &file.to_string_lossy()).await;
         assert!(matches!(result, Err(AppError::PermissionDenied { .. })));
     }
 
     #[tokio::test]
     async fn write_file_creates_and_updates_content() {
-        let tmp = std::env::temp_dir().join(format!(
-            "portico-fs-write-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let tmp = std::env::temp_dir().join(format!("portico-fs-write-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&tmp).unwrap();
         let file = tmp.join("new.txt");
 
@@ -684,31 +691,22 @@ mod tests {
 
     #[tokio::test]
     async fn write_file_rejects_path_outside_roots() {
-        let allowed = std::env::temp_dir().join(format!(
-            "portico-fs-wallowed-{}",
-            uuid::Uuid::new_v4()
-        ));
-        let outside = std::env::temp_dir().join(format!(
-            "portico-fs-woutside-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let allowed =
+            std::env::temp_dir().join(format!("portico-fs-wallowed-{}", uuid::Uuid::new_v4()));
+        let outside =
+            std::env::temp_dir().join(format!("portico-fs-woutside-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&allowed).unwrap();
         std::fs::create_dir_all(&outside).unwrap();
         let file = outside.join("evil.txt");
 
         let fs = test_fs(vec![allowed]);
-        let result = fs
-            .write_file(WorkspaceId::default(), &file.to_string_lossy(), "x")
-            .await;
+        let result = fs.write_file(WorkspaceId::default(), &file.to_string_lossy(), "x").await;
         assert!(matches!(result, Err(AppError::PermissionDenied { .. })));
     }
 
     #[tokio::test]
     async fn edit_file_replaces_unique_string() {
-        let tmp = std::env::temp_dir().join(format!(
-            "portico-fs-edit-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let tmp = std::env::temp_dir().join(format!("portico-fs-edit-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&tmp).unwrap();
         let file = tmp.join("doc.txt");
         std::fs::write(&file, "hello world").unwrap();
@@ -727,18 +725,15 @@ mod tests {
 
     #[tokio::test]
     async fn edit_file_rejects_non_unique_old_string() {
-        let tmp = std::env::temp_dir().join(format!(
-            "portico-fs-edit-dup-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let tmp =
+            std::env::temp_dir().join(format!("portico-fs-edit-dup-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&tmp).unwrap();
         let file = tmp.join("dup.txt");
         std::fs::write(&file, "aaa aaa").unwrap();
 
         let fs = test_fs(vec![tmp.clone()]);
-        let result = fs
-            .edit_file(WorkspaceId::default(), &file.to_string_lossy(), "aaa", "b")
-            .await;
+        let result =
+            fs.edit_file(WorkspaceId::default(), &file.to_string_lossy(), "aaa", "b").await;
         assert!(matches!(result, Err(AppError::Internal { .. })));
         assert!(
             result.unwrap_err().to_string().contains("not unique"),
@@ -748,32 +743,23 @@ mod tests {
 
     #[tokio::test]
     async fn edit_file_rejects_path_outside_roots() {
-        let allowed = std::env::temp_dir().join(format!(
-            "portico-fs-eallowed-{}",
-            uuid::Uuid::new_v4()
-        ));
-        let outside = std::env::temp_dir().join(format!(
-            "portico-fs-eoutside-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let allowed =
+            std::env::temp_dir().join(format!("portico-fs-eallowed-{}", uuid::Uuid::new_v4()));
+        let outside =
+            std::env::temp_dir().join(format!("portico-fs-eoutside-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&allowed).unwrap();
         std::fs::create_dir_all(&outside).unwrap();
         let file = outside.join("x.txt");
         std::fs::write(&file, "x").unwrap();
 
         let fs = test_fs(vec![allowed]);
-        let result = fs
-            .edit_file(WorkspaceId::default(), &file.to_string_lossy(), "x", "y")
-            .await;
+        let result = fs.edit_file(WorkspaceId::default(), &file.to_string_lossy(), "x", "y").await;
         assert!(matches!(result, Err(AppError::PermissionDenied { .. })));
     }
 
     #[tokio::test]
     async fn list_dir_returns_entries() {
-        let tmp = std::env::temp_dir().join(format!(
-            "portico-fs-list-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let tmp = std::env::temp_dir().join(format!("portico-fs-list-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&tmp).unwrap();
         std::fs::write(tmp.join("a.txt"), "a").unwrap();
         std::fs::create_dir(tmp.join("sub")).unwrap();
@@ -790,14 +776,10 @@ mod tests {
 
     #[tokio::test]
     async fn list_dir_rejects_path_outside_roots() {
-        let allowed = std::env::temp_dir().join(format!(
-            "portico-fs-lallowed-{}",
-            uuid::Uuid::new_v4()
-        ));
-        let outside = std::env::temp_dir().join(format!(
-            "portico-fs-loutside-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let allowed =
+            std::env::temp_dir().join(format!("portico-fs-lallowed-{}", uuid::Uuid::new_v4()));
+        let outside =
+            std::env::temp_dir().join(format!("portico-fs-loutside-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&allowed).unwrap();
         std::fs::create_dir_all(&outside).unwrap();
 
@@ -808,10 +790,7 @@ mod tests {
 
     #[tokio::test]
     async fn search_files_finds_by_glob_and_content() {
-        let tmp = std::env::temp_dir().join(format!(
-            "portico-fs-search-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let tmp = std::env::temp_dir().join(format!("portico-fs-search-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&tmp).unwrap();
         std::fs::write(tmp.join("alpha.rs"), "fn alpha() {}").unwrap();
         std::fs::write(tmp.join("beta.txt"), "beta content").unwrap();
@@ -844,14 +823,10 @@ mod tests {
 
     #[tokio::test]
     async fn search_files_rejects_path_outside_roots() {
-        let allowed = std::env::temp_dir().join(format!(
-            "portico-fs-sallowed-{}",
-            uuid::Uuid::new_v4()
-        ));
-        let outside = std::env::temp_dir().join(format!(
-            "portico-fs-soutside-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let allowed =
+            std::env::temp_dir().join(format!("portico-fs-sallowed-{}", uuid::Uuid::new_v4()));
+        let outside =
+            std::env::temp_dir().join(format!("portico-fs-soutside-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&allowed).unwrap();
         std::fs::create_dir_all(&outside).unwrap();
 
@@ -876,10 +851,7 @@ mod tests {
             Arc::new(DefaultNetworkPolicy::new()),
             audit.clone(),
         ));
-        let tmp = std::env::temp_dir().join(format!(
-            "portico-fs-perm-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let tmp = std::env::temp_dir().join(format!("portico-fs-perm-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&tmp).unwrap();
         let file = tmp.join("denied.txt");
 
@@ -889,9 +861,7 @@ mod tests {
         )
         .with_allowed_roots(vec![tmp.clone()]);
 
-        let result = fs
-            .write_file(WorkspaceId::default(), &file.to_string_lossy(), "x")
-            .await;
+        let result = fs.write_file(WorkspaceId::default(), &file.to_string_lossy(), "x").await;
         assert!(matches!(result, Err(AppError::PermissionDenied { .. })));
 
         let events = audit.events().expect("read events");

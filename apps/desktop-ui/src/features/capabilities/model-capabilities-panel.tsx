@@ -8,27 +8,33 @@ import {
   createProvider,
   deleteModel,
   deleteProvider,
-  getUsageSummary,
+  deleteProviderSecret,
+  getActiveModel,
+  getProviderHealth,
   listModels,
   listProviders,
+  setActiveModel,
   setProviderSecret,
+  testProviderConnection,
 } from "@/lib/tauri-api";
 import {
   asModelId,
   asProviderId,
   providerKindSchema,
   type ModelCapability,
+  type ModelInfo,
   type ProviderId,
   type ProviderKind,
 } from "@/lib/schemas";
 import { useTranslation } from "@/lib/i18n-react";
-import { modelKeys, providerKeys, usageKeys } from "@/lib/query-keys";
+import { modelKeys, providerKeys } from "@/lib/query-keys";
 import { ErrorAlert } from "@/components/ui/error-alert";
+import { getProviderPreset, providerSetupMode } from "./model-provider-presets";
 
 const PROVIDER_KINDS: ProviderKind[] = [...providerKindSchema.options];
 
 function defaultKeyReference(kind: ProviderKind): string {
-  return `${kind.toLowerCase()}-default`;
+  return `${kind.toLowerCase()}-${crypto.randomUUID()}`;
 }
 
 function providerKindLabel(kind: ProviderKind, notRunnable: string): string {
@@ -56,11 +62,13 @@ export function ModelCapabilitiesPanel() {
 
   const [selectedProviderId, setSelectedProviderId] = useState<ProviderId | null>(null);
 
-  const [providerKind, setProviderKind] = useState<ProviderKind>("OpenAI");
-  const [providerName, setProviderName] = useState("");
-  const [providerBaseUrl, setProviderBaseUrl] = useState("");
-  const [providerKeyRefName, setProviderKeyRefName] = useState(() => defaultKeyReference("OpenAI"));
+  const initialPreset = getProviderPreset("DeepSeek");
+  const [providerKind, setProviderKind] = useState<ProviderKind>("DeepSeek");
+  const [providerName, setProviderName] = useState(initialPreset?.displayName ?? "");
+  const [providerBaseUrl, setProviderBaseUrl] = useState(initialPreset?.baseUrl ?? "");
+  const [providerKeyRefName, setProviderKeyRefName] = useState(defaultKeyReference("DeepSeek"));
   const [providerApiKey, setProviderApiKey] = useState("");
+  const [showAdvancedProvider, setShowAdvancedProvider] = useState(false);
 
   const [editingKeyProviderId, setEditingKeyProviderId] = useState<ProviderId | null>(null);
   const [editingKeyValue, setEditingKeyValue] = useState("");
@@ -80,9 +88,9 @@ export function ModelCapabilitiesPanel() {
     enabled: selectedProviderId !== null,
   });
 
-  const { data: usageSummary } = useQuery({
-    queryKey: usageKeys.summary(),
-    queryFn: getUsageSummary,
+  const { data: activeModel } = useQuery({
+    queryKey: ["active-model", "Global"],
+    queryFn: () => getActiveModel("Global"),
   });
 
   const createProviderMutation = useMutation({
@@ -93,17 +101,43 @@ export function ModelCapabilitiesPanel() {
         providerBaseUrl || null,
         providerKeyRefName,
       );
-      if (providerApiKey.trim()) {
-        await setProviderSecret(providerKeyRefName, providerApiKey.trim());
+      try {
+        if (providerApiKey.trim()) {
+          await setProviderSecret(providerKeyRefName, providerApiKey.trim());
+        }
+        const preset = getProviderPreset(providerKind);
+        if (preset) {
+          let defaultModel: ModelInfo | null = null;
+          for (const model of preset.models) {
+            const createdModel = await createModel(
+              config.id,
+              model.modelName,
+              model.displayName,
+              model.capabilities,
+            );
+            defaultModel ??= createdModel;
+          }
+          if (defaultModel) {
+            await testProviderConnection(config.id, defaultModel.id);
+            await setActiveModel("Global", null, null, config.id, defaultModel.id);
+          }
+        }
+      } catch (error) {
+        await Promise.allSettled([
+          deleteProvider(config.id),
+          deleteProviderSecret(providerKeyRefName),
+        ]);
+        throw error;
       }
       return config;
     },
-    onSuccess: () => {
+    onSuccess: (config) => {
       void queryClient.invalidateQueries({ queryKey: providerKeys.list() });
-      setProviderName("");
-      setProviderBaseUrl("");
-      setProviderKeyRefName(defaultKeyReference(providerKind));
+      void queryClient.invalidateQueries({ queryKey: modelKeys.list() });
+      void queryClient.invalidateQueries({ queryKey: ["active-model"] });
+      setSelectedProviderId(config.id);
       setProviderApiKey("");
+      setProviderKeyRefName(defaultKeyReference(providerKind));
     },
   });
 
@@ -134,7 +168,7 @@ export function ModelCapabilitiesPanel() {
       return createModel(selectedProviderId, modelName, modelDisplayName, capabilities);
     },
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: modelKeys.list(selectedProviderId) });
+      void queryClient.invalidateQueries({ queryKey: modelKeys.list() });
       setModelName("");
       setModelDisplayName("");
       setCapabilities(defaultCapabilities);
@@ -144,7 +178,25 @@ export function ModelCapabilitiesPanel() {
   const deleteModelMutation = useMutation({
     mutationFn: (id: string) => deleteModel(asModelId(id)),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: modelKeys.list(selectedProviderId) });
+      void queryClient.invalidateQueries({ queryKey: modelKeys.list() });
+    },
+  });
+
+  const setActiveModelMutation = useMutation({
+    mutationFn: ({ providerId, modelId }: { providerId: ProviderId; modelId: ModelInfo["id"] }) =>
+      setActiveModel("Global", null, null, providerId, modelId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["active-model"] });
+    },
+  });
+
+  const testConnectionMutation = useMutation({
+    mutationFn: ({ providerId, modelId }: { providerId: ProviderId; modelId: ModelInfo["id"] }) =>
+      testProviderConnection(providerId, modelId),
+    onSuccess: (health) => {
+      void queryClient.invalidateQueries({
+        queryKey: ["provider-health", health.provider_id, health.model_id],
+      });
     },
   });
 
@@ -152,7 +204,11 @@ export function ModelCapabilitiesPanel() {
 
   const providerMutationError =
     createProviderMutation.error ?? deleteProviderMutation.error ?? updateKeyMutation.error;
-  const modelMutationError = createModelMutation.error ?? deleteModelMutation.error;
+  const modelMutationError =
+    createModelMutation.error ??
+    deleteModelMutation.error ??
+    setActiveModelMutation.error ??
+    testConnectionMutation.error;
 
   const updateCapability = <K extends keyof ModelCapability>(key: K, value: ModelCapability[K]) => {
     setCapabilities((prev) => ({ ...prev, [key]: value }));
@@ -166,6 +222,7 @@ export function ModelCapabilitiesPanel() {
         </CardHeader>
         <CardContent className="space-y-4">
           <form
+            data-testid="provider-form"
             className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3"
             onSubmit={(e) => {
               e.preventDefault();
@@ -173,12 +230,17 @@ export function ModelCapabilitiesPanel() {
             }}
           >
             <select
+              data-testid="provider-kind"
               className="border-input bg-background h-9 rounded-md border px-3 text-sm"
               value={providerKind}
               onChange={(e) => {
                 const kind = e.target.value as ProviderKind;
+                const preset = getProviderPreset(kind);
                 setProviderKind(kind);
+                setProviderName(preset?.displayName ?? "");
+                setProviderBaseUrl(preset?.baseUrl ?? "");
                 setProviderKeyRefName(defaultKeyReference(kind));
+                setShowAdvancedProvider(providerSetupMode(kind) === "custom");
               }}
               required
             >
@@ -189,27 +251,7 @@ export function ModelCapabilitiesPanel() {
               ))}
             </select>
             <Input
-              placeholder={t("capabilities.displayName")}
-              value={providerName}
-              onChange={(e) => setProviderName(e.target.value)}
-              required
-            />
-            <Input
-              placeholder={
-                providerKind === "Moonshot"
-                  ? "https://api.moonshot.cn/v1"
-                  : t("capabilities.baseUrlOptional")
-              }
-              value={providerBaseUrl}
-              onChange={(e) => setProviderBaseUrl(e.target.value)}
-            />
-            <Input
-              placeholder={t("capabilities.apiKeyReferenceName")}
-              value={providerKeyRefName}
-              onChange={(e) => setProviderKeyRefName(e.target.value)}
-              required
-            />
-            <Input
+              data-testid="provider-api-key"
               type="password"
               placeholder={
                 providerKind === "Ollama"
@@ -218,10 +260,56 @@ export function ModelCapabilitiesPanel() {
               }
               value={providerApiKey}
               onChange={(e) => setProviderApiKey(e.target.value)}
+              required={getProviderPreset(providerKind)?.apiKeyRequired ?? true}
             />
-            <Button type="submit" disabled={createProviderMutation.isPending}>
-              {t("capabilities.addProvider")}
+            <Button
+              type="submit"
+              data-testid="add-provider"
+              disabled={createProviderMutation.isPending}
+            >
+              {t("capabilities.addAndConfigure")}
             </Button>
+            <div className="col-span-full">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => setShowAdvancedProvider((visible) => !visible)}
+              >
+                {showAdvancedProvider
+                  ? t("capabilities.hideAdvanced")
+                  : t("capabilities.advancedSettings")}
+              </Button>
+            </div>
+            {showAdvancedProvider && (
+              <div className="col-span-full grid gap-3 sm:grid-cols-3">
+                <Input
+                  data-testid="provider-name"
+                  placeholder={t("capabilities.displayName")}
+                  value={providerName}
+                  onChange={(e) => setProviderName(e.target.value)}
+                  required
+                />
+                <Input
+                  data-testid="provider-base-url"
+                  placeholder={t("capabilities.baseUrlOptional")}
+                  value={providerBaseUrl}
+                  onChange={(e) => setProviderBaseUrl(e.target.value)}
+                />
+                <Input
+                  data-testid="provider-key-reference"
+                  placeholder={t("capabilities.apiKeyReferenceName")}
+                  value={providerKeyRefName}
+                  onChange={(e) => setProviderKeyRefName(e.target.value)}
+                  required
+                />
+              </div>
+            )}
+            {getProviderPreset(providerKind) && (
+              <p className="text-muted-foreground col-span-full text-xs">
+                {t("capabilities.presetHint")}
+              </p>
+            )}
             {providerKind === "Ollama" && (
               <p className="text-muted-foreground col-span-full text-xs">
                 {t("capabilities.ollamaKeyHint")}
@@ -243,7 +331,7 @@ export function ModelCapabilitiesPanel() {
           {providersLoading ? (
             <p className="text-muted-foreground">{t("capabilities.loadingProviders")}</p>
           ) : providers?.length ? (
-            <ul className="divide-y">
+            <ul className="divide-y" data-testid="provider-list">
               {providers.map((provider) => (
                 <li
                   key={provider.id}
@@ -442,40 +530,29 @@ export function ModelCapabilitiesPanel() {
             ) : models?.length ? (
               <ul className="divide-y">
                 {models.map((model) => (
-                  <li key={model.id} className="flex items-center justify-between py-3">
-                    <div>
-                      <span className="font-medium">{model.display_name}</span>
-                      <span className="text-muted-foreground ml-2 text-sm">{model.model_name}</span>
-                      <div className="text-muted-foreground mt-1 flex flex-wrap gap-2 text-xs">
-                        {model.capabilities.supports_tools && <span>{t("capability.tools")}</span>}
-                        {model.capabilities.supports_streaming && (
-                          <span>{t("capability.streaming")}</span>
-                        )}
-                        {model.capabilities.supports_vision && (
-                          <span>{t("capability.vision")}</span>
-                        )}
-                        {model.capabilities.supports_json_schema && (
-                          <span>{t("capability.jsonSchema")}</span>
-                        )}
-                        {model.capabilities.supports_embeddings && (
-                          <span>{t("capability.embeddings")}</span>
-                        )}
-                        {model.capabilities.max_context_tokens !== null && (
-                          <span>
-                            {model.capabilities.max_context_tokens.toLocaleString()} tokens
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                    <Button
-                      variant="destructive"
-                      size="sm"
-                      onClick={() => deleteModelMutation.mutate(model.id)}
-                      disabled={deleteModelMutation.isPending}
-                    >
-                      {t("operations.delete")}
-                    </Button>
-                  </li>
+                  <ModelListItem
+                    key={model.id}
+                    model={model}
+                    active={activeModel?.model_id === model.id}
+                    onSetActive={() =>
+                      setActiveModelMutation.mutate({
+                        providerId: model.provider_id,
+                        modelId: model.id,
+                      })
+                    }
+                    onTest={() =>
+                      testConnectionMutation.mutate({
+                        providerId: model.provider_id,
+                        modelId: model.id,
+                      })
+                    }
+                    onDelete={() => deleteModelMutation.mutate(model.id)}
+                    busy={
+                      deleteModelMutation.isPending ||
+                      setActiveModelMutation.isPending ||
+                      testConnectionMutation.isPending
+                    }
+                  />
                 ))}
               </ul>
             ) : (
@@ -484,31 +561,72 @@ export function ModelCapabilitiesPanel() {
           </CardContent>
         </Card>
       )}
-
-      {usageSummary && (
-        <Card>
-          <CardHeader>
-            <CardTitle>{t("capabilities.usageBudget")}</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <p className="text-sm">
-              {t("capabilities.today")}{" "}
-              <span className="font-medium">${usageSummary.daily_usage_usd.toFixed(4)}</span>{" "}
-              /{" "}
-              <span className="font-medium">
-                ${usageSummary.daily_budget_usd?.toFixed(2) ?? t("capabilities.unlimited")}
-              </span>{" "}
-              {t("capabilities.daily")}
-            </p>
-            <p className="text-muted-foreground text-sm">
-              {t("capabilities.perRunBudget")}{" "}
-              <span className="font-medium">
-                ${usageSummary.per_run_budget_usd?.toFixed(2) ?? t("capabilities.unlimited")}
-              </span>
-            </p>
-          </CardContent>
-        </Card>
-      )}
     </div>
+  );
+}
+
+function ModelListItem({
+  model,
+  active,
+  onSetActive,
+  onTest,
+  onDelete,
+  busy,
+}: {
+  model: ModelInfo;
+  active: boolean;
+  onSetActive: () => void;
+  onTest: () => void;
+  onDelete: () => void;
+  busy: boolean;
+}) {
+  const { t } = useTranslation();
+  const { data: health } = useQuery({
+    queryKey: ["provider-health", model.provider_id, model.id],
+    queryFn: () => getProviderHealth(model.provider_id, model.id),
+  });
+
+  return (
+    <li className="flex items-center justify-between gap-3 py-3">
+      <div className="min-w-0">
+        <span className="font-medium">{model.display_name}</span>
+        <span className="text-muted-foreground ml-2 text-sm">{model.model_name}</span>
+        {active && (
+          <span className="bg-success/15 text-success ml-2 rounded px-1.5 py-0.5 text-xs">
+            {t("capabilities.activeModel")}
+          </span>
+        )}
+        <div className="text-muted-foreground mt-1 flex flex-wrap gap-2 text-xs">
+          {model.capabilities.supports_tools && <span>{t("capability.tools")}</span>}
+          {model.capabilities.supports_streaming && <span>{t("capability.streaming")}</span>}
+          {model.capabilities.supports_vision && <span>{t("capability.vision")}</span>}
+          {model.capabilities.supports_json_schema && <span>{t("capability.jsonSchema")}</span>}
+          {model.capabilities.supports_embeddings && <span>{t("capability.embeddings")}</span>}
+          {model.capabilities.max_context_tokens !== null && (
+            <span>{model.capabilities.max_context_tokens.toLocaleString()} tokens</span>
+          )}
+          {health && (
+            <span className={health.status === "Ready" ? "text-success" : "text-warning"}>
+              {t("capabilities.health")}: {health.status}
+            </span>
+          )}
+        </div>
+      </div>
+      <div className="flex shrink-0 items-center gap-2">
+        <Button size="sm" variant="outline" onClick={onTest} disabled={busy}>
+          {t("capabilities.testConnection")}
+        </Button>
+        <Button
+          size="sm"
+          onClick={onSetActive}
+          disabled={busy || active || health?.status !== "Ready"}
+        >
+          {t("capabilities.useModel")}
+        </Button>
+        <Button variant="destructive" size="sm" onClick={onDelete} disabled={busy || active}>
+          {t("operations.delete")}
+        </Button>
+      </div>
+    </li>
   );
 }

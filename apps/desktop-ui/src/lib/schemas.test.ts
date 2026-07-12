@@ -424,11 +424,30 @@ describe("schemas", () => {
         description: "A test plugin",
         skills: ["greet"],
         tools: ["read_file"],
+        entrypoint: "dist/index.html",
+        capabilities: ["markdown.preview", "markdown.export.html"],
+        install_path: "/tmp/portico/plugins/test-plugin",
         permissions: { network: [], filesystem: "none" },
         enabled: true,
         installed_at: "2026-01-01T00:00:00.000Z",
       }).success,
     ).toBe(true);
+
+    expect(
+      pluginManifestSchema.safeParse({
+        id: pluginId,
+        name: "bad-plugin",
+        version: "1.0.0",
+        display_name: "Bad Plugin",
+        description: "",
+        skills: [],
+        tools: [],
+        capabilities: ["markdown.execute"],
+        permissions: { network: [], filesystem: "none" },
+        enabled: true,
+        installed_at: "2026-01-01T00:00:00.000Z",
+      }).success,
+    ).toBe(false);
 
     expect(
       skillSchema.safeParse({

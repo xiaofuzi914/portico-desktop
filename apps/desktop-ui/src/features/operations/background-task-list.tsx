@@ -4,11 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { cancelBackgroundTask, listBackgroundTasks } from "@/lib/tauri-api";
-import {
-  asBackgroundTaskId,
-  asWorkspaceId,
-  type BackgroundTask,
-} from "@/lib/schemas";
+import { asBackgroundTaskId, asWorkspaceId, type BackgroundTask } from "@/lib/schemas";
 import { formatRelativeTime } from "@/lib/formatters";
 import { useTranslation } from "@/lib/i18n-react";
 import { backgroundTaskKeys } from "@/lib/query-keys";
@@ -18,18 +14,19 @@ export function BackgroundTaskList() {
   const { t } = useTranslation();
   const [workspaceId, setWorkspaceId] = useState("");
 
-  const workspaceIdFilter = workspaceId.trim()
-    ? asWorkspaceId(workspaceId.trim())
-    : null;
+  const workspaceIdFilter = workspaceId.trim() ? asWorkspaceId(workspaceId.trim()) : null;
 
-  const { data: tasks, isLoading, refetch } = useQuery({
+  const {
+    data: tasks,
+    isLoading,
+    refetch,
+  } = useQuery({
     queryKey: backgroundTaskKeys.list(workspaceIdFilter),
     queryFn: () => listBackgroundTasks(workspaceIdFilter),
   });
 
   const cancel = useMutation({
-    mutationFn: (task: BackgroundTask) =>
-      cancelBackgroundTask(asBackgroundTaskId(task.id)),
+    mutationFn: (task: BackgroundTask) => cancelBackgroundTask(asBackgroundTaskId(task.id)),
     onSuccess: () => {
       void queryClient.invalidateQueries({
         queryKey: backgroundTaskKeys.list(workspaceIdFilter),
@@ -130,9 +127,7 @@ function StatusBadge({ status }: { status: BackgroundTask["status"] }) {
     Cancelled: "bg-gray-100 text-gray-800",
   };
   return (
-    <span
-      className={`rounded-full px-2 py-0.5 text-xs font-medium ${styles[status]}`}
-    >
+    <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${styles[status]}`}>
       {status}
     </span>
   );

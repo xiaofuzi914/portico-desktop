@@ -44,12 +44,9 @@ describe("sidebar project model", () => {
 
     expect(items).toHaveLength(5);
     expect(items[0]?.kind).toBe("overview");
-    expect(items.slice(1).map((item) => (item.kind === "workspace" ? item.workspace.name : ""))).toEqual([
-      "Current",
-      "Beta",
-      "Delta",
-      "Echo",
-    ]);
+    expect(
+      items.slice(1).map((item) => (item.kind === "workspace" ? item.workspace.name : "")),
+    ).toEqual(["Current", "Beta", "Delta", "Echo"]);
   });
 
   it("prefers explicit last-used timestamps before workspace update times", () => {
@@ -59,9 +56,7 @@ describe("sidebar project model", () => {
         workspace("b", "Beta", "2026-07-07T00:00:00.000Z"),
       ],
       {
-        lastUsedAtByWorkspaceId: new Map([
-          ["b", "2026-07-09T00:00:00.000Z"],
-        ]),
+        lastUsedAtByWorkspaceId: new Map([["b", "2026-07-09T00:00:00.000Z"]]),
       },
     );
 

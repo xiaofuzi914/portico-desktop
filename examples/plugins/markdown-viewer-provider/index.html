@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- Written/overwritten at package time from upstream package.json version -->
+    <meta name="portico-plugin-version" content="5.2.0" />
+    <title>Markdown Viewer · markdown-viewer-extension</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main id="document" class="doc-surface" aria-live="polite">
+      <p class="doc-placeholder" id="status">就绪…</p>
+    </main>
+    <!--
+      Portico bridge (stable across upstream upgrades):
+        provider.js + chrome-shim.js + styles.css + vendor/fallback
+      Optional upstream engine lives under vendor/engine (versioned).
+      Host inlines provider.js into srcdoc.
+    -->
+    <script src="provider.js"></script>
+  </body>
+</html>

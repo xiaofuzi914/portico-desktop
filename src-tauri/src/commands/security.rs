@@ -1,23 +1,11 @@
 //! Security-related Tauri commands.
 
-use app_models::{AgentRunId, ApprovalRequestId, ThreadId, WorkspaceId};
+use app_models::{AgentRunId, ApprovalRequest, ApprovalRequestId, ThreadId, WorkspaceId};
 use app_runtime::AuditLogEntry;
-use app_security::PermissionRequest;
 use tauri::State;
 
 use crate::AppState;
 use crate::error::ApiResponse;
-
-/// Evaluate a permission request against the runtime's permission engine.
-#[tauri::command]
-#[must_use]
-#[allow(clippy::needless_pass_by_value)]
-pub fn evaluate_permission(
-    state: State<'_, AppState>,
-    request: PermissionRequest,
-) -> ApiResponse<app_security::PermissionResult> {
-    ApiResponse::ok(state.runtime.evaluate_permission(request))
-}
 
 /// List audit log entries with optional filters.
 ///
@@ -35,6 +23,25 @@ pub async fn list_audit_log(
     Ok(
         match state.runtime.list_audit_log(workspace_id, thread_id, run_id).await {
             Ok(entries) => ApiResponse::ok(entries),
+            Err(err) => ApiResponse::err(err.to_string()),
+        },
+    )
+}
+
+/// List durable pending approvals, optionally filtered to one run.
+///
+/// # Errors
+///
+/// Returns a string error response if approvals cannot be read.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+pub async fn list_pending_approvals(
+    state: State<'_, AppState>,
+    run_id: Option<AgentRunId>,
+) -> Result<ApiResponse<Vec<ApprovalRequest>>, String> {
+    Ok(
+        match state.runtime.list_pending_approval_requests(run_id).await {
+            Ok(approvals) => ApiResponse::ok(approvals),
             Err(err) => ApiResponse::err(err.to_string()),
         },
     )

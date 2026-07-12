@@ -1,0 +1,15 @@
+{
+  "id": "3e76cc57-3911-4e61-8baa-4b354f32d7d1",
+  "name": "markdown-rich-provider",
+  "version": "1.0.0",
+  "display_name": "Markdown Rich Provider",
+  "description": "Reference sandboxed Markdown preview and HTML export provider.",
+  "skills": [],
+  "tools": [],
+  "entrypoint": "index.html",
+  "capabilities": ["markdown.preview", "markdown.export.html"],
+  "install_path": null,
+  "permissions": { "network": [], "filesystem": "none" },
+  "enabled": true,
+  "installed_at": "2026-07-11T00:00:00Z"
+}

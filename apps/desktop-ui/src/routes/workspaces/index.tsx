@@ -44,7 +44,7 @@ function WorkspacesPage() {
       });
       const rootPath = normalizeDirectorySelection(selection);
       if (!rootPath) return null;
-      return createWorkspace(deriveProjectNameFromPath(rootPath), rootPath, false);
+      return createWorkspace(deriveProjectNameFromPath(rootPath), rootPath);
     },
     onSuccess: (workspace) => {
       void queryClient.invalidateQueries({ queryKey: workspaceKeys.list() });
@@ -155,7 +155,7 @@ export function ProjectOverview({ workspaces }: ProjectOverviewProps) {
 
 function ProjectFact({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div className="min-w-0 rounded-md bg-muted/40 px-3 py-2">
+    <div className="bg-muted/40 min-w-0 rounded-md px-3 py-2">
       <p className={typography.metadata}>{label}</p>
       <p className="mt-1 truncate text-sm font-medium">{children}</p>
     </div>
@@ -228,7 +228,7 @@ function NewProjectForm() {
   const [pathPickerError, setPathPickerError] = useState<string | null>(null);
 
   const create = useMutation({
-    mutationFn: () => createWorkspace(name, rootPath || ".", false),
+    mutationFn: () => createWorkspace(name, rootPath),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: workspaceKeys.list() });
       setName("");
@@ -294,7 +294,16 @@ function NewProjectForm() {
           </div>
           {pathPickerError && <p className="text-destructive text-xs">{pathPickerError}</p>}
         </div>
-        <Button type="submit" disabled={create.isPending} className="w-full">
+        {create.error && (
+          <p className="text-destructive text-xs" role="alert">
+            {create.error instanceof Error ? create.error.message : String(create.error)}
+          </p>
+        )}
+        <Button
+          type="submit"
+          disabled={create.isPending || !rootPath || !name.trim()}
+          className="w-full"
+        >
           <Plus className="h-4 w-4" />
           {t("projects.newProject")}
         </Button>

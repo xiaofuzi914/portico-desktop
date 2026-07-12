@@ -19,7 +19,10 @@ pub use command::DefaultCommandPolicy;
 pub use network::DefaultNetworkPolicy;
 pub use permission::PolicyPermissionEngine;
 pub use redaction::DefaultSecretRedactor;
-pub use secrets::{InMemorySecretStore, KeyringSecretStore, SecretStore};
+pub use secrets::{
+    CachingSecretStore, InMemorySecretStore, KeyringSecretStore, LayeredSecretStore,
+    LocalEncryptedSecretStore, SecretStore, open_production_secret_store,
+};
 
 /// Decides whether a requested action is allowed by policy.
 pub trait PermissionEngine: Send + Sync {

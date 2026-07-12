@@ -1,0 +1,22 @@
+{
+  "id": "century",
+  "name": "演示文稿",
+  "name_en": "Presentation",
+  "description": "Century Gothic 字体，大字号展示布局，适合提纲和演示材料",
+  "description_en": "Century Gothic with display-scale layout for outlines and presentation materials",
+  "author": "docu.md Markdown Viewer",
+  "version": "1.0.0",
+  "fontScheme": {
+    "body": {
+      "fontFamily": "Century Gothic"
+    },
+    "headings": {},
+    "code": {
+      "fontFamily": "Monaco"
+    }
+  },
+  "layoutScheme": "display",
+  "colorScheme": "neutral",
+  "tableStyle": "compact",
+  "codeTheme": "light-clean"
+}

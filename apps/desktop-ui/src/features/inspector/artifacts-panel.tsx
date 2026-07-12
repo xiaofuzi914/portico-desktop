@@ -48,9 +48,7 @@ export function ArtifactsPanel({ workspaceId, threadId, runId }: ArtifactsPanelP
 
   return (
     <div className="flex h-full flex-col gap-3 overflow-auto p-3">
-      <p className="text-muted-foreground text-xs">
-        {t("inspector.artifactsNote")}
-      </p>
+      <p className="text-muted-foreground text-xs">{t("inspector.artifactsNote")}</p>
       {artifactEvents.length === 0 && (
         <p className="text-muted-foreground text-xs">{t("inspector.noArtifacts")}</p>
       )}
@@ -101,5 +99,3 @@ function ArtifactItem({ workspaceId, artifact }: { workspaceId: WorkspaceId; art
     </div>
   );
 }
-
-

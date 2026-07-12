@@ -59,5 +59,3 @@ export function AuditPanel({ workspaceId, threadId, runId }: AuditPanelProps) {
     </div>
   );
 }
-
-

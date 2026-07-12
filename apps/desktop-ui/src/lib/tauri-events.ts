@@ -17,7 +17,7 @@ function isTauriAvailable(): boolean {
   );
 }
 
-type Listener = () => void;
+type Listener = (event?: RuntimeEvent) => void;
 
 const MAX_RUN_SHARDS = 8;
 
@@ -25,7 +25,47 @@ function eventRunId(event: RuntimeEvent): AgentRunId | undefined {
   if (event.kind === "RunStarted") {
     return event.data.run.id;
   }
-  return event.data.run_id;
+  return "run_id" in event.data ? event.data.run_id : undefined;
+}
+
+/** Tools that mutate the workspace tree shown in the inspector files panel. */
+export function isWorkspaceMutatingTool(toolName: string): boolean {
+  const name = toolName.trim().toLowerCase();
+  if (!name) return false;
+  if (
+    name === "fs_write" ||
+    name === "fs_edit" ||
+    name === "write_file" ||
+    name === "edit_file" ||
+    name === "apply_patch" ||
+    name === "delete_file" ||
+    name === "fs_delete" ||
+    name === "fs_mkdir" ||
+    name === "fs_move" ||
+    name === "fs_rename"
+  ) {
+    return true;
+  }
+  // Broad match for future tool aliases
+  if (name.startsWith("fs_") && /(write|edit|delete|mkdir|move|rename|create)/.test(name)) {
+    return true;
+  }
+  return false;
+}
+
+/** Whether a runtime event should refresh the project folder listing. */
+export function shouldRefreshWorkspaceFiles(event: RuntimeEvent): boolean {
+  if (event.kind === "ToolCompleted" && isWorkspaceMutatingTool(event.data.tool_name)) {
+    return true;
+  }
+  if (event.kind === "ArtifactCreated") {
+    return true;
+  }
+  // Safety net after a turn: catches writes whose tool name we don't recognize yet.
+  if (event.kind === "RunCompleted") {
+    return true;
+  }
+  return false;
 }
 
 export class RuntimeEventStore {
@@ -48,7 +88,7 @@ export class RuntimeEventStore {
     this.runs.set(runId, [...existing, event]);
     this.touchRun(runId);
     this.enforceRunLimit();
-    this.emit();
+    this.emit(event);
   }
 
   clearEvents(): void {
@@ -82,9 +122,9 @@ export class RuntimeEventStore {
     }
   }
 
-  private emit(): void {
+  private emit(event?: RuntimeEvent): void {
     for (const listener of this.listeners) {
-      listener();
+      listener(event);
     }
   }
 }
@@ -112,10 +152,7 @@ export async function listenToRuntimeEvents(): Promise<UnlistenFn> {
 /**
  * Select events for a specific run from the global store.
  */
-export function selectEventsForRun(
-  events: RuntimeEvent[],
-  runId: AgentRunId,
-): RuntimeEvent[] {
+export function selectEventsForRun(events: RuntimeEvent[], runId: AgentRunId): RuntimeEvent[] {
   return events.filter((event) => eventRunId(event) === runId);
 }
 

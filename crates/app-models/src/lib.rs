@@ -60,6 +60,25 @@ impl Default for AgentRunId {
     }
 }
 
+/// Unique identifier for a persisted conversation message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct MessageId(pub uuid::Uuid);
+
+impl MessageId {
+    /// Create a new random message identifier.
+    #[must_use]
+    pub fn new() -> Self {
+        Self(uuid::Uuid::new_v4())
+    }
+}
+
+impl Default for MessageId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// High-level lifecycle status of an agent run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
@@ -76,6 +95,8 @@ pub enum AgentRunStatus {
     Cancelled,
     /// Run failed.
     Failed,
+    /// The application stopped while the run was active.
+    Interrupted,
     /// Run completed successfully.
     Completed,
 }
@@ -91,6 +112,7 @@ impl AgentRunStatus {
             Self::Paused => "Paused",
             Self::Cancelled => "Cancelled",
             Self::Failed => "Failed",
+            Self::Interrupted => "Interrupted",
             Self::Completed => "Completed",
         }
     }
@@ -98,7 +120,10 @@ impl AgentRunStatus {
     /// Whether the status represents a finished run.
     #[must_use]
     pub const fn is_terminal(&self) -> bool {
-        matches!(self, Self::Cancelled | Self::Failed | Self::Completed)
+        matches!(
+            self,
+            Self::Cancelled | Self::Failed | Self::Interrupted | Self::Completed
+        )
     }
 }
 
@@ -113,6 +138,7 @@ impl TryFrom<&str> for AgentRunStatus {
             "Paused" => Ok(Self::Paused),
             "Cancelled" => Ok(Self::Cancelled),
             "Failed" => Ok(Self::Failed),
+            "Interrupted" => Ok(Self::Interrupted),
             "Completed" => Ok(Self::Completed),
             _ => Err(AppError::Internal {
                 message: format!("unknown run status: {value}"),
@@ -227,6 +253,57 @@ pub struct Thread {
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
 
+/// The author role of a durable conversation message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub enum MessageRole {
+    /// A human-authored message.
+    User,
+    /// A response from the configured model.
+    Assistant,
+    /// A system-generated message.
+    System,
+}
+
+impl MessageRole {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::User => "User",
+            Self::Assistant => "Assistant",
+            Self::System => "System",
+        }
+    }
+}
+
+impl TryFrom<&str> for MessageRole {
+    type Error = AppError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "User" => Ok(Self::User),
+            "Assistant" => Ok(Self::Assistant),
+            "System" => Ok(Self::System),
+            _ => Err(AppError::Internal {
+                message: format!("unknown message role: {value}"),
+            }),
+        }
+    }
+}
+
+/// A durable entry in a thread conversation.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct Message {
+    pub id: MessageId,
+    pub thread_id: ThreadId,
+    pub run_id: Option<AgentRunId>,
+    pub role: MessageRole,
+    pub content: String,
+    pub client_request_id: Option<String>,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
 /// A single agent run inside a workspace and thread.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
@@ -244,6 +321,186 @@ pub struct AgentRun {
     /// Timestamp when the run started running.
     pub started_at: Option<chrono::DateTime<chrono::Utc>>,
     /// Timestamp when the run finished.
+    pub completed_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// Authoritative product context attached to every capability execution.
+///
+/// Callers must obtain this from the runtime using a persisted run id. Trust,
+/// ownership, roots, and allowed paths are snapshots of backend-owned state and
+/// must never be accepted from a frontend or model payload.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ExecutionContext {
+    /// Run requesting the capability.
+    pub run_id: AgentRunId,
+    /// Thread that owns the run.
+    pub thread_id: ThreadId,
+    /// Workspace that owns the thread and run.
+    pub workspace_id: WorkspaceId,
+    /// Canonical workspace root at preparation time.
+    pub canonical_workspace_root: String,
+    /// Persisted trust state at preparation time.
+    pub trusted_workspace: bool,
+    /// Canonical paths explicitly granted for reads.
+    pub allowed_read_paths: Vec<String>,
+    /// Canonical paths explicitly granted for writes.
+    pub allowed_write_paths: Vec<String>,
+    /// Workspace update timestamp used as the trust/config revision.
+    pub trust_revision: chrono::DateTime<chrono::Utc>,
+    /// Correlation id shared by policy, approval, execution, and audit records.
+    pub correlation_id: uuid::Uuid,
+}
+
+/// Stable identifier for a durable tool invocation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ToolInvocationId(pub uuid::Uuid);
+
+impl ToolInvocationId {
+    /// Create a new random invocation identifier.
+    #[must_use]
+    pub fn new() -> Self {
+        Self(uuid::Uuid::new_v4())
+    }
+}
+
+impl Default for ToolInvocationId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Durable lifecycle for one prepared tool side effect.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub enum ToolInvocationStatus {
+    /// Policy allowed the invocation and it may be claimed by a worker.
+    Ready,
+    /// The invocation is blocked on a human decision.
+    WaitingApproval,
+    /// Approval was granted and the invocation may be claimed.
+    Approved,
+    /// A worker owns the invocation lease and may execute it.
+    Executing,
+    /// The tool produced a durable successful result.
+    Succeeded,
+    /// The tool failed and will not be automatically replayed.
+    Failed,
+    /// Policy or a human denied the invocation before execution.
+    Denied,
+    /// The owning run was cancelled before execution.
+    Cancelled,
+    /// Execution ownership was lost during a process restart; reconciliation is required.
+    NeedsReconciliation,
+}
+
+impl ToolInvocationStatus {
+    /// String representation used for persistence.
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Ready => "Ready",
+            Self::WaitingApproval => "WaitingApproval",
+            Self::Approved => "Approved",
+            Self::Executing => "Executing",
+            Self::Succeeded => "Succeeded",
+            Self::Failed => "Failed",
+            Self::Denied => "Denied",
+            Self::Cancelled => "Cancelled",
+            Self::NeedsReconciliation => "NeedsReconciliation",
+        }
+    }
+
+    /// Whether no further automatic execution is permitted.
+    #[must_use]
+    pub const fn is_terminal(&self) -> bool {
+        matches!(
+            self,
+            Self::Succeeded | Self::Failed | Self::Denied | Self::Cancelled
+        )
+    }
+}
+
+impl TryFrom<&str> for ToolInvocationStatus {
+    type Error = AppError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "Ready" => Ok(Self::Ready),
+            "WaitingApproval" => Ok(Self::WaitingApproval),
+            "Approved" => Ok(Self::Approved),
+            "Executing" => Ok(Self::Executing),
+            "Succeeded" => Ok(Self::Succeeded),
+            "Failed" => Ok(Self::Failed),
+            "Denied" => Ok(Self::Denied),
+            "Cancelled" => Ok(Self::Cancelled),
+            "NeedsReconciliation" => Ok(Self::NeedsReconciliation),
+            _ => Err(AppError::Internal {
+                message: format!("unknown tool invocation status: {value}"),
+            }),
+        }
+    }
+}
+
+/// Immutable prepared request plus its durable execution receipt.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ToolInvocation {
+    /// Stable invocation identifier.
+    pub id: ToolInvocationId,
+    /// Owning run.
+    pub run_id: AgentRunId,
+    /// Owning thread.
+    pub thread_id: ThreadId,
+    /// Owning workspace.
+    pub workspace_id: WorkspaceId,
+    /// Provider/model tool-call id. Unique within a run when supplied.
+    pub model_call_id: Option<String>,
+    /// Product tool name.
+    pub tool_name: String,
+    /// Tool implementation/version snapshot.
+    pub tool_version: String,
+    /// Policy action, such as `filesystem.read` or `filesystem.write`.
+    pub action: String,
+    /// Canonical, human-readable resource summary.
+    pub resource: String,
+    /// Immutable validated arguments.
+    #[ts(type = "any")]
+    pub arguments: serde_json::Value,
+    /// SHA-256 fingerprint over context, tool metadata, and canonical arguments.
+    pub request_hash: String,
+    /// Version of the policy that produced the decision.
+    pub policy_version: String,
+    /// Workspace trust/config revision bound into the approval decision.
+    pub context_revision: chrono::DateTime<chrono::Utc>,
+    /// Current durable state.
+    pub status: ToolInvocationStatus,
+    /// Linked approval request for `WaitingApproval` invocations.
+    pub approval_request_id: Option<ApprovalRequestId>,
+    /// Successful durable result.
+    #[ts(type = "any")]
+    pub result: Option<serde_json::Value>,
+    /// Safe failure summary.
+    pub error: Option<String>,
+    /// Opaque recovery metadata such as file pre/post hashes.
+    #[ts(type = "any")]
+    pub recovery: Option<serde_json::Value>,
+    /// Worker lease token while executing.
+    pub lease_token: Option<uuid::Uuid>,
+    /// Number of successful claims.
+    pub attempts: u32,
+    /// Cancellation requested after execution had already been claimed.
+    pub cancel_requested: bool,
+    /// Correlation id propagated from [`ExecutionContext`].
+    pub correlation_id: uuid::Uuid,
+    /// Creation timestamp.
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    /// Last durable state update.
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+    /// First execution claim timestamp.
+    pub started_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// Terminal completion timestamp.
     pub completed_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
@@ -519,6 +776,126 @@ pub struct ModelInfo {
     pub capabilities: ModelCapability,
 }
 
+/// Scope that owns an active provider/model selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub enum ModelSelectionScope {
+    /// Fallback used when no narrower selection exists.
+    Global,
+    /// Default for all threads in one workspace.
+    Workspace,
+    /// Selection for one conversation thread.
+    Thread,
+}
+
+impl ModelSelectionScope {
+    /// Stable persistence representation.
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Global => "Global",
+            Self::Workspace => "Workspace",
+            Self::Thread => "Thread",
+        }
+    }
+}
+
+impl TryFrom<&str> for ModelSelectionScope {
+    type Error = AppError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "Global" => Ok(Self::Global),
+            "Workspace" => Ok(Self::Workspace),
+            "Thread" => Ok(Self::Thread),
+            _ => Err(AppError::Internal {
+                message: format!("unknown model selection scope: {value}"),
+            }),
+        }
+    }
+}
+
+/// Persisted active provider/model selection at a global, workspace, or thread scope.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ActiveModelSelection {
+    pub scope: ModelSelectionScope,
+    pub workspace_id: Option<WorkspaceId>,
+    pub thread_id: Option<ThreadId>,
+    pub provider_id: ProviderId,
+    pub model_id: ModelId,
+    pub provider_name: String,
+    pub model_name: String,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// Result of the most recent bounded provider health check.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub enum ProviderHealthStatus {
+    Checking,
+    Ready,
+    Degraded,
+    InvalidCredentials,
+    Unsupported,
+}
+
+impl ProviderHealthStatus {
+    /// Stable persistence representation.
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Checking => "Checking",
+            Self::Ready => "Ready",
+            Self::Degraded => "Degraded",
+            Self::InvalidCredentials => "InvalidCredentials",
+            Self::Unsupported => "Unsupported",
+        }
+    }
+}
+
+impl TryFrom<&str> for ProviderHealthStatus {
+    type Error = AppError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "Checking" => Ok(Self::Checking),
+            "Ready" => Ok(Self::Ready),
+            "Degraded" => Ok(Self::Degraded),
+            "InvalidCredentials" => Ok(Self::InvalidCredentials),
+            "Unsupported" => Ok(Self::Unsupported),
+            _ => Err(AppError::Internal {
+                message: format!("unknown provider health status: {value}"),
+            }),
+        }
+    }
+}
+
+/// Safe, persisted provider health summary. It never contains credentials or raw responses.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ProviderHealth {
+    pub provider_id: ProviderId,
+    pub model_id: ModelId,
+    pub status: ProviderHealthStatus,
+    pub error_code: Option<String>,
+    pub message: Option<String>,
+    pub checked_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// Immutable provider/model configuration captured for a run before network execution.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RunModelSnapshot {
+    pub run_id: AgentRunId,
+    pub provider_id: ProviderId,
+    pub model_id: ModelId,
+    pub provider_name: String,
+    pub model_name: String,
+    pub provider_config_updated_at: chrono::DateTime<chrono::Utc>,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
 /// App-level usage budget guard.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, TS)]
 #[ts(export)]
@@ -788,6 +1165,199 @@ pub struct OrchestrationPlan {
     pub parent_run_id: AgentRunId,
     /// Subagents to execute.
     pub subagents: Vec<SubagentRun>,
+    /// Pattern ids that conditioned this plan (loose coupling evidence).
+    #[serde(default)]
+    pub pattern_ids: Vec<WorkflowPatternId>,
+    /// Human-readable reason the plan was shaped this way.
+    #[serde(default)]
+    pub planning_rationale: String,
+}
+
+/// Identifier for a learned workflow pattern in the memory layer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct WorkflowPatternId(pub uuid::Uuid);
+
+impl WorkflowPatternId {
+    /// Create a new random pattern id.
+    #[must_use]
+    pub fn new() -> Self {
+        Self(uuid::Uuid::new_v4())
+    }
+}
+
+impl Default for WorkflowPatternId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Lifecycle status of a workflow pattern.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub enum WorkflowPatternStatus {
+    /// Eligible for recall during planning.
+    Active,
+    /// Proposed by the system; not yet trusted by the user.
+    Suggested,
+    /// Explicitly silenced by the user.
+    Muted,
+}
+
+impl WorkflowPatternStatus {
+    /// Persistable string form.
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Suggested => "suggested",
+            Self::Muted => "muted",
+        }
+    }
+}
+
+impl TryFrom<&str> for WorkflowPatternStatus {
+    type Error = AppError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "active" => Ok(Self::Active),
+            "suggested" => Ok(Self::Suggested),
+            "muted" => Ok(Self::Muted),
+            _ => Err(AppError::Internal {
+                message: format!("unknown workflow pattern status: {value}"),
+            }),
+        }
+    }
+}
+
+/// A durable user/workspace work habit used to condition multi-agent planning.
+///
+/// Patterns are owned by the memory layer. Orchestration only consumes DTO-like
+/// hints through ports so the two modules can evolve independently.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct WorkflowPattern {
+    pub id: WorkflowPatternId,
+    pub scope: MemoryScope,
+    pub workspace_id: Option<WorkspaceId>,
+    pub name: String,
+    pub summary: String,
+    /// Free-text triggers matched during recall (keywords, phrases).
+    pub trigger_text: String,
+    /// Preferred agent role names, ordered.
+    pub preferred_roles: Vec<String>,
+    pub collaboration_style: String,
+    pub strength: f64,
+    pub success_count: i64,
+    pub failure_count: i64,
+    pub last_used_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub status: WorkflowPatternStatus,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// Lightweight pattern hint returned across module boundaries (no storage coupling).
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct PatternHint {
+    pub id: WorkflowPatternId,
+    pub name: String,
+    pub summary: String,
+    pub preferred_roles: Vec<String>,
+    pub collaboration_style: String,
+    pub strength: f64,
+    pub score: f64,
+}
+
+/// Identifier for one multi-agent orchestration session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct OrchestrationId(pub uuid::Uuid);
+
+impl OrchestrationId {
+    /// Create a new random orchestration id.
+    #[must_use]
+    pub fn new() -> Self {
+        Self(uuid::Uuid::new_v4())
+    }
+}
+
+impl Default for OrchestrationId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Lifecycle of a multi-agent orchestration session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub enum OrchestrationStatus {
+    Planning,
+    Running,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+impl OrchestrationStatus {
+    /// Persistable string form.
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Planning => "Planning",
+            Self::Running => "Running",
+            Self::Completed => "Completed",
+            Self::Failed => "Failed",
+            Self::Cancelled => "Cancelled",
+        }
+    }
+}
+
+impl TryFrom<&str> for OrchestrationStatus {
+    type Error = AppError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "Planning" => Ok(Self::Planning),
+            "Running" => Ok(Self::Running),
+            "Completed" => Ok(Self::Completed),
+            "Failed" => Ok(Self::Failed),
+            "Cancelled" => Ok(Self::Cancelled),
+            _ => Err(AppError::Internal {
+                message: format!("unknown orchestration status: {value}"),
+            }),
+        }
+    }
+}
+
+/// Durable multi-agent orchestration session.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct Orchestration {
+    pub id: OrchestrationId,
+    pub parent_run_id: AgentRunId,
+    pub workspace_id: WorkspaceId,
+    pub thread_id: ThreadId,
+    pub task: String,
+    pub status: OrchestrationStatus,
+    pub plan: OrchestrationPlan,
+    pub pattern_ids: Vec<WorkflowPatternId>,
+    pub result_summary: Option<String>,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+    pub completed_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// Outcome snapshot used by the memory layer to learn without importing workflows.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OrchestrationOutcome {
+    pub workspace_id: WorkspaceId,
+    pub task: String,
+    pub success: bool,
+    pub agent_names: Vec<String>,
+    pub pattern_ids: Vec<WorkflowPatternId>,
+    pub result_summary: Option<String>,
 }
 
 /// A loaded instruction file (e.g. `AGENTS.md`).
@@ -821,6 +1391,62 @@ pub struct ContextSummary {
     pub rag_chunks: Vec<RagChunk>,
     pub estimated_tokens: u64,
     pub privacy_flags: Vec<String>,
+}
+
+/// Backend-authoritative product capability probe (single source of truth for UI).
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[allow(clippy::struct_excessive_bools)]
+pub struct FeatureCapabilities {
+    /// Durable single-agent conversation + safe tools + approval recovery.
+    pub core_agent_workflow: bool,
+    /// Multi-role orchestration secondary path (durable sessions).
+    pub multi_agent_orchestration: bool,
+    /// Project instructions, non-sensitive memory, and RAG enter the agent prompt.
+    pub context_injection: bool,
+    /// Workspace disk scan / rebuild for RAG.
+    pub workspace_indexer: bool,
+    /// Search + structured edit tools in the durable tool allowlist.
+    pub advanced_file_tools: bool,
+    /// Skill invocation inside agent runs (list-only when false).
+    pub skill_invocation: bool,
+    /// Native browser/desktop automation.
+    pub native_automation: bool,
+    /// MCP servers attached to agent tool loop.
+    pub mcp_agent_tools: bool,
+    /// Terminal / shell execution.
+    pub terminal: bool,
+    /// Git mutation (stage/commit/push).
+    pub git_mutation: bool,
+    /// Scheduled automations (UI + IPC).
+    pub automations: bool,
+    /// Human-readable notes for disabled surfaces.
+    pub notes: Vec<String>,
+}
+
+impl Default for FeatureCapabilities {
+    fn default() -> Self {
+        Self {
+            core_agent_workflow: true,
+            multi_agent_orchestration: true,
+            context_injection: true,
+            workspace_indexer: true,
+            advanced_file_tools: true,
+            skill_invocation: false,
+            native_automation: false,
+            mcp_agent_tools: false,
+            terminal: false,
+            git_mutation: false,
+            automations: false,
+            notes: vec![
+                "Default path: single agent + tools (fs_list/read/search/write/edit, git status/diff)."
+                    .to_owned(),
+                "Multi-agent is opt-in production secondary path with durable sessions.".to_owned(),
+                "Terminal, Git mutation, MCP agent tools, Browser/Desktop, Automations remain closed."
+                    .to_owned(),
+            ],
+        }
+    }
 }
 
 /// Unique identifier for a Portico plugin.
@@ -871,6 +1497,29 @@ pub struct PluginPermissions {
     pub filesystem: String,
 }
 
+/// A host capability implemented by a plugin.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
+#[serde(rename_all = "lowercase")]
+#[ts(export)]
+pub enum PluginCapability {
+    /// Render Markdown content for preview.
+    #[serde(rename = "markdown.preview")]
+    #[ts(rename = "markdown.preview")]
+    MarkdownPreview,
+    /// Export Markdown content as HTML.
+    #[serde(rename = "markdown.export.html")]
+    #[ts(rename = "markdown.export.html")]
+    MarkdownExportHtml,
+    /// Export Markdown content as DOCX.
+    #[serde(rename = "markdown.export.docx")]
+    #[ts(rename = "markdown.export.docx")]
+    MarkdownExportDocx,
+    /// Export Markdown content as PDF.
+    #[serde(rename = "markdown.export.pdf")]
+    #[ts(rename = "markdown.export.pdf")]
+    MarkdownExportPdf,
+}
+
 /// Manifest describing an installed Portico plugin.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
@@ -889,6 +1538,15 @@ pub struct PluginManifest {
     pub skills: Vec<String>,
     /// Names of tools provided by the plugin.
     pub tools: Vec<String>,
+    /// Plugin-relative UI entrypoint, when the plugin provides a host view.
+    #[serde(default)]
+    pub entrypoint: Option<String>,
+    /// Host capabilities implemented by this plugin.
+    #[serde(default)]
+    pub capabilities: Vec<PluginCapability>,
+    /// Absolute path containing the installed plugin files.
+    #[serde(default)]
+    pub install_path: Option<String>,
     /// Declared permissions.
     pub permissions: PluginPermissions,
     /// Whether the plugin is currently enabled.
@@ -1417,15 +2075,15 @@ pub struct DiagnosticsBundle {
     pub id: DiagnosticsBundleId,
     /// Creation timestamp.
     pub created_at: chrono::DateTime<chrono::Utc>,
-    /// Path to the copied log file inside the bundle.
+    /// Path to the safe log-omission notice inside the bundle.
     pub log_path: String,
-    /// Path to the redacted audit summary inside the bundle.
+    /// Path to the aggregate-only audit summary inside the bundle.
     pub audit_summary_path: String,
     /// Application version at the time the bundle was created.
     pub app_version: String,
     /// Operating system information.
     pub os_info: String,
-    /// Whether secrets were redacted from the bundle contents.
+    /// Whether sensitive payloads were omitted from the bundle contents.
     pub redacted: bool,
     /// Total size of the bundle directory in bytes.
     pub size_bytes: u64,

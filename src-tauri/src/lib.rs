@@ -6,42 +6,126 @@
 use std::sync::Arc;
 
 use app_runtime::{
-    AgentRunStatus, MemoryEventBus, NotificationCenter, PorticoRuntimeHandle,
-    SqliteModelProviderRegistry, SqliteStorage, Storage, StorageRepoRootProvider,
+    AgentRunStatus, MemoryEventBus, ModelProviderRegistry, NotificationCenter,
+    PorticoRuntimeHandle, SqliteModelProviderRegistry, SqliteStorage, Storage,
 };
-use app_tools::{filesystem::FilesystemTool, git::GitTool, terminal::TerminalManager};
-use app_workflows::{AgentRegistry, AutomationScheduler, Orchestrator};
-use autoagents_adapter::{
-    FilesystemToolAdapter, GitToolAdapter, McpToolAdapter, PorticoToolRegistry,
-    TerminalToolAdapter, build_default_executor,
-};
+use app_workflows::{AgentRegistry, AutomationScheduler, OrchestrationService};
+use autoagents_adapter::{PorticoToolRegistry, RegistryExecutorResolver};
 use tauri::{Emitter, Manager};
 use tauri_plugin_notification::NotificationExt;
 
-use crate::commands::browser::BrowserWindowRegistry;
+#[cfg(any(test, feature = "desktop-e2e"))]
+const E2E_DATA_DIR_MARKER: &str = ".portico-desktop-e2e";
+
+#[cfg(any(test, feature = "desktop-e2e"))]
+fn select_e2e_app_data_dir(
+    default: &std::path::Path,
+    override_path: Option<std::ffi::OsString>,
+) -> Result<std::path::PathBuf, String> {
+    let override_path = override_path
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "PORTICO_E2E_APP_DATA_DIR is required for desktop-e2e".to_owned())?;
+    let override_path = std::path::PathBuf::from(override_path);
+    if !override_path.is_absolute() {
+        return Err("PORTICO_E2E_APP_DATA_DIR must be an absolute path".to_owned());
+    }
+    let metadata = std::fs::symlink_metadata(&override_path)
+        .map_err(|error| format!("failed to inspect E2E app data directory: {error}"))?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err("PORTICO_E2E_APP_DATA_DIR must be a real directory, not a symlink".to_owned());
+    }
+    let marker = override_path.join(E2E_DATA_DIR_MARKER);
+    let marker_value = std::fs::read_to_string(marker)
+        .map_err(|_| "E2E app data directory is missing its safety marker".to_owned())?;
+    if marker_value.trim() != "portico-desktop-e2e" {
+        return Err("E2E app data directory has an invalid safety marker".to_owned());
+    }
+
+    let override_path = override_path
+        .canonicalize()
+        .map_err(|error| format!("failed to canonicalize E2E app data directory: {error}"))?;
+    if default.exists() && default.canonicalize().is_ok_and(|default| default == override_path) {
+        return Err("desktop-e2e cannot use the production app data directory".to_owned());
+    }
+    Ok(override_path)
+}
 
 pub mod commands;
 pub mod embedding_setup;
 pub mod error;
+mod pattern_ports;
+mod plugin_github;
+mod plugin_package;
+pub mod portico_paths;
 
 /// Shared application state managed by Tauri.
 pub struct AppState {
+    /// Application data directory used by durable storage and safe exports.
+    pub app_data_dir: std::path::PathBuf,
+    /// User plugin home layout (`~/.portico` or isolated e2e home).
+    pub portico_user_dirs: portico_paths::PorticoUserDirs,
     /// Product-level runtime handle.
     pub runtime: Arc<PorticoRuntimeHandle>,
-    /// Multi-agent orchestrator.
-    pub orchestrator: Arc<Orchestrator>,
+    /// Multi-agent orchestration service (memory-conditioned).
+    pub orchestration: Arc<app_workflows::OrchestrationService>,
     /// Notification center for creating and dismissing notifications.
     pub notification_center: Arc<NotificationCenter>,
     /// Automation scheduler.
     pub scheduler: Arc<AutomationScheduler>,
-    /// In-app browser window registry.
-    pub browser_registry: BrowserWindowRegistry,
     /// Secure keychain-backed store for provider API keys.
     pub secret_store: Arc<dyn app_security::SecretStore>,
     /// Product-level tool registry exposed to agent runs.
     pub tool_registry: Arc<PorticoToolRegistry>,
     /// Security context used for permission and audit decisions.
     pub security: Arc<app_security::SecurityContext>,
+    /// Optional pattern store (None in e2e when memory ports are no-op only).
+    pub pattern_store: Option<Arc<dyn app_memory::PatternStore>>,
+}
+
+impl AppState {
+    /// Build application state with optional capabilities disabled by default.
+    #[must_use]
+    pub fn new(
+        app_data_dir: std::path::PathBuf,
+        portico_user_dirs: portico_paths::PorticoUserDirs,
+        runtime: Arc<PorticoRuntimeHandle>,
+        notification_center: Arc<NotificationCenter>,
+        scheduler: Arc<AutomationScheduler>,
+        secret_store: Arc<dyn app_security::SecretStore>,
+        tool_registry: Arc<PorticoToolRegistry>,
+        security: Arc<app_security::SecurityContext>,
+    ) -> Self {
+        let orchestration = Arc::new(OrchestrationService::new(
+            runtime.clone(),
+            AgentRegistry::new(),
+        ));
+        Self {
+            app_data_dir,
+            portico_user_dirs,
+            runtime,
+            orchestration,
+            notification_center,
+            scheduler,
+            secret_store,
+            tool_registry,
+            security,
+            pattern_store: None,
+        }
+    }
+
+    /// Replace the default orchestration service with the configured service.
+    #[must_use]
+    pub fn with_orchestration(mut self, orchestration: Arc<OrchestrationService>) -> Self {
+        self.orchestration = orchestration;
+        self
+    }
+
+    /// Expose the pattern store to memory-management commands.
+    #[must_use]
+    pub fn with_pattern_store(mut self, pattern_store: Arc<dyn app_memory::PatternStore>) -> Self {
+        self.pattern_store = Some(pattern_store);
+        self
+    }
 }
 
 /// Run the Tauri application.
@@ -56,26 +140,73 @@ pub fn run() {
             .homepage("https://portico.ai")
     );
 
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_shell::init())
-        .plugin(tauri_plugin_log::Builder::default().build())
+        .plugin(tauri_plugin_log::Builder::default().level(log::LevelFilter::Info).build());
+
+    #[cfg(feature = "desktop-e2e")]
+    let builder = builder.plugin(tauri_plugin_wdio_webdriver::init());
+
+    builder
         .setup(|app| {
             let handle = app.handle().clone();
 
-            let app_data_dir =
+            let default_app_data_dir =
                 handle.path().app_data_dir().expect("failed to resolve app data dir");
+            #[cfg(feature = "desktop-e2e")]
+            let app_data_dir = select_e2e_app_data_dir(
+                &default_app_data_dir,
+                std::env::var_os("PORTICO_E2E_APP_DATA_DIR"),
+            )
+            .expect("invalid E2E app data directory");
+            #[cfg(not(feature = "desktop-e2e"))]
+            let app_data_dir = default_app_data_dir;
             std::fs::create_dir_all(&app_data_dir).expect("failed to create app data dir");
+            let portico_home = {
+                #[cfg(feature = "desktop-e2e")]
+                {
+                    app_data_dir.join("portico-home")
+                }
+                #[cfg(not(feature = "desktop-e2e"))]
+                {
+                    portico_paths::default_portico_home()
+                        .expect("failed to resolve ~/.portico home")
+                }
+            };
+            let portico_user_dirs = portico_paths::ensure_portico_user_dirs_at(portico_home)
+                .expect("failed to create ~/.portico plugins layout");
+            // Best-effort: copy monorepo catalog packages into available/ so the
+            // UI can one-click install without a folder picker.
+            let _ = portico_paths::seed_all_catalog_packages(
+                &portico_user_dirs.plugins_available,
+            );
             let db_path = app_data_dir.join("portico.sqlite");
 
+            #[cfg(feature = "desktop-e2e")]
             let secret_store: Arc<dyn app_security::SecretStore> =
-                Arc::new(app_security::KeyringSecretStore);
+                Arc::new(app_security::InMemorySecretStore::new());
+            // Production: AES-GCM vault under app data + one-shot Keychain import
+            // + process cache. Daily chat no longer hits macOS Keychain.
+            #[cfg(not(feature = "desktop-e2e"))]
+            let secret_store: Arc<dyn app_security::SecretStore> = Arc::new(
+                app_security::open_production_secret_store(&app_data_dir)
+                    .expect("failed to open encrypted secret vault"),
+            );
 
             let runtime = tauri::async_runtime::block_on(async {
                 let storage = Arc::new(SqliteStorage::open(&db_path).await?);
                 let event_bus = Arc::new(MemoryEventBus::default());
                 let registry = Arc::new(SqliteModelProviderRegistry::new(storage.pool().clone()));
+                // One-shot: import any legacy Keychain secrets into the local vault
+                // before chat/embedding paths need them. After promotion, Keychain
+                // is no longer read on the hot path.
+                if let Ok(providers) = registry.list_providers().await {
+                    for provider in providers {
+                        let _ = secret_store.get(&provider.api_key_reference);
+                    }
+                }
                 let security = Arc::new(app_runtime::SecurityContext::new(
                     Arc::new(app_security::PolicyPermissionEngine::default_rules()),
                     Arc::new(app_security::DefaultCommandPolicy::new()),
@@ -83,36 +214,21 @@ pub fn run() {
                     Arc::new(app_runtime::SqliteAuditLogger::new(storage.clone())),
                 ));
 
-                let tools = PorticoToolRegistry::new();
-                tools.register(Arc::new(GitToolAdapter::new(Arc::new(GitTool::new(
-                    security.clone(),
-                    Arc::new(StorageRepoRootProvider::new(storage.clone())),
-                )))));
-                tools.register(Arc::new(TerminalToolAdapter::new(Arc::new(
-                    TerminalManager::new(security.clone()),
-                ))));
-                let fs_adapter = FilesystemToolAdapter::new(Arc::new(FilesystemTool::new(
-                    security.clone(),
-                    Arc::new(StorageRepoRootProvider::new(storage.clone())),
-                )));
-                tools.register(fs_adapter.read_tool());
-                tools.register(fs_adapter.write_tool());
-                tools.register(fs_adapter.edit_tool());
-                tools.register(fs_adapter.list_tool());
-                tools.register(fs_adapter.search_tool());
-                let tools = Arc::new(tools);
+                // Restore only the product-owned safe golden path. Definitions
+                // cannot invoke legacy tools directly: every call is checkpointed,
+                // gated, leased, and dispatched by the durable runtime.
+                // Terminal, Git mutations, MCP, browser, and desktop stay disabled.
+                let tools = Arc::new(PorticoToolRegistry::new());
+                tools.register_safe_builtin_definitions();
 
-                let executor = build_default_executor(
-                    registry.clone(),
-                    Arc::clone(&tools),
-                    secret_store.clone(),
-                )
-                .await
-                .unwrap_or_else(|err| {
-                    eprintln!("failed to build AutoAgents executor, falling back to mock: {err}");
-                    None
-                })
-                .map(|exec| Arc::new(exec) as Arc<dyn app_runtime::AgentExecutor>);
+                let executor_resolver = Arc::new(
+                    RegistryExecutorResolver::new(
+                        registry.clone(),
+                        Arc::clone(&tools),
+                        secret_store.clone(),
+                    )
+                    .with_security(security.clone()),
+                );
 
                 let embedding =
                     embedding_setup::build_embedding_provider(registry.clone(), &secret_store)
@@ -122,32 +238,16 @@ pub fn run() {
                     storage,
                     event_bus,
                     registry,
-                    executor,
+                    None,
                     Some(embedding),
                 )
                 .await?
-                .with_security(security.clone());
+                .with_security(security.clone())
+                .with_executor_resolver(executor_resolver);
+                runtime.recover_tool_execution().await?;
 
-                // Register MCP tools from configured servers so agents can call them.
-                {
-                    let mcp_manager = runtime.mcp_manager();
-                    let guard = mcp_manager.lock().await;
-                    let manager_arc = Arc::new(guard.clone());
-                    match guard.list_tools().await {
-                        Ok(mcp_tools) => {
-                            for tool in mcp_tools {
-                                tools.register(Arc::new(McpToolAdapter::new(
-                                    tool,
-                                    Arc::clone(&manager_arc),
-                                    security.clone(),
-                                )));
-                            }
-                        }
-                        Err(err) => {
-                            eprintln!("failed to list MCP tools at startup: {err}");
-                        }
-                    }
-                }
+                // Do not discover or spawn configured MCP servers during startup.
+                // MCP will be restored only behind its explicit trust and sandbox flow.
 
                 Ok::<_, app_models::AppError>((runtime, tools, security))
             })
@@ -159,10 +259,19 @@ pub fn run() {
                 runtime.task_queue(),
                 runtime.storage().clone(),
             ));
-            let orchestrator = Arc::new(Orchestrator::new(
-                Arc::new(runtime.clone()),
-                AgentRegistry::new(),
-            ));
+            // Memory pattern store shares the app DB but is only accessed through
+            // PatternSource/Sink ports by orchestration (no hard module coupling).
+            let pattern_store: Arc<dyn app_memory::PatternStore> = Arc::new(
+                app_memory::SqlitePatternStore::new(runtime.storage().pool().clone()),
+            );
+            let pattern_adapter =
+                Arc::new(pattern_ports::PatternStoreAdapter::new(pattern_store.clone()));
+            let pattern_source: Arc<dyn app_workflows::PatternSource> = pattern_adapter.clone();
+            let pattern_sink: Arc<dyn app_workflows::PatternSink> = pattern_adapter;
+            let orchestration = Arc::new(
+                OrchestrationService::new(Arc::new(runtime.clone()), AgentRegistry::new())
+                    .with_pattern_ports(pattern_source, pattern_sink),
+            );
             let notification_center = Arc::new(NotificationCenter::new(runtime.storage().clone()));
 
             let notification_center_for_bridge = notification_center.clone();
@@ -172,81 +281,23 @@ pub fn run() {
             let scheduler_for_worker = scheduler.clone();
             let runtime_for_worker = Arc::new(runtime.clone());
 
-            app.manage(AppState {
-                runtime: Arc::new(runtime.clone()),
-                orchestrator,
+            let state = AppState::new(
+                app_data_dir,
+                portico_user_dirs,
+                Arc::new(runtime.clone()),
                 notification_center,
                 scheduler,
-                browser_registry: commands::browser::new_registry(),
                 secret_store,
                 tool_registry,
                 security,
-            });
+            )
+            .with_orchestration(orchestration)
+            .with_pattern_store(pattern_store);
+            app.manage(state);
 
-            // Automation scheduler ticker: check for due automations every minute.
-            tauri::async_runtime::spawn(async move {
-                loop {
-                    tokio::time::sleep(std::time::Duration::from_secs(60)).await;
-                    if let Err(err) = scheduler_for_ticker.tick(chrono::Utc::now()).await {
-                        eprintln!("automation scheduler tick failed: {err}");
-                    }
-                }
-            });
-
-            // Background task worker: lease and execute scheduled automation tasks.
-            tauri::async_runtime::spawn(async move {
-                let worker_id = format!("portico-worker-{}", uuid::Uuid::new_v4());
-                let queue = runtime_for_worker.task_queue();
-                loop {
-                    tokio::time::sleep(std::time::Duration::from_secs(10)).await;
-                    match queue
-                        .lease_next(&worker_id, chrono::Duration::seconds(120))
-                        .await
-                    {
-                        Ok(Some(task)) => {
-                            let outcome: Result<String, app_models::AppError> = match task.task_kind {
-                                app_models::TaskKind::ScheduledJob => {
-                                    match task
-                                        .payload
-                                        .get("automation_id")
-                                        .and_then(|v| v.as_str())
-                                        .and_then(|s| uuid::Uuid::parse_str(s).ok())
-                                    {
-                                        Some(auto_uuid) => {
-                                            scheduler_for_worker
-                                                .execute_automation(
-                                                    app_models::AutomationId(auto_uuid),
-                                                    &runtime_for_worker,
-                                                )
-                                                .await
-                                                .map(|run_id| {
-                                                    format!("started run {}", run_id.0)
-                                                })
-                                        }
-                                        None => Ok("no automation_id in payload".to_owned()),
-                                    }
-                                }
-                                _ => Ok("task kind not handled by worker".to_owned()),
-                            };
-
-                            match outcome {
-                                Ok(summary) => {
-                                    if let Err(err) = queue.complete(task.id, summary).await {
-                                        eprintln!("failed to complete background task: {err}");
-                                    }
-                                }
-                                Err(err) => {
-                                    if let Err(err) = queue.fail(task.id, err.to_string()).await {
-                                        eprintln!("failed to fail background task: {err}");
-                                    }
-                                }
-                            }
-                        }
-                        Ok(None) => {}
-                        Err(err) => eprintln!("background worker lease failed: {err}"),
-                    }
-                }
-            });
+            // Automations are not product-ready: do not start ticker/worker loops.
+            // Keep scheduler constructed for future feature-flag enablement only.
+            let _ = (scheduler_for_ticker, scheduler_for_worker, runtime_for_worker);
 
             // Bridge all runtime events to the frontend over the `portico:event` channel.
             tauri::async_runtime::spawn(async move {
@@ -345,22 +396,30 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            commands::greet,
             commands::workspace::create_workspace,
             commands::workspace::list_workspaces,
             commands::workspace::get_workspace,
             commands::workspace::trust_workspace,
             commands::workspace::set_workspace_paths,
+            commands::workspace::list_workspace_files,
+            commands::workspace::open_workspace_folder,
+            commands::workspace::preview_workspace_markdown,
             commands::thread::create_thread,
             commands::thread::list_threads,
+            commands::thread::update_thread_title,
             commands::thread::get_thread,
+            commands::thread::delete_thread,
             commands::run::start_run,
             commands::run::submit_message,
+            commands::run::send_message,
+            commands::run::list_messages,
+            commands::run::list_runs,
             commands::run::cancel_run,
             commands::run::pause_run,
             commands::run::resume_run,
             commands::run::list_run_events,
-            commands::security::evaluate_permission,
+            commands::run::get_run_token_usage,
+            commands::security::list_pending_approvals,
             commands::security::approve_request,
             commands::security::deny_request,
             commands::security::list_audit_log,
@@ -371,38 +430,18 @@ pub fn run() {
             commands::model::list_models,
             commands::model::create_model,
             commands::model::delete_model,
-            commands::model::get_usage_summary,
-            commands::model::check_budget,
+            commands::model::set_active_model,
+            commands::model::get_active_model,
+            commands::model::resolve_active_model,
+            commands::model::test_provider_connection,
+            commands::model::get_provider_health,
+            commands::model::get_run_model_snapshot,
             commands::secrets::set_provider_secret,
             commands::secrets::delete_provider_secret,
-            commands::orchestrator::list_agents,
-            commands::orchestrator::plan_subagents,
-            commands::orchestrator::execute_subagents,
-            commands::orchestrator::cancel_subagent,
             commands::notification::list_notifications,
             commands::notification::mark_notification_read,
             commands::notification::dismiss_notification,
             commands::notification::send_test_notification,
-            commands::automation::list_automations,
-            commands::automation::create_automation,
-            commands::automation::update_automation,
-            commands::automation::delete_automation,
-            commands::automation::run_automation_now,
-            commands::background_task::list_background_tasks,
-            commands::background_task::cancel_background_task,
-            commands::worktree::create_worktree,
-            commands::worktree::delete_worktree,
-            commands::worktree::list_worktrees,
-            commands::git::git_status,
-            commands::git::git_diff,
-            commands::git::git_stage,
-            commands::git::git_unstage,
-            commands::git::git_commit,
-            commands::git::git_branch,
-            commands::git::git_push,
-            commands::terminal::create_terminal,
-            commands::terminal::execute_terminal_command,
-            commands::terminal::read_terminal_history,
             commands::memory::list_memories,
             commands::memory::create_memory,
             commands::memory::update_memory,
@@ -411,32 +450,81 @@ pub fn run() {
             commands::memory::inspect_context,
             commands::memory::search_rag,
             commands::memory::rebuild_rag_index,
+            commands::memory::get_feature_capabilities,
+            commands::orchestrator::list_agents,
+            commands::orchestrator::recall_workflow_patterns,
+            commands::orchestrator::list_workflow_patterns,
+            commands::orchestrator::preview_orchestration_plan,
+            commands::orchestrator::start_orchestration,
+            commands::orchestrator::get_orchestration,
+            commands::orchestrator::list_thread_orchestrations,
+            commands::orchestrator::cancel_orchestration,
+            commands::orchestrator::mute_workflow_pattern,
             commands::plugins::install_plugin,
-            commands::plugins::list_plugins,
+            commands::plugins::install_plugin_package,
+            commands::plugins::install_available_plugin_package,
+            commands::plugins::install_catalog_plugin,
+            commands::plugins::install_plugin_from_github,
+            commands::plugins::list_plugin_sources,
+            commands::plugins::seed_catalog_plugins,
+            commands::plugins::list_available_plugin_packages,
+            commands::plugins::get_portico_user_dirs,
+            commands::plugins::open_portico_plugins_dir,
             commands::plugins::enable_plugin,
             commands::plugins::uninstall_plugin,
+            commands::plugins::list_plugins,
+            commands::plugins::read_plugin_entrypoint_html,
+            commands::plugins::read_plugin_package_text_file,
             commands::plugins::list_skills,
             commands::plugins::list_mcp_servers,
-            commands::plugins::add_mcp_server,
-            commands::plugins::remove_mcp_server,
-            commands::plugins::list_mcp_tools,
-            commands::plugins::invoke_mcp_tool,
-            commands::plugins::refresh_mcp_tools,
-            commands::browser::open_browser_window,
-            commands::browser::close_browser_window,
-            commands::browser::list_browser_windows,
-            commands::browser::browser_use_action,
-            commands::desktop::capture_screen,
-            commands::desktop::move_mouse,
-            commands::desktop::click_mouse,
-            commands::desktop::type_text,
-            commands::desktop::focus_app,
             commands::diagnostics::collect_diagnostics_bundle,
-            commands::diagnostics::upload_diagnostics_bundle,
             commands::migration::list_migrations,
-            commands::migration::rollback_last_migration,
-            commands::artifact::preview_artifact,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{E2E_DATA_DIR_MARKER, select_e2e_app_data_dir};
+    use std::ffi::OsString;
+
+    #[test]
+    fn e2e_data_dir_fails_closed_without_an_override() {
+        let default = tempfile::tempdir().unwrap();
+
+        assert!(select_e2e_app_data_dir(default.path(), None).is_err());
+        assert!(select_e2e_app_data_dir(default.path(), Some(OsString::new())).is_err());
+    }
+
+    #[test]
+    fn e2e_data_dir_requires_a_marker_and_rejects_the_production_directory() {
+        let default = tempfile::tempdir().unwrap();
+        let e2e = tempfile::tempdir().unwrap();
+        assert!(
+            select_e2e_app_data_dir(default.path(), Some(e2e.path().as_os_str().to_owned()),)
+                .is_err()
+        );
+
+        std::fs::write(
+            e2e.path().join(E2E_DATA_DIR_MARKER),
+            "portico-desktop-e2e\n",
+        )
+        .unwrap();
+        assert_eq!(
+            select_e2e_app_data_dir(default.path(), Some(e2e.path().as_os_str().to_owned()),)
+                .unwrap(),
+            e2e.path().canonicalize().unwrap()
+        );
+
+        std::fs::write(
+            default.path().join(E2E_DATA_DIR_MARKER),
+            "portico-desktop-e2e\n",
+        )
+        .unwrap();
+        assert!(
+            select_e2e_app_data_dir(default.path(), Some(default.path().as_os_str().to_owned()),)
+                .is_err()
+        );
+    }
 }

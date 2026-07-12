@@ -14,11 +14,11 @@ id: DiagnosticsBundleId,
  */
 created_at: string, 
 /**
- * Path to the copied log file inside the bundle.
+ * Path to the safe log-omission notice inside the bundle.
  */
 log_path: string, 
 /**
- * Path to the redacted audit summary inside the bundle.
+ * Path to the aggregate-only audit summary inside the bundle.
  */
 audit_summary_path: string, 
 /**
@@ -30,7 +30,7 @@ app_version: string,
  */
 os_info: string, 
 /**
- * Whether secrets were redacted from the bundle contents.
+ * Whether sensitive payloads were omitted from the bundle contents.
  */
 redacted: boolean, 
 /**

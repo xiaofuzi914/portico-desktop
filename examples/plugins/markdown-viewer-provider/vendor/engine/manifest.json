@@ -1,0 +1,91 @@
+{
+  "manifest_version": 3,
+  "name": "__MSG_extensionName__",
+  "version": "5.2.0",
+  "default_locale": "en",
+  "description": "__MSG_extensionDescription__",
+  "permissions": [
+    "storage",
+    "unlimitedStorage",
+    "offscreen",
+    "scripting",
+    "contextMenus",
+    "alarms"
+  ],
+  "optional_permissions": [
+    "downloads"
+  ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; connect-src 'self' file: https://fonts.googleapis.com https://fonts.gstatic.com; object-src 'self'"
+  },
+  "host_permissions": [
+    "file:///*",
+    "https://*/*",
+    "http://*/*"
+  ],
+  "background": {
+    "service_worker": "core/background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "file:///*",
+        "*://*/*"
+      ],
+      "js": [
+        "core/content-detector.js"
+      ],
+      "run_at": "document_start"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "ui/styles.css",
+        "ui/offscreen-render.html",
+        "icons/icon16.png",
+        "core/main.js",
+        "core/drawio2svg.js",
+        "core/draw-uml.js",
+        "libs/mermaid.min.js",
+        "*.woff2",
+        "*.woff",
+        "*.ttf",
+        "_locales/*/messages.json",
+        "_locales/registry.json",
+        "themes/font-config.json",
+        "themes/registry.json",
+        "themes/presets/*.json",
+        "themes/table-styles/*.json",
+        "themes/code-themes/*.json",
+        "themes/layout-schemes/*.json",
+        "themes/color-schemes/*.json",
+        "slidev-shell/*",
+        "slidev-shell/chunks/*",
+        "slidev-shell/assets/*",
+        "slidev-shell/themes/*",
+        "ui/workspace/viewer-embed.html",
+        "ui/workspace/viewer-embed.js",
+        "ui/workspace/dark-preload.js"
+      ],
+      "matches": [
+        "file://*",
+        "https://*/*",
+        "http://*/*"
+      ]
+    }
+  ],
+  "action": {
+    "default_popup": "ui/popup/popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}

@@ -7,7 +7,7 @@ use app_security::{PermissionRequest, PermissionResult};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use tauri::State;
 
-use crate::AppState;
+use crate::{AppState, error::ApiResponse};
 
 /// Detect a MIME type from a file extension.
 #[must_use]
@@ -56,37 +56,45 @@ pub async fn preview_artifact(
     state: State<'_, AppState>,
     workspace_id: WorkspaceId,
     path: String,
-) -> Result<ArtifactPreview, String> {
-    match state.runtime.evaluate_permission(PermissionRequest {
-        workspace_id,
-        thread_id: None,
-        run_id: None,
-        action: "filesystem.read".to_owned(),
-        resource: path.clone(),
-        trusted_workspace: false,
-    }) {
-        PermissionResult::Allowed => {}
-        PermissionResult::Ask { request } => {
-            return Err(format!(
-                "approval required for {} on {}",
-                request.action, request.resource
-            ));
+) -> Result<ApiResponse<ArtifactPreview>, String> {
+    let result = async {
+        match state.runtime.evaluate_permission(PermissionRequest {
+            workspace_id,
+            thread_id: None,
+            run_id: None,
+            action: "filesystem.read".to_owned(),
+            resource: path.clone(),
+            trusted_workspace: false,
+        }) {
+            PermissionResult::Allowed => {}
+            PermissionResult::Ask { request } => {
+                return Err(format!(
+                    "approval required for {} on {}",
+                    request.action, request.resource
+                ));
+            }
+            PermissionResult::Denied { reason } => return Err(reason),
         }
-        PermissionResult::Denied { reason } => return Err(reason),
+
+        let contents = tokio::fs::read(&path)
+            .await
+            .map_err(|err| format!("failed to read file: {err}"))?;
+        let size_bytes = u64::try_from(contents.len()).unwrap_or(u64::MAX);
+        let mime_type = detect_mime_type(&path).to_owned();
+        let content_base64 = STANDARD.encode(&contents);
+
+        Ok(ArtifactPreview {
+            path,
+            mime_type,
+            content_base64,
+            size_bytes,
+        })
     }
+    .await;
 
-    let contents = tokio::fs::read(&path)
-        .await
-        .map_err(|err| format!("failed to read file: {err}"))?;
-    let size_bytes = u64::try_from(contents.len()).unwrap_or(u64::MAX);
-    let mime_type = detect_mime_type(&path).to_owned();
-    let content_base64 = STANDARD.encode(&contents);
-
-    Ok(ArtifactPreview {
-        path,
-        mime_type,
-        content_base64,
-        size_bytes,
+    Ok(match result {
+        Ok(preview) => ApiResponse::ok(preview),
+        Err(err) => ApiResponse::err(err),
     })
 }
 

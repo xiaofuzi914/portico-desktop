@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import { RuntimeEventStore } from "./tauri-events";
+import {
+  RuntimeEventStore,
+  isWorkspaceMutatingTool,
+  shouldRefreshWorkspaceFiles,
+} from "./tauri-events";
 import type { AgentRunId, RuntimeEvent } from "./schemas";
 
 function statusEvent(runId: AgentRunId): RuntimeEvent {
@@ -29,8 +33,10 @@ describe("RuntimeEventStore", () => {
     const listener = vi.fn();
     const unsubscribe = store.subscribe(listener);
 
-    store.addEvent(statusEvent("run-1" as AgentRunId));
+    const first = statusEvent("run-1" as AgentRunId);
+    store.addEvent(first);
     expect(listener).toHaveBeenCalledTimes(1);
+    expect(listener).toHaveBeenLastCalledWith(first);
 
     store.clearEvents();
     expect(listener).toHaveBeenCalledTimes(2);
@@ -38,6 +44,29 @@ describe("RuntimeEventStore", () => {
     unsubscribe();
     store.addEvent(statusEvent("run-2" as AgentRunId));
     expect(listener).toHaveBeenCalledTimes(2);
+  });
+
+  it("detects workspace-mutating tools for folder refresh", () => {
+    expect(isWorkspaceMutatingTool("fs_write")).toBe(true);
+    expect(isWorkspaceMutatingTool("fs_read")).toBe(false);
+    expect(
+      shouldRefreshWorkspaceFiles({
+        kind: "ToolCompleted",
+        data: { run_id: "r" as AgentRunId, tool_name: "fs_write", result: {} },
+      }),
+    ).toBe(true);
+    expect(
+      shouldRefreshWorkspaceFiles({
+        kind: "ToolCompleted",
+        data: { run_id: "r" as AgentRunId, tool_name: "fs_read", result: {} },
+      }),
+    ).toBe(false);
+    expect(
+      shouldRefreshWorkspaceFiles({
+        kind: "RunCompleted",
+        data: { run_id: "r" as AgentRunId },
+      }),
+    ).toBe(true);
   });
 
   it("clears a single run", () => {
@@ -55,9 +84,9 @@ describe("RuntimeEventStore", () => {
 
   it("keeps the most recent 8 runs and evicts the oldest", () => {
     const store = new RuntimeEventStore();
-    const runIds = Array.from({ length: 9 }, (_, i) =>
-      String(i + 1).padStart(2, "0"),
-    ).map((id) => `run-${id}` as AgentRunId);
+    const runIds = Array.from({ length: 9 }, (_, i) => String(i + 1).padStart(2, "0")).map(
+      (id) => `run-${id}` as AgentRunId,
+    );
 
     for (const runId of runIds) {
       store.addEvent(statusEvent(runId));
@@ -73,8 +102,9 @@ describe("RuntimeEventStore", () => {
   it("updates access order when an existing run receives an event", () => {
     const store = new RuntimeEventStore();
     const first = "run-01" as AgentRunId;
-    const others = Array.from({ length: 7 }, (_, i) =>
-      `run-${String(i + 2).padStart(2, "0")}` as AgentRunId,
+    const others = Array.from(
+      { length: 7 },
+      (_, i) => `run-${String(i + 2).padStart(2, "0")}` as AgentRunId,
     );
 
     store.addEvent(statusEvent(first));

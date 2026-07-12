@@ -1,0 +1,37 @@
+{
+  "id": "sakura",
+  "name": "樱花粉",
+  "name_en": "Sakura",
+  "description": "柔和的粉色点缀，适合温柔优雅的阅读风格",
+  "description_en": "Soft pink accents for gentle and elegant reading styles",
+  
+  "text": {
+    "primary": "#2f2430",
+    "secondary": "#5b4a55",
+    "muted": "#86727d"
+  },
+  
+  "accent": {
+    "link": "#c02664",
+    "linkHover": "#9f1d52"
+  },
+  
+  "background": {
+    "page": "#fff9fb",
+    "surface": "#fceff5",
+    "code": "#fbf3f7",
+    "blockquote": "#f9edf3"
+  },
+  
+  "blockquote": {
+    "border": "#e9a8c7"
+  },
+  
+  "table": {
+    "border": "#ead0dc",
+    "headerBackground": "#f8e6ef",
+    "headerText": "#4a2335",
+    "zebraEven": "#fcf3f7",
+    "zebraOdd": "#ffffff"
+  }
+}

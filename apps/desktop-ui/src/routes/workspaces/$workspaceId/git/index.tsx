@@ -153,9 +153,7 @@ function GitPage() {
                 </pre>
               </>
             ) : (
-              <p className="text-muted-foreground text-sm">
-                {t("git.enterRepoStatus")}
-              </p>
+              <p className="text-muted-foreground text-sm">{t("git.enterRepoStatus")}</p>
             )}
           </div>
 

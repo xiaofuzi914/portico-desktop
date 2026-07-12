@@ -1,10 +1,4 @@
-import type {
-  AgentRunId,
-  ProviderId,
-  TerminalId,
-  ThreadId,
-  WorkspaceId,
-} from "@/lib/schemas";
+import type { AgentRunId, ProviderId, TerminalId, ThreadId, WorkspaceId } from "@/lib/schemas";
 
 /**
  * Centralized React Query key factory.
@@ -15,12 +9,13 @@ import type {
 
 export const workspaceKeys = {
   list: () => ["workspaces"] as const,
-  threads: (workspaceId: WorkspaceId) =>
-    ["workspaces", workspaceId, "threads"] as const,
-  worktrees: (workspaceId: WorkspaceId) =>
-    ["workspaces", workspaceId, "worktrees"] as const,
-  memories: (workspaceId: WorkspaceId) =>
-    ["workspaces", workspaceId, "memories"] as const,
+  threads: (workspaceId: WorkspaceId) => ["workspaces", workspaceId, "threads"] as const,
+  worktrees: (workspaceId: WorkspaceId) => ["workspaces", workspaceId, "worktrees"] as const,
+  memories: (workspaceId: WorkspaceId) => ["workspaces", workspaceId, "memories"] as const,
+  /** Prefix for all directory listings of a workspace (any relative path). */
+  files: (workspaceId: WorkspaceId) => ["workspace-files", workspaceId] as const,
+  filesAt: (workspaceId: WorkspaceId, relativePath = "") =>
+    ["workspace-files", workspaceId, relativePath] as const,
   gitStatus: (workspaceId: WorkspaceId, repoPath = "") =>
     ["workspaces", workspaceId, "git", "status", repoPath] as const,
   gitDiff: (workspaceId: WorkspaceId, repoPath = "") =>
@@ -32,26 +27,9 @@ export const threadKeys = {
 };
 
 export const runKeys = {
-  events: (
-    workspaceId: WorkspaceId,
-    threadId: ThreadId,
-    runId?: AgentRunId,
-  ) =>
-    [
-      "workspaces",
-      workspaceId,
-      "threads",
-      threadId,
-      "runs",
-      runId ?? "none",
-      "events",
-    ] as const,
-  context: (
-    workspaceId: WorkspaceId,
-    threadId: ThreadId,
-    runId?: AgentRunId,
-    query = "",
-  ) =>
+  events: (workspaceId: WorkspaceId, threadId: ThreadId, runId?: AgentRunId) =>
+    ["workspaces", workspaceId, "threads", threadId, "runs", runId ?? "none", "events"] as const,
+  context: (workspaceId: WorkspaceId, threadId: ThreadId, runId?: AgentRunId, query = "") =>
     [
       "workspaces",
       workspaceId,
@@ -69,13 +47,11 @@ export const eventKeys = runKeys;
 export const gitKeys = {
   status: (workspaceId: WorkspaceId, repoPath = "") =>
     workspaceKeys.gitStatus(workspaceId, repoPath),
-  diff: (workspaceId: WorkspaceId, repoPath = "") =>
-    workspaceKeys.gitDiff(workspaceId, repoPath),
+  diff: (workspaceId: WorkspaceId, repoPath = "") => workspaceKeys.gitDiff(workspaceId, repoPath),
 };
 
 export const terminalKeys = {
-  history: (terminalId: TerminalId | undefined) =>
-    ["terminals", terminalId, "history"] as const,
+  history: (terminalId: TerminalId | undefined) => ["terminals", terminalId, "history"] as const,
 };
 
 export const browserWindowKeys = {
@@ -83,8 +59,7 @@ export const browserWindowKeys = {
 };
 
 export const desktopKeys = {
-  capture: (workspaceId: WorkspaceId) =>
-    ["desktop-capture", workspaceId] as const,
+  capture: (workspaceId: WorkspaceId) => ["desktop-capture", workspaceId] as const,
 };
 
 export const notificationKeys = {
@@ -98,12 +73,13 @@ export const backgroundTaskKeys = {
 };
 
 export const automationKeys = {
-  list: (workspaceId: WorkspaceId | null = null) =>
-    ["automations", workspaceId] as const,
+  list: (workspaceId: WorkspaceId | null = null) => ["automations", workspaceId] as const,
 };
 
 export const pluginKeys = {
   list: () => ["plugins"] as const,
+  available: () => ["plugins", "available"] as const,
+  userDirs: () => ["plugins", "user-dirs"] as const,
 };
 
 export const mcpKeys = {
@@ -132,11 +108,8 @@ export const migrationKeys = {
 };
 
 export const auditKeys = {
-  log: (
-    workspaceId: WorkspaceId | null,
-    threadId: ThreadId | null,
-    runId: AgentRunId | null,
-  ) => ["audit-log", workspaceId, threadId, runId] as const,
+  log: (workspaceId: WorkspaceId | null, threadId: ThreadId | null, runId: AgentRunId | null) =>
+    ["audit-log", workspaceId, threadId, runId] as const,
 };
 
 export const queryKeys = {

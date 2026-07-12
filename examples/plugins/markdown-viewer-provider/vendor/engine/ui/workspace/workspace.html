@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Workspace — Markdown Viewer</title>
+  <!-- Apply cached dark-mode class synchronously before the stylesheet parses. -->
+  <script src="dark-preload.js"></script>
+  <link rel="stylesheet" href="workspace.css">
+</head>
+
+<body>
+  <!-- Landing: directory picker -->
+  <div id="landing" class="landing">
+    <div class="landing-card">
+      <img src="../../icons/icon48.png" alt="Logo" class="landing-logo">
+      <h1 class="landing-title" data-i18n="workspace_title">Workspace</h1>
+      <p class="landing-desc" data-i18n="workspace_desc">Open a local directory to browse and preview supported files.</p>
+
+      <button id="pick-directory" class="landing-btn">
+        <span id="pick-icon" class="landing-btn-icon"></span>
+        <span data-i18n="workspace_choose_directory">Choose Directory</span>
+      </button>
+
+      <div id="recent-workspaces" class="recent-workspaces" style="display:none;">
+        <h3 class="recent-title" data-i18n="workspace_recent">Recent Workspaces</h3>
+        <div id="recent-list" class="recent-list"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Workspace layout -->
+  <div id="workspace" class="workspace" style="display:none;">
+    <div class="preview-pane">
+      <div id="preview-empty" class="preview-empty">
+        <p data-i18n="workspace_select_file">Select a file to preview</p>
+      </div>
+      <iframe id="preview-frame" class="preview-frame" style="display:none;"></iframe>
+    </div>
+    <div class="resize-handle" id="resize-handle"></div>
+    <div class="sidebar">
+      <div class="sidebar-header">
+        <span id="workspace-name" class="workspace-name"></span>
+        <div class="sidebar-actions">
+          <button id="toggle-search" class="sidebar-btn" data-i18n-attr="title:workspace_search_title,aria-label:workspace_search_title"></button>
+          <button id="change-directory" class="sidebar-btn" data-i18n-attr="title:workspace_change_directory,aria-label:workspace_change_directory"></button>
+        </div>
+      </div>
+      <div id="sidebar-search" class="sidebar-search hidden">
+        <button id="search-mode-toggle" class="sidebar-btn sidebar-search-mode"></button>
+        <input id="file-search-input" class="sidebar-search-input" type="search" data-i18n-attr="placeholder:workspace_search_placeholder,aria-label:workspace_search_placeholder">
+      </div>
+      <div id="file-tree" class="file-tree"></div>
+    </div>
+  </div>
+
+  <script src="workspace.js"></script>
+</body>
+
+</html>

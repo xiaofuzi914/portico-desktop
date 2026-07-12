@@ -1,4 +1,4 @@
-import { Bot, History, Monitor, Puzzle } from "lucide-react";
+import { Bot, Brain, History, Puzzle, Server } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
 export interface NavigationLink {
@@ -8,7 +8,7 @@ export interface NavigationLink {
 }
 
 export interface NavigationSection {
-  id: "capabilities" | "operations" | "native";
+  id: "capabilities" | "operations";
   labelKey: string;
   links: NavigationLink[];
 }
@@ -20,25 +20,15 @@ export function buildNavigationSections(): NavigationSection[] {
       labelKey: "nav.capabilities",
       links: [
         { to: "/models", labelKey: "nav.models", icon: Bot },
+        { to: "/memory", labelKey: "nav.memory", icon: Brain },
         { to: "/plugins", labelKey: "nav.plugins", icon: Puzzle },
-        { to: "/skills", labelKey: "nav.skills", icon: Bot },
+        { to: "/mcp", labelKey: "nav.mcp", icon: Server },
       ],
     },
     {
       id: "operations",
       labelKey: "nav.operations",
-      links: [
-        { to: "/automations", labelKey: "nav.automations", icon: History },
-        { to: "/audit", labelKey: "nav.audit", icon: History },
-      ],
-    },
-    {
-      id: "native",
-      labelKey: "nav.nativeTools",
-      links: [
-        { to: "/browser", labelKey: "nav.browser", icon: Monitor },
-        { to: "/desktop", labelKey: "nav.desktop", icon: Monitor },
-      ],
+      links: [{ to: "/audit", labelKey: "nav.audit", icon: History }],
     },
   ];
 }

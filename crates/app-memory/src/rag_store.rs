@@ -42,10 +42,7 @@ impl SqliteRagStore {
 
         let dimension_i64 = i64::try_from(dimension).unwrap_or(0);
         let embedding_bytes = |embedding: &[f32]| {
-            embedding
-                .iter()
-                .flat_map(|value| value.to_le_bytes())
-                .collect::<Vec<u8>>()
+            embedding.iter().flat_map(|value| value.to_le_bytes()).collect::<Vec<u8>>()
         };
 
         for chunk in chunks {
@@ -254,10 +251,7 @@ mod tests {
             .await
             .unwrap();
 
-        let loaded = store
-            .load_matching_chunks(workspace_id, "test-provider", 3)
-            .await
-            .unwrap();
+        let loaded = store.load_matching_chunks(workspace_id, "test-provider", 3).await.unwrap();
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0].content, "hello");
         assert_eq!(loaded[0].embedding, vec![1.0, 2.0, 3.0]);
@@ -278,10 +272,7 @@ mod tests {
             embedding: embedding.clone(),
         }];
 
-        store
-            .insert_chunks(workspace_id, "doc.md", "p", 3, chunks)
-            .await
-            .unwrap();
+        store.insert_chunks(workspace_id, "doc.md", "p", 3, chunks).await.unwrap();
 
         let loaded = store.load_matching_chunks(workspace_id, "p", 3).await.unwrap();
         assert_eq!(loaded[0].embedding, embedding);
@@ -306,10 +297,7 @@ mod tests {
             .await
             .unwrap();
 
-        let loaded = store
-            .load_matching_chunks(workspace_id, "new-provider", 3)
-            .await
-            .unwrap();
+        let loaded = store.load_matching_chunks(workspace_id, "new-provider", 3).await.unwrap();
         assert!(loaded.is_empty());
     }
 
@@ -327,10 +315,7 @@ mod tests {
             embedding: vec![1.0],
         }];
 
-        store
-            .insert_chunks(workspace_id, "doc.md", "p", 1, chunks)
-            .await
-            .unwrap();
+        store.insert_chunks(workspace_id, "doc.md", "p", 1, chunks).await.unwrap();
         store.clear_workspace(workspace_id).await.unwrap();
 
         let loaded = store.load_matching_chunks(workspace_id, "p", 1).await.unwrap();
@@ -351,10 +336,7 @@ mod tests {
             embedding: vec![1.0],
         }];
 
-        store
-            .insert_chunks(workspace_id, "doc.md", "p", 1, chunks)
-            .await
-            .unwrap();
+        store.insert_chunks(workspace_id, "doc.md", "p", 1, chunks).await.unwrap();
 
         let contents = store.load_all_contents(workspace_id).await.unwrap();
         assert_eq!(contents.len(), 1);

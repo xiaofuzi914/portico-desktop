@@ -1,17 +1,5 @@
-import {
-  createContext,
-  useContext,
-  useEffect,
-  useMemo,
-  useState,
-  type ReactNode,
-} from "react";
-import {
-  defaultLanguage,
-  normalizeLanguage,
-  translate,
-  type Language,
-} from "@/lib/i18n";
+import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+import { defaultLanguage, normalizeLanguage, translate, type Language } from "@/lib/i18n";
 
 const languageStorageKey = "portico.language";
 

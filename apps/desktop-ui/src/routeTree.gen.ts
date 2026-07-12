@@ -15,6 +15,8 @@ import { Route as SkillsIndexRouteImport } from './routes/skills/index'
 import { Route as SettingsIndexRouteImport } from './routes/settings/index'
 import { Route as PluginsIndexRouteImport } from './routes/plugins/index'
 import { Route as ModelsIndexRouteImport } from './routes/models/index'
+import { Route as MemoryIndexRouteImport } from './routes/memory/index'
+import { Route as McpIndexRouteImport } from './routes/mcp/index'
 import { Route as DesktopIndexRouteImport } from './routes/desktop/index'
 import { Route as BrowserIndexRouteImport } from './routes/browser/index'
 import { Route as AutomationsIndexRouteImport } from './routes/automations/index'
@@ -52,6 +54,16 @@ const PluginsIndexRoute = PluginsIndexRouteImport.update({
 const ModelsIndexRoute = ModelsIndexRouteImport.update({
   id: '/models/',
   path: '/models/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const MemoryIndexRoute = MemoryIndexRouteImport.update({
+  id: '/memory/',
+  path: '/memory/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const McpIndexRoute = McpIndexRouteImport.update({
+  id: '/mcp/',
+  path: '/mcp/',
   getParentRoute: () => rootRouteImport,
 } as any)
 const DesktopIndexRoute = DesktopIndexRouteImport.update({
@@ -105,6 +117,8 @@ export interface FileRoutesByFullPath {
   '/automations/': typeof AutomationsIndexRoute
   '/browser/': typeof BrowserIndexRoute
   '/desktop/': typeof DesktopIndexRoute
+  '/mcp/': typeof McpIndexRoute
+  '/memory/': typeof MemoryIndexRoute
   '/models/': typeof ModelsIndexRoute
   '/plugins/': typeof PluginsIndexRoute
   '/settings/': typeof SettingsIndexRoute
@@ -121,6 +135,8 @@ export interface FileRoutesByTo {
   '/automations': typeof AutomationsIndexRoute
   '/browser': typeof BrowserIndexRoute
   '/desktop': typeof DesktopIndexRoute
+  '/mcp': typeof McpIndexRoute
+  '/memory': typeof MemoryIndexRoute
   '/models': typeof ModelsIndexRoute
   '/plugins': typeof PluginsIndexRoute
   '/settings': typeof SettingsIndexRoute
@@ -138,6 +154,8 @@ export interface FileRoutesById {
   '/automations/': typeof AutomationsIndexRoute
   '/browser/': typeof BrowserIndexRoute
   '/desktop/': typeof DesktopIndexRoute
+  '/mcp/': typeof McpIndexRoute
+  '/memory/': typeof MemoryIndexRoute
   '/models/': typeof ModelsIndexRoute
   '/plugins/': typeof PluginsIndexRoute
   '/settings/': typeof SettingsIndexRoute
@@ -156,6 +174,8 @@ export interface FileRouteTypes {
     | '/automations/'
     | '/browser/'
     | '/desktop/'
+    | '/mcp/'
+    | '/memory/'
     | '/models/'
     | '/plugins/'
     | '/settings/'
@@ -172,6 +192,8 @@ export interface FileRouteTypes {
     | '/automations'
     | '/browser'
     | '/desktop'
+    | '/mcp'
+    | '/memory'
     | '/models'
     | '/plugins'
     | '/settings'
@@ -188,6 +210,8 @@ export interface FileRouteTypes {
     | '/automations/'
     | '/browser/'
     | '/desktop/'
+    | '/mcp/'
+    | '/memory/'
     | '/models/'
     | '/plugins/'
     | '/settings/'
@@ -205,6 +229,8 @@ export interface RootRouteChildren {
   AutomationsIndexRoute: typeof AutomationsIndexRoute
   BrowserIndexRoute: typeof BrowserIndexRoute
   DesktopIndexRoute: typeof DesktopIndexRoute
+  McpIndexRoute: typeof McpIndexRoute
+  MemoryIndexRoute: typeof MemoryIndexRoute
   ModelsIndexRoute: typeof ModelsIndexRoute
   PluginsIndexRoute: typeof PluginsIndexRoute
   SettingsIndexRoute: typeof SettingsIndexRoute
@@ -258,6 +284,20 @@ declare module '@tanstack/react-router' {
       path: '/models'
       fullPath: '/models/'
       preLoaderRoute: typeof ModelsIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/memory/': {
+      id: '/memory/'
+      path: '/memory'
+      fullPath: '/memory/'
+      preLoaderRoute: typeof MemoryIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/mcp/': {
+      id: '/mcp/'
+      path: '/mcp'
+      fullPath: '/mcp/'
+      preLoaderRoute: typeof McpIndexRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/desktop/': {
@@ -325,6 +365,8 @@ const rootRouteChildren: RootRouteChildren = {
   AutomationsIndexRoute: AutomationsIndexRoute,
   BrowserIndexRoute: BrowserIndexRoute,
   DesktopIndexRoute: DesktopIndexRoute,
+  McpIndexRoute: McpIndexRoute,
+  MemoryIndexRoute: MemoryIndexRoute,
   ModelsIndexRoute: ModelsIndexRoute,
   PluginsIndexRoute: PluginsIndexRoute,
   SettingsIndexRoute: SettingsIndexRoute,

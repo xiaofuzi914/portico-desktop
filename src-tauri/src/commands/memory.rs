@@ -1,13 +1,23 @@
 //! Memory, instruction, context, and RAG commands.
 
 use app_models::{
-    ContextSummary, InstructionFile, MemoryId, MemoryItem, MemoryScope, RagChunk, ThreadId,
-    WorkspaceId,
+    ContextSummary, FeatureCapabilities, InstructionFile, MemoryId, MemoryItem, MemoryScope,
+    RagChunk, ThreadId, WorkspaceId,
 };
 use tauri::State;
 
 use crate::AppState;
 use crate::error::ApiResponse;
+
+/// Backend-authoritative capability probe for the UI.
+///
+/// # Errors
+///
+/// Always succeeds with the current product capability matrix.
+#[tauri::command]
+pub fn get_feature_capabilities() -> Result<ApiResponse<FeatureCapabilities>, String> {
+    Ok(ApiResponse::ok(FeatureCapabilities::default()))
+}
 
 /// List memories matching the given scope filters.
 ///
@@ -99,30 +109,32 @@ pub async fn delete_memory(
     )
 }
 
-/// Load AGENTS.md instructions for a workspace.
+/// Load AGENTS.md instructions for a workspace (root resolved from workspace id).
 ///
 /// # Errors
 ///
-/// Returns an error response if instructions cannot be loaded.
+/// Returns an error response if the workspace is missing or instructions cannot be loaded.
 #[tauri::command]
 pub async fn load_instructions(
-    _state: State<'_, AppState>,
-    workspace_root: String,
+    state: State<'_, AppState>,
+    workspace_id: WorkspaceId,
 ) -> Result<ApiResponse<Vec<InstructionFile>>, String> {
     use app_memory::InstructionLoader;
     use std::path::Path;
 
+    let workspace = match state.runtime.get_workspace(workspace_id).await {
+        Ok(ws) => ws,
+        Err(err) => return Ok(ApiResponse::err(err.to_string())),
+    };
     let mut instructions = Vec::new();
-    let root = Path::new(&workspace_root);
-
+    let root = Path::new(&workspace.root_path);
     let global_dir = dirs::config_dir().unwrap_or_else(|| root.to_path_buf());
     instructions.extend(InstructionLoader::load_global(&global_dir));
     instructions.extend(InstructionLoader::load_workspace(root));
-
     Ok(ApiResponse::ok(instructions))
 }
 
-/// Inspect the full context for a run.
+/// Inspect the full context for a run (workspace root resolved server-side).
 ///
 /// # Errors
 ///
@@ -133,14 +145,23 @@ pub async fn inspect_context(
     run_id: app_models::AgentRunId,
     thread_id: ThreadId,
     workspace_id: WorkspaceId,
-    workspace_root: String,
     query: String,
 ) -> Result<ApiResponse<ContextSummary>, String> {
+    let workspace = match state.runtime.get_workspace(workspace_id).await {
+        Ok(ws) => ws,
+        Err(err) => return Ok(ApiResponse::err(err.to_string())),
+    };
     Ok(
         match state
             .runtime
             .context_inspector()
-            .summarize_context(run_id, thread_id, workspace_id, &workspace_root, &query)
+            .summarize_context(
+                run_id,
+                thread_id,
+                workspace_id,
+                &workspace.root_path,
+                &query,
+            )
             .await
         {
             Ok(summary) => ApiResponse::ok(summary),
@@ -162,15 +183,11 @@ pub async fn search_rag(
     top_n: usize,
 ) -> Result<ApiResponse<Vec<RagChunk>>, String> {
     Ok(ApiResponse::ok(
-        state
-            .runtime
-            .context_inspector()
-            .search_rag(workspace_id, &query, top_n)
-            .await,
+        state.runtime.context_inspector().search_rag(workspace_id, &query, top_n).await,
     ))
 }
 
-/// Rebuild the RAG index for a workspace using the current embedding provider.
+/// Rebuild the RAG index for a workspace by scanning the project tree from disk.
 ///
 /// # Errors
 ///
@@ -180,11 +197,15 @@ pub async fn rebuild_rag_index(
     state: State<'_, AppState>,
     workspace_id: WorkspaceId,
 ) -> Result<ApiResponse<usize>, String> {
+    let workspace = match state.runtime.get_workspace(workspace_id).await {
+        Ok(ws) => ws,
+        Err(err) => return Ok(ApiResponse::err(err.to_string())),
+    };
     Ok(
         match state
             .runtime
             .context_inspector()
-            .rebuild_workspace(workspace_id)
+            .rebuild_workspace(workspace_id, Some(&workspace.root_path))
             .await
         {
             Ok(count) => ApiResponse::ok(count),

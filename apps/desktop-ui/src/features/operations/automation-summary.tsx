@@ -2,10 +2,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import {
-  AutomationForm,
-  type AutomationFormData,
-} from "@/features/automations/automation-form";
+import { AutomationForm, type AutomationFormData } from "@/features/automations/automation-form";
 import { AutomationList } from "@/features/automations/automation-list";
 import {
   createAutomation,
@@ -31,12 +28,9 @@ export function AutomationSummary() {
     queryFn: listWorkspaces,
   });
 
-  const listWorkspaceId = workspaceFilter.trim()
-    ? asWorkspaceId(workspaceFilter.trim())
-    : null;
+  const listWorkspaceId = workspaceFilter.trim() ? asWorkspaceId(workspaceFilter.trim()) : null;
   const selectedWorkspaceId =
-    listWorkspaceId ??
-    (workspaces?.[0] ? asWorkspaceId(workspaces[0].id) : null);
+    listWorkspaceId ?? (workspaces?.[0] ? asWorkspaceId(workspaces[0].id) : null);
 
   const { data: automations, isLoading } = useQuery({
     queryKey: automationKeys.list(listWorkspaceId),
@@ -83,8 +77,7 @@ export function AutomationSummary() {
   });
 
   const remove = useMutation({
-    mutationFn: (automation: Automation) =>
-      deleteAutomation(asAutomationId(automation.id)),
+    mutationFn: (automation: Automation) => deleteAutomation(asAutomationId(automation.id)),
     onSuccess: () => {
       void queryClient.invalidateQueries({
         queryKey: automationKeys.list(listWorkspaceId),
@@ -93,8 +86,7 @@ export function AutomationSummary() {
   });
 
   const runNow = useMutation({
-    mutationFn: (automation: Automation) =>
-      runAutomationNow(asAutomationId(automation.id)),
+    mutationFn: (automation: Automation) => runAutomationNow(asAutomationId(automation.id)),
     onSuccess: () => {
       void queryClient.invalidateQueries({
         queryKey: automationKeys.list(listWorkspaceId),
@@ -158,9 +150,7 @@ export function AutomationSummary() {
       <Card>
         <CardHeader>
           <CardTitle>
-            {editing
-              ? t("operations.editAutomation")
-              : t("operations.createScheduledAutomation")}
+            {editing ? t("operations.editAutomation") : t("operations.createScheduledAutomation")}
           </CardTitle>
         </CardHeader>
         <CardContent>

@@ -164,9 +164,7 @@ function MemoryPage() {
                 onClick={() => rebuildIndex.mutate()}
                 disabled={rebuildIndex.isPending}
               >
-                {rebuildIndex.isPending
-                  ? t("memory.rebuildingIndex")
-                  : t("memory.rebuildIndex")}
+                {rebuildIndex.isPending ? t("memory.rebuildingIndex") : t("memory.rebuildIndex")}
               </Button>
             </div>
             {rebuildIndex.error && (

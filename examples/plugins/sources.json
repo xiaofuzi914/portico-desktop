@@ -1,0 +1,29 @@
+{
+  "$schema": "./sources.schema.json",
+  "description": "Portico plugin sources. Given a GitHub URL (or a catalog id), the app clones, packages, and installs without manual folder picking.",
+  "sources": [
+    {
+      "id": "a8c3e2f1-4b5d-6e7f-8091-a2b3c4d5e6f7",
+      "name": "markdown-viewer-provider",
+      "display_name": "Markdown Viewer (markdown-viewer-extension)",
+      "github": "https://github.com/markdown-viewer/markdown-viewer-extension",
+      "ref": "main",
+      "kind": "markdown-viewer-extension",
+      "capabilities": ["markdown.preview", "markdown.export.html"],
+      "license": "GPL-3.0",
+      "notes": "Builds upstream Chrome dist into vendor/engine; always re-applies Portico bridge (provider.js, chrome-shim, styles, vendor/fallback) so upgrades keep default fast path + host protocol."
+    },
+    {
+      "id": "3e76cc57-3911-4e61-8baa-4b354f32d7d1",
+      "name": "markdown-rich-provider",
+      "display_name": "Markdown Rich Provider (sample)",
+      "github": null,
+      "ref": null,
+      "kind": "portico-package",
+      "package_path": "markdown-rich-provider",
+      "capabilities": ["markdown.preview", "markdown.export.html"],
+      "license": "MIT",
+      "notes": "Shipped under examples/plugins; no external GitHub required."
+    }
+  ]
+}

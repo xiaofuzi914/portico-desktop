@@ -131,16 +131,14 @@ impl GitTool {
     async fn validate_repo_path(&self, repo_path: &str) -> Result<(), AppError> {
         let allowed_roots = self.repo_root_provider.allowed_repo_roots().await;
 
-        let canonical = Path::new(repo_path)
-            .canonicalize()
-            .map_err(|e| AppError::PermissionDenied {
+        let canonical =
+            Path::new(repo_path).canonicalize().map_err(|e| AppError::PermissionDenied {
                 reason: format!("invalid git repository path {repo_path}: {e}"),
             })?;
 
-        let allowed = allowed_roots.iter().any(|root| {
-            root.canonicalize()
-                .is_ok_and(|root| canonical.starts_with(&root))
-        });
+        let allowed = allowed_roots
+            .iter()
+            .any(|root| root.canonicalize().is_ok_and(|root| canonical.starts_with(&root)));
 
         if !allowed {
             return Err(AppError::PermissionDenied {
@@ -467,24 +465,18 @@ mod tests {
 
     #[tokio::test]
     async fn denies_repo_path_outside_allowed_roots() {
-        let allowed = std::env::temp_dir().join(format!(
-            "portico-git-allowed-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let allowed =
+            std::env::temp_dir().join(format!("portico-git-allowed-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&allowed).unwrap();
         init_repo(&allowed);
 
-        let outside = std::env::temp_dir().join(format!(
-            "portico-git-outside-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let outside =
+            std::env::temp_dir().join(format!("portico-git-outside-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&outside).unwrap();
         init_repo(&outside);
 
         let git = test_git_tool(vec![allowed.clone()]);
-        let result = git
-            .status(WorkspaceId::default(), &outside.to_string_lossy())
-            .await;
+        let result = git.status(WorkspaceId::default(), &outside.to_string_lossy()).await;
         assert!(matches!(result, Err(AppError::PermissionDenied { .. })));
     }
 }

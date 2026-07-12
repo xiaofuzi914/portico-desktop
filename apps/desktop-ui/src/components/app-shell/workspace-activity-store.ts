@@ -1,4 +1,9 @@
-import { asWorkspaceId, type AgentRunId, type AgentRunStatus, type WorkspaceId } from "@/lib/schemas";
+import {
+  asWorkspaceId,
+  type AgentRunId,
+  type AgentRunStatus,
+  type WorkspaceId,
+} from "@/lib/schemas";
 
 const workspaceRunActivityStorageKey = "portico.workspaceRunActivity";
 const workspaceRunActivityEventName = "portico:workspace-run-activity";
@@ -9,7 +14,12 @@ interface WorkspaceRunActivity {
   updatedAt: string;
 }
 
-const activeRunStatuses = new Set<AgentRunStatus>(["Queued", "Running", "WaitingApproval", "Paused"]);
+const activeRunStatuses = new Set<AgentRunStatus>([
+  "Queued",
+  "Running",
+  "WaitingApproval",
+  "Paused",
+]);
 
 export function updateWorkspaceRunActivity(
   runId: AgentRunId,

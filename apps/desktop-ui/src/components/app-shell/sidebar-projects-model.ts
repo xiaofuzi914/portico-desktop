@@ -26,8 +26,7 @@ export function buildSidebarProjectItems(
     if (runningDifference !== 0) return runningDifference;
 
     const updatedDifference =
-      projectTimestamp(b, lastUsedAtByWorkspaceId) -
-      projectTimestamp(a, lastUsedAtByWorkspaceId);
+      projectTimestamp(b, lastUsedAtByWorkspaceId) - projectTimestamp(a, lastUsedAtByWorkspaceId);
     if (updatedDifference !== 0) return updatedDifference;
 
     return a.name.localeCompare(b.name);

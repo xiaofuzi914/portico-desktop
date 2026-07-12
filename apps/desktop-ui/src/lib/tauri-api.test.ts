@@ -12,24 +12,29 @@ import {
   addMcpServer,
   browserUseAction,
   cancelBackgroundTask,
-  cancelSubagent,
   clickMouse,
   closeBrowserWindow,
   collectDiagnosticsBundle,
   createAutomation,
   createMemory,
+  createModel,
+  createProvider,
   createTerminal,
+  createThread,
   createWorkspace,
   createWorktree,
   deleteAutomation,
   deleteMemory,
   deleteProviderSecret,
+  deleteThread,
   deleteWorktree,
   dismissNotification,
   enablePlugin,
-  executeSubagents,
   executeTerminalCommand,
   focusApp,
+  getActiveModel,
+  getProviderHealth,
+  getRunModelSnapshot,
   captureScreen,
   gitBranch,
   gitCommit,
@@ -40,25 +45,34 @@ import {
   gitUnstage,
   inspectContext,
   installPlugin,
+  installPluginPackage,
+  invokeCommand,
   invokeMcpTool,
-  invokeSkill,
   listAgents,
   listAutomations,
   listBackgroundTasks,
   listBrowserWindows,
   listMcpServers,
+  listMessages,
+  listRuns,
   listMcpTools,
   listMemories,
   listMigrations,
   listNotifications,
+  listPendingApprovals,
   listPlugins,
+  listModels,
   listSkills,
+  listThreads,
   listWorktrees,
+  listWorkspaceFiles,
+  openWorkspaceFolder,
+  previewWorkspaceMarkdown,
   loadInstructions,
   markNotificationRead,
   moveMouse,
   openBrowserWindow,
-  planSubagents,
+  startOrchestration,
   previewArtifact,
   readTerminalHistory,
   rebuildRagIndex,
@@ -67,15 +81,19 @@ import {
   rollbackLastMigration,
   runAutomationNow,
   searchRag,
+  setActiveModel,
+  sendMessage,
   sendTestNotification,
   setProviderSecret,
   setWorkspacePaths,
+  startRun,
+  submitMessage,
+  testProviderConnection,
   trustWorkspace,
   typeText,
   uninstallPlugin,
   updateAutomation,
   updateMemory,
-  uploadDiagnosticsBundle,
 } from "./tauri-api";
 import {
   asAgentRunId,
@@ -84,7 +102,9 @@ import {
   asBrowserWindowId,
   asDiagnosticsBundleId,
   asMemoryId,
+  asModelId,
   asNotificationId,
+  asProviderId,
   asPluginId,
   asSkillId,
   asTerminalId,
@@ -102,7 +122,129 @@ function mockErr(message: string) {
   mockInvoke.mockResolvedValueOnce({ success: false, error: message });
 }
 
+describe("tauri-api transport contract", () => {
+  it("unwraps successful payloads and accepts null data for void commands", async () => {
+    mockOk("hello");
+    await expect(invokeCommand<string>("greet", { name: "Portico" })).resolves.toBe("hello");
+
+    mockOk(null);
+    // Rust unit responses serialize as data:null; treat as successful void.
+    await expect(invokeCommand<void>("save", { value: "ok" })).resolves.toBeUndefined();
+  });
+
+  it("surfaces envelope failures and transport rejections", async () => {
+    mockErr("permission denied");
+    await expect(invokeCommand<void>("write_file")).rejects.toThrow("permission denied");
+
+    mockInvoke.mockRejectedValueOnce(new Error("bridge unavailable"));
+    await expect(invokeCommand<void>("write_file")).rejects.toThrow("bridge unavailable");
+  });
+
+  it("uses camelCase for the workspace-thread-run golden path", async () => {
+    const workspaceId = asWorkspaceId("550e8400-e29b-41d4-a716-446655440000");
+    const threadId = asThreadId("550e8400-e29b-41d4-a716-446655440001");
+    const runId = asAgentRunId("550e8400-e29b-41d4-a716-446655440002");
+
+    mockOk(null);
+    await setWorkspacePaths(workspaceId, ["/read"], ["/write"]);
+    expect(mockInvoke).toHaveBeenLastCalledWith("set_workspace_paths", {
+      id: workspaceId,
+      readPaths: ["/read"],
+      writePaths: ["/write"],
+    });
+
+    mockOk({});
+    await startRun(workspaceId, threadId);
+    expect(mockInvoke).toHaveBeenLastCalledWith("start_run", { workspaceId, threadId });
+
+    mockOk(null);
+    await submitMessage(runId, "hello");
+    expect(mockInvoke).toHaveBeenLastCalledWith("submit_message", { runId, content: "hello" });
+
+    mockOk({});
+    await sendMessage(threadId, "second turn", "request-2");
+    expect(mockInvoke).toHaveBeenLastCalledWith("send_message", {
+      threadId,
+      content: "second turn",
+      clientRequestId: "request-2",
+    });
+
+    mockOk([]);
+    await listMessages(threadId);
+    expect(mockInvoke).toHaveBeenLastCalledWith("list_messages", { threadId });
+
+    mockOk([]);
+    await listRuns(threadId);
+    expect(mockInvoke).toHaveBeenLastCalledWith("list_runs", { threadId });
+
+    mockOk([]);
+    await listPendingApprovals(runId);
+    expect(mockInvoke).toHaveBeenLastCalledWith("list_pending_approvals", { runId });
+  });
+});
+
 describe("tauri-api phase 6 commands", () => {
+  it("uses Tauri camelCase argument names for session commands", async () => {
+    const workspaceId = asWorkspaceId("550e8400-e29b-41d4-a716-446655440000");
+
+    mockOk({});
+    await createThread(workspaceId, "新会话");
+    expect(mockInvoke).toHaveBeenCalledWith("create_thread", {
+      workspaceId,
+      title: "新会话",
+    });
+
+    mockOk([]);
+    await listThreads(workspaceId);
+    expect(mockInvoke).toHaveBeenCalledWith("list_threads", { workspaceId });
+
+    const threadId = asThreadId("550e8400-e29b-41d4-a716-446655440001");
+    mockOk(null);
+    await deleteThread(workspaceId, threadId);
+    expect(mockInvoke).toHaveBeenCalledWith("delete_thread", { workspaceId, id: threadId });
+  });
+
+  it("lists files inside a workspace directory", async () => {
+    const workspaceId = asWorkspaceId("550e8400-e29b-41d4-a716-446655440000");
+    mockOk([]);
+
+    await listWorkspaceFiles(workspaceId, "src");
+
+    expect(mockInvoke).toHaveBeenCalledWith("list_workspace_files", {
+      id: workspaceId,
+      relativePath: "src",
+    });
+  });
+
+  it("opens a workspace folder in the OS file manager", async () => {
+    const workspaceId = asWorkspaceId("550e8400-e29b-41d4-a716-446655440000");
+    mockOk(null);
+
+    await openWorkspaceFolder(workspaceId, "src");
+
+    expect(mockInvoke).toHaveBeenCalledWith("open_workspace_folder", {
+      id: workspaceId,
+      relativePath: "src",
+    });
+  });
+
+  it("previews a Markdown file inside a workspace", async () => {
+    const workspaceId = asWorkspaceId("550e8400-e29b-41d4-a716-446655440000");
+    const preview = {
+      path: "/tmp/README.md",
+      mime_type: "text/markdown",
+      content_base64: "IyBIZWxsbw==",
+      size_bytes: 7,
+    };
+    mockOk(preview);
+
+    await expect(previewWorkspaceMarkdown(workspaceId, "README.md")).resolves.toEqual(preview);
+    expect(mockInvoke).toHaveBeenCalledWith("preview_workspace_markdown", {
+      id: workspaceId,
+      relativePath: "README.md",
+    });
+  });
+
   it("creates a workspace with Tauri command argument names", async () => {
     const workspace = {
       id: asWorkspaceId("550e8400-e29b-41d4-a716-446655440000"),
@@ -116,13 +258,12 @@ describe("tauri-api phase 6 commands", () => {
     };
     mockOk(workspace);
 
-    const result = await createWorkspace("Test", "/tmp/test", false);
+    const result = await createWorkspace("Test", "/tmp/test");
 
     expect(result).toEqual(workspace);
     expect(mockInvoke).toHaveBeenCalledWith("create_workspace", {
       name: "Test",
       rootPath: "/tmp/test",
-      trusted: false,
     });
   });
 
@@ -149,8 +290,8 @@ describe("tauri-api phase 6 commands", () => {
     await setWorkspacePaths(id, ["/read"], ["/write"]);
     expect(mockInvoke).toHaveBeenCalledWith("set_workspace_paths", {
       id,
-      read_paths: ["/read"],
-      write_paths: ["/write"],
+      readPaths: ["/read"],
+      writePaths: ["/write"],
     });
   });
 
@@ -167,8 +308,8 @@ describe("tauri-api phase 6 commands", () => {
     const result = await createWorktree(worktree.workspace_id, worktree.thread_id, "feature");
     expect(result).toEqual(worktree);
     expect(mockInvoke).toHaveBeenCalledWith("create_worktree", {
-      workspace_id: worktree.workspace_id,
-      thread_id: worktree.thread_id,
+      workspaceId: worktree.workspace_id,
+      threadId: worktree.thread_id,
       name: "feature",
     });
   });
@@ -178,7 +319,7 @@ describe("tauri-api phase 6 commands", () => {
     mockOk([]);
     const result = await listWorktrees(workspaceId);
     expect(result).toEqual([]);
-    expect(mockInvoke).toHaveBeenCalledWith("list_worktrees", { workspace_id: workspaceId });
+    expect(mockInvoke).toHaveBeenCalledWith("list_worktrees", { workspaceId });
   });
 
   it("deletes a worktree", async () => {
@@ -194,8 +335,8 @@ describe("tauri-api phase 6 commands", () => {
     const result = await gitStatus(workspaceId, "/repo");
     expect(result).toBe("M src/main.rs");
     expect(mockInvoke).toHaveBeenCalledWith("git_status", {
-      workspace_id: workspaceId,
-      repo_path: "/repo",
+      workspaceId,
+      repoPath: "/repo",
     });
   });
 
@@ -205,8 +346,8 @@ describe("tauri-api phase 6 commands", () => {
     const result = await gitDiff(workspaceId, "/repo");
     expect(result).toBe("diff --git");
     expect(mockInvoke).toHaveBeenCalledWith("git_diff", {
-      workspace_id: workspaceId,
-      repo_path: "/repo",
+      workspaceId,
+      repoPath: "/repo",
     });
   });
 
@@ -215,16 +356,16 @@ describe("tauri-api phase 6 commands", () => {
     mockOk(null);
     await gitStage(workspaceId, "/repo", ["src/main.rs"]);
     expect(mockInvoke).toHaveBeenCalledWith("git_stage", {
-      workspace_id: workspaceId,
-      repo_path: "/repo",
+      workspaceId,
+      repoPath: "/repo",
       paths: ["src/main.rs"],
     });
 
     mockOk(null);
     await gitUnstage(workspaceId, "/repo", ["src/main.rs"]);
     expect(mockInvoke).toHaveBeenCalledWith("git_unstage", {
-      workspace_id: workspaceId,
-      repo_path: "/repo",
+      workspaceId,
+      repoPath: "/repo",
       paths: ["src/main.rs"],
     });
   });
@@ -235,8 +376,8 @@ describe("tauri-api phase 6 commands", () => {
     const result = await gitCommit(workspaceId, "/repo", "Initial commit");
     expect(result).toBe("abc123");
     expect(mockInvoke).toHaveBeenCalledWith("git_commit", {
-      workspace_id: workspaceId,
-      repo_path: "/repo",
+      workspaceId,
+      repoPath: "/repo",
       message: "Initial commit",
     });
   });
@@ -247,8 +388,8 @@ describe("tauri-api phase 6 commands", () => {
     const result = await gitBranch(workspaceId, "/repo", "feature");
     expect(result).toBe("Switched to branch 'feature'");
     expect(mockInvoke).toHaveBeenCalledWith("git_branch", {
-      workspace_id: workspaceId,
-      repo_path: "/repo",
+      workspaceId,
+      repoPath: "/repo",
       name: "feature",
     });
 
@@ -256,8 +397,8 @@ describe("tauri-api phase 6 commands", () => {
     const current = await gitBranch(workspaceId, "/repo");
     expect(current).toBe("main");
     expect(mockInvoke).toHaveBeenCalledWith("git_branch", {
-      workspace_id: workspaceId,
-      repo_path: "/repo",
+      workspaceId,
+      repoPath: "/repo",
       name: null,
     });
   });
@@ -268,8 +409,8 @@ describe("tauri-api phase 6 commands", () => {
     const result = await gitPush(workspaceId, "/repo");
     expect(result).toBe("Everything up-to-date");
     expect(mockInvoke).toHaveBeenCalledWith("git_push", {
-      workspace_id: workspaceId,
-      repo_path: "/repo",
+      workspaceId,
+      repoPath: "/repo",
       remote: null,
     });
   });
@@ -280,7 +421,7 @@ describe("tauri-api phase 6 commands", () => {
     const result = await createTerminal(asThreadId("550e8400-e29b-41d4-a716-446655440001"));
     expect(result).toBe(id);
     expect(mockInvoke).toHaveBeenCalledWith("create_terminal", {
-      thread_id: "550e8400-e29b-41d4-a716-446655440001",
+      threadId: "550e8400-e29b-41d4-a716-446655440001",
     });
   });
 
@@ -321,8 +462,8 @@ describe("tauri-api phase 7 commands", () => {
     expect(result).toEqual([]);
     expect(mockInvoke).toHaveBeenCalledWith("list_memories", {
       scope: "Workspace",
-      workspace_id: workspaceId,
-      thread_id: null,
+      workspaceId,
+      threadId: null,
     });
   });
 
@@ -351,8 +492,8 @@ describe("tauri-api phase 7 commands", () => {
     expect(result).toEqual(memory);
     expect(mockInvoke).toHaveBeenCalledWith("create_memory", {
       scope: "Workspace",
-      workspace_id: workspaceId,
-      thread_id: null,
+      workspaceId,
+      threadId: null,
       key: "preference",
       value: "dark mode",
       sensitive: false,
@@ -386,12 +527,13 @@ describe("tauri-api phase 7 commands", () => {
   });
 
   it("loads instructions", async () => {
+    const workspaceId = asWorkspaceId("550e8400-e29b-41d4-a716-446655440002");
     mockOk([{ path: "/tmp/AGENTS.md", content: "# Instructions", scope: "workspace" }]);
-    const result = await loadInstructions("/tmp");
+    const result = await loadInstructions(workspaceId);
     expect(result).toEqual([
       { path: "/tmp/AGENTS.md", content: "# Instructions", scope: "workspace" },
     ]);
-    expect(mockInvoke).toHaveBeenCalledWith("load_instructions", { workspace_root: "/tmp" });
+    expect(mockInvoke).toHaveBeenCalledWith("load_instructions", { workspaceId });
   });
 
   it("inspects context", async () => {
@@ -408,13 +550,12 @@ describe("tauri-api phase 7 commands", () => {
       privacy_flags: [],
     };
     mockOk(summary);
-    const result = await inspectContext(runId, threadId, workspaceId, "/tmp", "test");
+    const result = await inspectContext(runId, threadId, workspaceId, "test");
     expect(result).toEqual(summary);
     expect(mockInvoke).toHaveBeenCalledWith("inspect_context", {
-      run_id: runId,
-      thread_id: threadId,
-      workspace_id: workspaceId,
-      workspace_root: "/tmp",
+      runId,
+      threadId,
+      workspaceId,
       query: "test",
     });
   });
@@ -434,10 +575,96 @@ describe("tauri-api phase 7 commands", () => {
     const result = await searchRag(workspaceId, "hello", 3);
     expect(result).toEqual(chunks);
     expect(mockInvoke).toHaveBeenCalledWith("search_rag", {
-      workspace_id: workspaceId,
+      workspaceId,
       query: "hello",
-      top_n: 3,
+      topN: 3,
     });
+  });
+});
+
+describe("tauri-api model registry commands", () => {
+  it("uses Tauri camelCase argument names for providers", async () => {
+    mockOk({});
+
+    await createProvider("DeepSeek", "DeepSeek", "https://api.deepseek.com", "deepseek-default");
+
+    expect(mockInvoke).toHaveBeenCalledWith("create_provider", {
+      kind: "DeepSeek",
+      displayName: "DeepSeek",
+      baseUrl: "https://api.deepseek.com",
+      apiKeyReference: "deepseek-default",
+    });
+  });
+
+  it("uses Tauri camelCase argument names for model commands", async () => {
+    const providerId = asProviderId("550e8400-e29b-41d4-a716-446655440000");
+    const capabilities = {
+      supports_streaming: true,
+      supports_tools: true,
+      supports_json_schema: false,
+      supports_vision: false,
+      supports_pdf: false,
+      supports_system_prompt: true,
+      supports_embeddings: false,
+      max_context_tokens: 64_000,
+      input_price_per_1k: null,
+      output_price_per_1k: null,
+    };
+
+    mockOk([]);
+    await listModels(providerId);
+    expect(mockInvoke).toHaveBeenCalledWith("list_models", { providerId });
+
+    mockOk({});
+    await createModel(providerId, "deepseek-chat", "DeepSeek Chat", capabilities);
+    expect(mockInvoke).toHaveBeenCalledWith("create_model", {
+      providerId,
+      modelName: "deepseek-chat",
+      displayName: "DeepSeek Chat",
+      capabilities,
+    });
+  });
+
+  it("selects, probes, and snapshots the active model with camelCase arguments", async () => {
+    const providerId = asProviderId("550e8400-e29b-41d4-a716-446655440000");
+    const modelId = asModelId("550e8400-e29b-41d4-a716-446655440001");
+    const runId = asAgentRunId("550e8400-e29b-41d4-a716-446655440002");
+
+    mockOk({});
+    await setActiveModel("Global", null, null, providerId, modelId);
+    expect(mockInvoke).toHaveBeenCalledWith("set_active_model", {
+      scope: "Global",
+      workspaceId: null,
+      threadId: null,
+      providerId,
+      modelId,
+    });
+
+    mockOk(null);
+    await getActiveModel("Global");
+    expect(mockInvoke).toHaveBeenCalledWith("get_active_model", {
+      scope: "Global",
+      workspaceId: null,
+      threadId: null,
+    });
+
+    mockOk({ status: "Ready" });
+    await testProviderConnection(providerId, modelId);
+    expect(mockInvoke).toHaveBeenCalledWith("test_provider_connection", {
+      providerId,
+      modelId,
+    });
+
+    mockOk(null);
+    await getProviderHealth(providerId, modelId);
+    expect(mockInvoke).toHaveBeenCalledWith("get_provider_health", {
+      providerId,
+      modelId,
+    });
+
+    mockOk(null);
+    await getRunModelSnapshot(runId);
+    expect(mockInvoke).toHaveBeenCalledWith("get_run_model_snapshot", { runId });
   });
 });
 
@@ -451,6 +678,9 @@ describe("tauri-api phase 8 commands", () => {
       description: "A test plugin",
       skills: ["greet"],
       tools: ["read_file"],
+      entrypoint: null,
+      capabilities: [],
+      install_path: null,
       permissions: { network: [], filesystem: "none" as const },
       enabled: true,
       installed_at: "2026-01-01T00:00:00.000Z",
@@ -459,6 +689,12 @@ describe("tauri-api phase 8 commands", () => {
     const installed = await installPlugin(manifest);
     expect(installed).toEqual(manifest);
     expect(mockInvoke).toHaveBeenCalledWith("install_plugin", { manifest });
+
+    mockOk(manifest);
+    await expect(installPluginPackage("/tmp/provider")).resolves.toEqual(manifest);
+    expect(mockInvoke).toHaveBeenCalledWith("install_plugin_package", {
+      sourcePath: "/tmp/provider",
+    });
 
     mockOk([manifest]);
     const result = await listPlugins();
@@ -477,7 +713,7 @@ describe("tauri-api phase 8 commands", () => {
     expect(mockInvoke).toHaveBeenCalledWith("uninstall_plugin", { id });
   });
 
-  it("lists and invokes skills", async () => {
+  it("lists skills as catalog metadata", async () => {
     const pluginId = asPluginId("550e8400-e29b-41d4-a716-446655440000");
     const skill = {
       id: asSkillId("550e8400-e29b-41d4-a716-446655440001"),
@@ -492,15 +728,7 @@ describe("tauri-api phase 8 commands", () => {
     mockOk([skill]);
     const skills = await listSkills(pluginId);
     expect(skills).toEqual([skill]);
-    expect(mockInvoke).toHaveBeenCalledWith("list_skills", { plugin_id: pluginId });
-
-    mockOk({ status: "ok" });
-    const result = await invokeSkill(skill.id, { name: "world" });
-    expect(result).toEqual({ status: "ok" });
-    expect(mockInvoke).toHaveBeenCalledWith("invoke_skill", {
-      skill_id: skill.id,
-      arguments: { name: "world" },
-    });
+    expect(mockInvoke).toHaveBeenCalledWith("list_skills", { pluginId });
   });
 
   it("manages MCP servers", async () => {
@@ -550,14 +778,14 @@ describe("tauri-api phase 8 commands", () => {
     mockOk([tool]);
     const tools = await listMcpTools(1);
     expect(tools).toEqual([tool]);
-    expect(mockInvoke).toHaveBeenCalledWith("list_mcp_tools", { server_id: 1 });
+    expect(mockInvoke).toHaveBeenCalledWith("list_mcp_tools", { serverId: 1 });
 
     mockOk({ content: "hello" });
     const result = await invokeMcpTool(workspaceId, "read_file", { path: "/tmp/test.txt" }, 1);
     expect(result).toEqual({ content: "hello" });
     expect(mockInvoke).toHaveBeenCalledWith("invoke_mcp_tool", {
-      workspace_id: workspaceId,
-      server_id: 1,
+      workspaceId,
+      serverId: 1,
       name: "read_file",
       arguments: { path: "/tmp/test.txt" },
     });
@@ -582,50 +810,37 @@ describe("tauri-api phase 9 commands", () => {
     expect(mockInvoke).toHaveBeenCalledWith("list_agents", undefined);
   });
 
-  it("plans subagents", async () => {
-    const parentRunId = asAgentRunId("550e8400-e29b-41d4-a716-446655440000");
-    const plan = {
+  it("starts multi-agent orchestration", async () => {
+    const workspaceId = asWorkspaceId("550e8400-e29b-41d4-a716-446655440000");
+    const threadId = asThreadId("550e8400-e29b-41d4-a716-446655440001");
+    const parentRunId = asAgentRunId("550e8400-e29b-41d4-a716-446655440002");
+    const orchestration = {
+      id: "550e8400-e29b-41d4-a716-446655440003",
       parent_run_id: parentRunId,
-      subagents: [],
+      workspace_id: workspaceId,
+      thread_id: threadId,
+      task: "review this code",
+      status: "Completed",
+      plan: {
+        parent_run_id: parentRunId,
+        subagents: [],
+        pattern_ids: [],
+        planning_rationale: "test",
+      },
+      pattern_ids: [],
+      result_summary: "done",
+      created_at: "2026-01-01T00:00:00.000Z",
+      updated_at: "2026-01-01T00:00:00.000Z",
+      completed_at: "2026-01-01T00:00:00.000Z",
     };
-    mockOk(plan);
-    const result = await planSubagents(parentRunId, "review this code");
-    expect(result).toEqual(plan);
-    expect(mockInvoke).toHaveBeenCalledWith("plan_subagents", {
-      parent_run_id: parentRunId,
+    mockOk(orchestration);
+    const result = await startOrchestration(workspaceId, threadId, "review this code");
+    expect(result).toEqual(orchestration);
+    expect(mockInvoke).toHaveBeenCalledWith("start_orchestration", {
+      workspaceId,
+      threadId,
       task: "review this code",
     });
-  });
-
-  it("executes subagents", async () => {
-    const parentRunId = asAgentRunId("550e8400-e29b-41d4-a716-446655440000");
-    const subagentRunId = asAgentRunId("550e8400-e29b-41d4-a716-446655440001");
-    const plan = {
-      parent_run_id: parentRunId,
-      subagents: [
-        {
-          id: subagentRunId,
-          parent_run_id: parentRunId,
-          agent_name: "Reviewer",
-          status: "Completed" as const,
-          task_description: "Review",
-          output_summary: "Looks good" as string | null,
-          created_at: "2026-01-01T00:00:00.000Z",
-          completed_at: "2026-01-01T00:00:01.000Z" as string | null,
-        },
-      ],
-    };
-    mockOk(plan.subagents);
-    const result = await executeSubagents(plan);
-    expect(result).toEqual(plan.subagents);
-    expect(mockInvoke).toHaveBeenCalledWith("execute_subagents", { plan });
-  });
-
-  it("cancels a subagent", async () => {
-    const subagentRunId = asAgentRunId("550e8400-e29b-41d4-a716-446655440000");
-    mockOk(null);
-    await cancelSubagent(subagentRunId);
-    expect(mockInvoke).toHaveBeenCalledWith("cancel_subagent", { subagent_run_id: subagentRunId });
   });
 });
 
@@ -648,14 +863,14 @@ describe("tauri-api phase 10 commands", () => {
     mockOk([automation]);
     const result = await listAutomations(workspaceId);
     expect(result).toEqual([automation]);
-    expect(mockInvoke).toHaveBeenCalledWith("list_automations", { workspace_id: workspaceId });
+    expect(mockInvoke).toHaveBeenCalledWith("list_automations", { workspaceId });
   });
 
   it("lists automations across workspaces", async () => {
     mockOk([]);
     const result = await listAutomations();
     expect(result).toEqual([]);
-    expect(mockInvoke).toHaveBeenCalledWith("list_automations", { workspace_id: null });
+    expect(mockInvoke).toHaveBeenCalledWith("list_automations", { workspaceId: null });
   });
 
   it("creates an automation", async () => {
@@ -684,11 +899,11 @@ describe("tauri-api phase 10 commands", () => {
     );
     expect(result).toEqual(automation);
     expect(mockInvoke).toHaveBeenCalledWith("create_automation", {
-      workspace_id: workspaceId,
+      workspaceId,
       name: "Nightly sync",
       description: "Runs every night",
       trigger: "Scheduled",
-      cron_expr: "0 2 * * *",
+      cronExpr: "0 2 * * *",
       enabled: true,
     });
   });
@@ -744,8 +959,8 @@ describe("tauri-api phase 10 commands", () => {
     const result = await listNotifications(workspaceId, true);
     expect(result).toEqual([notification]);
     expect(mockInvoke).toHaveBeenCalledWith("list_notifications", {
-      workspace_id: workspaceId,
-      unread_only: true,
+      workspaceId,
+      unreadOnly: true,
     });
   });
 
@@ -788,9 +1003,11 @@ describe("tauri-api phase 10 commands", () => {
       created_at: "2026-01-01T00:00:00.000Z",
     };
     mockOk(notification);
-    const result = await sendTestNotification("Test", "Notification");
+    const workspaceId = asWorkspaceId("550e8400-e29b-41d4-a716-446655440000");
+    const result = await sendTestNotification(workspaceId, "Test", "Notification");
     expect(result).toEqual(notification);
     expect(mockInvoke).toHaveBeenCalledWith("send_test_notification", {
+      workspaceId,
       title: "Test",
       body: "Notification",
     });
@@ -816,7 +1033,7 @@ describe("tauri-api phase 10 commands", () => {
     mockOk([task]);
     const result = await listBackgroundTasks(workspaceId);
     expect(result).toEqual([task]);
-    expect(mockInvoke).toHaveBeenCalledWith("list_background_tasks", { workspace_id: workspaceId });
+    expect(mockInvoke).toHaveBeenCalledWith("list_background_tasks", { workspaceId });
   });
 
   it("cancels a background task", async () => {
@@ -841,7 +1058,7 @@ describe("tauri-api phase 11 commands", () => {
     const opened = await openBrowserWindow(workspaceId, "https://example.com", "Example");
     expect(opened).toEqual(info);
     expect(mockInvoke).toHaveBeenCalledWith("open_browser_window", {
-      workspace_id: workspaceId,
+      workspaceId,
       url: "https://example.com",
       title: "Example",
     });
@@ -857,7 +1074,7 @@ describe("tauri-api phase 11 commands", () => {
     mockOk(null);
     await closeBrowserWindow(workspaceId, id);
     expect(mockInvoke).toHaveBeenCalledWith("close_browser_window", {
-      workspace_id: workspaceId,
+      workspaceId,
       id,
     });
   });
@@ -877,7 +1094,7 @@ describe("tauri-api phase 11 commands", () => {
       const result = await browserUseAction(workspaceId, id, action);
       expect(result).toBe("ok");
       expect(mockInvoke).toHaveBeenCalledWith("browser_use_action", {
-        workspace_id: workspaceId,
+        workspaceId,
         id,
         action,
       });
@@ -893,33 +1110,33 @@ describe("tauri-api phase 11 commands", () => {
     mockOk(capture);
     const result = await captureScreen(workspaceId);
     expect(result).toEqual(capture);
-    expect(mockInvoke).toHaveBeenCalledWith("capture_screen", { workspace_id: workspaceId });
+    expect(mockInvoke).toHaveBeenCalledWith("capture_screen", { workspaceId });
   });
 
   it("controls desktop input", async () => {
     mockOk(null);
     await moveMouse(workspaceId, 100, 200);
     expect(mockInvoke).toHaveBeenCalledWith("move_mouse", {
-      workspace_id: workspaceId,
+      workspaceId,
       x: 100,
       y: 200,
     });
 
     mockOk(null);
     await clickMouse(workspaceId);
-    expect(mockInvoke).toHaveBeenCalledWith("click_mouse", { workspace_id: workspaceId });
+    expect(mockInvoke).toHaveBeenCalledWith("click_mouse", { workspaceId });
 
     mockOk(null);
     await typeText(workspaceId, "hello world");
     expect(mockInvoke).toHaveBeenCalledWith("type_text", {
-      workspace_id: workspaceId,
+      workspaceId,
       text: "hello world",
     });
 
     mockOk(null);
     await focusApp(workspaceId, "Finder");
     expect(mockInvoke).toHaveBeenCalledWith("focus_app", {
-      workspace_id: workspaceId,
+      workspaceId,
       name: "Finder",
     });
   });
@@ -935,14 +1152,14 @@ describe("tauri-api phase 11 commands", () => {
     const result = await previewArtifact(workspaceId, "/tmp/report.pdf");
     expect(result).toEqual(preview);
     expect(mockInvoke).toHaveBeenCalledWith("preview_artifact", {
-      workspace_id: workspaceId,
+      workspaceId,
       path: "/tmp/report.pdf",
     });
   });
 });
 
 describe("tauri-api phase 12 commands", () => {
-  it("collects and uploads a diagnostics bundle", async () => {
+  it("collects a diagnostics bundle without exposing a fake upload command", async () => {
     const bundle = {
       id: asDiagnosticsBundleId("bundle-1"),
       created_at: "2026-01-01T00:00:00.000Z",
@@ -958,12 +1175,6 @@ describe("tauri-api phase 12 commands", () => {
     const collected = await collectDiagnosticsBundle();
     expect(collected).toEqual(bundle);
     expect(mockInvoke).toHaveBeenCalledWith("collect_diagnostics_bundle", undefined);
-
-    mockOk(null);
-    await uploadDiagnosticsBundle(bundle.id);
-    expect(mockInvoke).toHaveBeenCalledWith("upload_diagnostics_bundle", {
-      bundle_id: bundle.id,
-    });
   });
 
   it("lists migrations", async () => {
@@ -1016,10 +1227,11 @@ describe("tauri-api refresh and rebuild commands", () => {
 
   it("rebuilds the RAG index for a workspace", async () => {
     const workspaceId = asWorkspaceId("550e8400-e29b-41d4-a716-446655440000");
-    mockOk(null);
-    await rebuildRagIndex(workspaceId);
+    mockOk(12);
+    const count = await rebuildRagIndex(workspaceId);
+    expect(count).toBe(12);
     expect(mockInvoke).toHaveBeenCalledWith("rebuild_rag_index", {
-      workspace_id: workspaceId,
+      workspaceId,
     });
   });
 });

@@ -1,11 +1,18 @@
 //! Build `AutoAgents` LLM providers from Portico [`ProviderConfig`]s.
 
 use crate::{AutoAgentsExecutor, tool_adapter::PorticoToolRegistry};
-use app_models::{AppError, ProviderConfig, ProviderKind};
+use app_models::{
+    AgentRunId, AppError, ModelId, ProviderConfig, ProviderHealth, ProviderHealthStatus,
+    ProviderId, ProviderKind, RunModelSnapshot, ThreadId, WorkspaceId,
+};
 use app_runtime::ModelProviderRegistry;
+use app_runtime::{AgentExecutor, AgentExecutorResolver, ResolvedAgentExecutor};
 use app_security::SecretStore;
 use autoagents_llm::{LLMProvider, backends::openai, builder::LLMBuilder};
 use std::sync::Arc;
+use std::time::Duration;
+
+const PROVIDER_HEALTH_TIMEOUT: Duration = Duration::from_secs(12);
 
 const fn default_model_for_kind(kind: ProviderKind) -> &'static str {
     match kind {
@@ -14,7 +21,7 @@ const fn default_model_for_kind(kind: ProviderKind) -> &'static str {
         // Defaults for other providers are best-effort; callers should register
         // explicit models for production use.
         ProviderKind::Moonshot => "kimi-k2-0711-preview",
-        ProviderKind::DeepSeek => "deepseek-chat",
+        ProviderKind::DeepSeek => "deepseek-v4-pro",
         ProviderKind::Google => "gemini-1.5-flash",
         ProviderKind::Groq => "llama3-70b-8192",
         ProviderKind::OpenRouter => "openai/gpt-4o-mini",
@@ -27,7 +34,7 @@ const fn default_model_for_kind(kind: ProviderKind) -> &'static str {
 const fn default_base_url_for_kind(kind: ProviderKind) -> Option<&'static str> {
     match kind {
         ProviderKind::Moonshot => Some("https://api.moonshot.cn/v1"),
-        ProviderKind::DeepSeek => Some("https://api.deepseek.com/v1"),
+        ProviderKind::DeepSeek => Some("https://api.deepseek.com"),
         ProviderKind::Groq => Some("https://api.groq.com/openai/v1"),
         ProviderKind::OpenRouter => Some("https://openrouter.ai/api/v1"),
         ProviderKind::Ollama => Some("http://localhost:11434/v1"),
@@ -59,24 +66,10 @@ const fn is_keyless(kind: ProviderKind) -> bool {
     matches!(kind, ProviderKind::Ollama)
 }
 
-/// Detects strings that are likely raw API keys rather than opaque references.
-///
-/// This is a best-effort backward-compatibility heuristic: users who previously
-/// stored plaintext keys in `api_key_reference` will keep working, but we warn
-/// them to migrate to the keychain.
-fn looks_like_plaintext_key(reference: &str) -> bool {
-    reference.starts_with("sk-")
-        || reference.starts_with("gsk_")
-        || reference.starts_with("sk-or-")
-        || reference.starts_with("sk-ant-")
-}
-
 /// Resolve the real API key for a provider configuration.
 ///
 /// 1. Look up `api_key_reference` in the configured [`SecretStore`].
-/// 2. If not found and the reference looks like a plaintext key, use it
-///    directly and warn.
-/// 3. If not found and the provider does not require a key, return a harmless
+/// 2. If not found and the provider does not require a key, return a harmless
 ///    placeholder (the `OpenAI` backend requires a non-empty key even though
 ///    Ollama ignores it).
 fn resolve_api_key(
@@ -89,24 +82,13 @@ fn resolve_api_key(
         return Ok(secret);
     }
 
-    if looks_like_plaintext_key(reference) {
-        tracing::warn!(
-            provider_kind = ?config.kind,
-            api_key_reference = reference,
-            "api_key_reference looks like a plaintext API key; using it directly. Store it in the keychain instead."
-        );
-        return Ok(reference.clone());
-    }
-
     if is_keyless(config.kind) {
         return Ok("not-used".to_owned());
     }
 
     Err(AppError::Internal {
-        message: format!(
-            "no API key found for provider {:?} reference '{}'",
-            config.kind, reference
-        ),
+        message: "PROVIDER_SECRET_MISSING: provider credential was not found in the secure store"
+            .to_owned(),
     })
 }
 
@@ -115,7 +97,9 @@ fn build_openai_compatible_provider(
     model_name: Option<&str>,
     api_key: &str,
 ) -> Result<Arc<dyn LLMProvider>, AppError> {
-    let timeout_seconds = config.timeout_ms / 1000;
+    // Floor at 60s so legacy 30s configs still work for tool-using agents even
+    // before migration runs; prefer the configured value when higher.
+    let timeout_seconds = (config.timeout_ms / 1000).max(60);
     let base_url = config
         .base_url
         .clone()
@@ -130,6 +114,11 @@ fn build_openai_compatible_provider(
     let mut builder = LLMBuilder::<openai::OpenAI>::new()
         .api_key(api_key)
         .timeout_seconds(timeout_seconds);
+
+    if config.kind != ProviderKind::OpenAI {
+        builder =
+            builder.api_mode(autoagents_llm::backends::openai::OpenAIApiMode::ChatCompletions);
+    }
 
     if let Some(model) = model_name {
         builder = builder.model(model);
@@ -164,7 +153,7 @@ pub fn build_llm_provider(
         return build_openai_compatible_provider(config, model_name, &api_key);
     }
 
-    let timeout_seconds = config.timeout_ms / 1000;
+    let timeout_seconds = (config.timeout_ms / 1000).max(60);
 
     match config.kind {
         ProviderKind::Anthropic => {
@@ -209,42 +198,221 @@ pub fn build_llm_provider(
     }
 }
 
-/// Build a real [`AutoAgentsExecutor`] from the first enabled provider in the
-/// registry.
-///
-/// Returns `Ok(None)` when no providers are configured, allowing the runtime to
-/// fall back to its mock executor until the user adds a provider.
+async fn probe_llm_provider(
+    provider: &dyn LLMProvider,
+    model_name: &str,
+    timeout_duration: Duration,
+) -> Result<(), AppError> {
+    let message = autoagents_llm::chat::ChatMessage::user()
+        .content(format!(
+            "Connection check for model {model_name}. Reply with OK."
+        ))
+        .build();
+    tokio::time::timeout(timeout_duration, provider.chat(&[message], None))
+        .await
+        .map_err(|_| AppError::Internal {
+            message: "PROVIDER_HEALTH_TIMEOUT".to_owned(),
+        })?
+        .map(|_| ())
+        .map_err(|error| AppError::Internal {
+            message: format!("PROVIDER_HEALTH_FAILED: {error}"),
+        })
+}
+
+fn safe_health_failure(
+    provider_id: ProviderId,
+    model_id: ModelId,
+    error: &AppError,
+) -> ProviderHealth {
+    let lowered = error.to_string().to_ascii_lowercase();
+    let (status, error_code, message) = if lowered.contains("credential")
+        || lowered.contains("unauthorized")
+        || lowered.contains("401")
+        || lowered.contains("api key")
+    {
+        (
+            ProviderHealthStatus::InvalidCredentials,
+            "INVALID_CREDENTIALS",
+            "Provider credentials were rejected or are missing.",
+        )
+    } else if lowered.contains("not supported") {
+        (
+            ProviderHealthStatus::Unsupported,
+            "UNSUPPORTED_PROVIDER",
+            "This provider is not supported by the current runtime.",
+        )
+    } else if lowered.contains("model_not_found") {
+        (
+            ProviderHealthStatus::Degraded,
+            "MODEL_NOT_FOUND",
+            "The selected model was not reported by the provider.",
+        )
+    } else if lowered.contains("429") || lowered.contains("rate limit") {
+        (
+            ProviderHealthStatus::Degraded,
+            "RATE_LIMITED",
+            "The provider rate limit was reached. Retry later.",
+        )
+    } else if lowered.contains("timeout") {
+        (
+            ProviderHealthStatus::Degraded,
+            "HEALTH_TIMEOUT",
+            "The provider health check timed out.",
+        )
+    } else {
+        (
+            ProviderHealthStatus::Degraded,
+            "CONNECTION_FAILED",
+            "The provider connection check failed.",
+        )
+    };
+    ProviderHealth {
+        provider_id,
+        model_id,
+        status,
+        error_code: Some(error_code.to_owned()),
+        message: Some(message.to_owned()),
+        checked_at: chrono::Utc::now(),
+    }
+}
+
+/// Build and probe one registered provider/model, persisting only a safe health summary.
 ///
 /// # Errors
 ///
-/// Returns an error if provider or model lookup fails, or if the selected
-/// provider cannot be constructed.
-pub async fn build_default_executor(
+/// Returns an error if the provider/model relationship is invalid, registry
+/// access fails, or the safe health summary cannot be persisted.
+pub async fn check_provider_health(
+    registry: Arc<dyn ModelProviderRegistry>,
+    secret_store: Arc<dyn SecretStore>,
+    provider_id: ProviderId,
+    model_id: ModelId,
+) -> Result<ProviderHealth, AppError> {
+    let provider_config = registry.get_provider(provider_id).await?;
+    let model = registry.get_model(model_id).await?;
+    if model.provider_id != provider_id {
+        return Err(AppError::PermissionDenied {
+            reason: "health-check model does not belong to provider".to_owned(),
+        });
+    }
+    let health = match build_llm_provider(
+        &provider_config,
+        Some(model.model_name.as_str()),
+        secret_store.as_ref(),
+    ) {
+        Ok(provider) => {
+            let configured_timeout = Duration::from_millis(provider_config.timeout_ms);
+            let probe_timeout = PROVIDER_HEALTH_TIMEOUT
+                .min(configured_timeout)
+                .saturating_sub(Duration::from_millis(100))
+                .max(Duration::from_millis(100));
+            match probe_llm_provider(provider.as_ref(), &model.model_name, probe_timeout).await {
+                Ok(()) => ProviderHealth {
+                    provider_id,
+                    model_id,
+                    status: ProviderHealthStatus::Ready,
+                    error_code: None,
+                    message: Some("Provider and model are ready.".to_owned()),
+                    checked_at: chrono::Utc::now(),
+                },
+                Err(error) => safe_health_failure(provider_id, model_id, &error),
+            }
+        }
+        Err(error) => safe_health_failure(provider_id, model_id, &error),
+    };
+    registry.record_provider_health(health.clone()).await?;
+    Ok(health)
+}
+
+/// Per-run executor resolver backed by the live provider/model registry.
+pub struct RegistryExecutorResolver {
     registry: Arc<dyn ModelProviderRegistry>,
     tools: Arc<PorticoToolRegistry>,
     secret_store: Arc<dyn SecretStore>,
-) -> Result<Option<AutoAgentsExecutor>, AppError> {
-    let providers = registry.list_providers().await?;
-    let provider_config = providers
-        .iter()
-        .find(|provider| provider.enabled)
-        .or_else(|| providers.first())
-        .cloned();
+    security: Option<Arc<app_runtime::SecurityContext>>,
+}
 
-    let Some(provider_config) = provider_config else {
-        return Ok(None);
-    };
+impl RegistryExecutorResolver {
+    #[must_use]
+    pub fn new(
+        registry: Arc<dyn ModelProviderRegistry>,
+        tools: Arc<PorticoToolRegistry>,
+        secret_store: Arc<dyn SecretStore>,
+    ) -> Self {
+        Self {
+            registry,
+            tools,
+            secret_store,
+            security: None,
+        }
+    }
 
-    let models = registry.list_models(Some(provider_config.id)).await?;
-    let model_name = models.first().map(|model| model.model_name.as_str());
+    /// Use the application runtime's authoritative security context.
+    #[must_use]
+    pub fn with_security(mut self, security: Arc<app_runtime::SecurityContext>) -> Self {
+        self.security = Some(security);
+        self
+    }
+}
 
-    let llm = build_llm_provider(&provider_config, model_name, secret_store.as_ref())?;
-    Ok(Some(AutoAgentsExecutor::new(llm, tools)))
+#[async_trait::async_trait]
+impl AgentExecutorResolver for RegistryExecutorResolver {
+    async fn resolve(
+        &self,
+        workspace_id: WorkspaceId,
+        thread_id: ThreadId,
+        run_id: AgentRunId,
+    ) -> Result<ResolvedAgentExecutor, AppError> {
+        let selection = self.registry.resolve_active_model(workspace_id, thread_id).await?;
+        let provider = self.registry.get_provider(selection.provider_id).await?;
+        let model = self.registry.get_model(selection.model_id).await?;
+        let health =
+            self.registry.get_provider_health(provider.id, model.id).await?.ok_or_else(|| {
+                AppError::Internal {
+                message:
+                    "PROVIDER_HEALTH_REQUIRED: test the selected provider connection before running"
+                        .to_owned(),
+            }
+            })?;
+        if health.status != ProviderHealthStatus::Ready
+            || chrono::Utc::now().signed_duration_since(health.checked_at)
+                > chrono::Duration::hours(24)
+        {
+            return Err(AppError::Internal {
+                message: "PROVIDER_HEALTH_NOT_READY: re-test the selected provider connection"
+                    .to_owned(),
+            });
+        }
+        let llm = build_llm_provider(
+            &provider,
+            Some(model.model_name.as_str()),
+            self.secret_store.as_ref(),
+        )?;
+        let mut executor = AutoAgentsExecutor::new(llm, Arc::clone(&self.tools));
+        if let Some(security) = &self.security {
+            executor = executor.with_security(security.clone());
+        }
+        let executor = Arc::new(executor) as Arc<dyn AgentExecutor>;
+        Ok(ResolvedAgentExecutor {
+            executor,
+            snapshot: RunModelSnapshot {
+                run_id,
+                provider_id: provider.id,
+                model_id: model.id,
+                provider_name: provider.display_name,
+                model_name: model.model_name,
+                provider_config_updated_at: provider.updated_at,
+                created_at: chrono::Utc::now(),
+            },
+        })
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::MockLlmProvider;
+    use app_runtime::{SqliteModelProviderRegistry, SqliteStorage, Storage};
     use app_security::InMemorySecretStore;
 
     fn test_config(kind: ProviderKind, reference: &str, base_url: Option<&str>) -> ProviderConfig {
@@ -278,12 +446,15 @@ mod tests {
     }
 
     #[test]
-    fn openai_provider_falls_back_to_plaintext_key_with_warning() {
+    fn openai_provider_rejects_plaintext_key_fallback() {
         let store = InMemorySecretStore::new();
         let config = test_config(ProviderKind::OpenAI, "sk-plaintext", None);
 
-        let provider = build_llm_provider(&config, None, &store).unwrap();
-        assert_eq!(provider.model(), "gpt-4.1-nano");
+        let Err(error) = build_llm_provider(&config, None, &store) else {
+            panic!("plaintext must fail");
+        };
+        assert!(error.to_string().contains("PROVIDER_SECRET_MISSING"));
+        assert!(!error.to_string().contains("sk-plaintext"));
     }
 
     #[test]
@@ -295,7 +466,7 @@ mod tests {
             panic!("expected provider construction to fail");
         };
         assert!(
-            err.to_string().contains("no API key found"),
+            err.to_string().contains("PROVIDER_SECRET_MISSING"),
             "unexpected error: {err}"
         );
     }
@@ -319,7 +490,7 @@ mod tests {
         let config = test_config(ProviderKind::DeepSeek, "deepseek-ref", None);
         let provider = build_llm_provider(&config, None, &store).unwrap();
 
-        assert_eq!(provider.model(), "deepseek-chat");
+        assert_eq!(provider.model(), "deepseek-v4-pro");
     }
 
     #[test]
@@ -334,7 +505,8 @@ mod tests {
     #[test]
     fn custom_provider_requires_base_url() {
         let store = InMemorySecretStore::new();
-        let config = test_config(ProviderKind::Custom, "sk-custom", None);
+        store.set("custom-ref", "sk-custom").unwrap();
+        let config = test_config(ProviderKind::Custom, "custom-ref", None);
 
         let Err(err) = build_llm_provider(&config, None, &store) else {
             panic!("expected provider construction to fail");
@@ -348,9 +520,10 @@ mod tests {
     #[test]
     fn custom_provider_builds_with_base_url() {
         let store = InMemorySecretStore::new();
+        store.set("custom-ref", "sk-custom").unwrap();
         let config = test_config(
             ProviderKind::Custom,
-            "sk-custom",
+            "custom-ref",
             Some("http://localhost:1234/v1"),
         );
 
@@ -379,5 +552,98 @@ mod tests {
             azure_err.to_string().contains("not supported"),
             "unexpected error: {azure_err}"
         );
+    }
+
+    #[tokio::test]
+    async fn mock_provider_passes_the_bounded_health_probe() {
+        let provider = MockLlmProvider::new();
+        probe_llm_provider(&provider, "fixture-model", PROVIDER_HEALTH_TIMEOUT)
+            .await
+            .expect("health probe");
+    }
+
+    #[test]
+    fn health_failures_are_sanitized() {
+        let health = safe_health_failure(
+            ProviderId::new(),
+            ModelId::new(),
+            &AppError::Internal {
+                message: format!("401 secret sk-{}", "never-persist-this-value"),
+            },
+        );
+        assert_eq!(health.status, ProviderHealthStatus::InvalidCredentials);
+        assert!(!health.message.unwrap_or_default().contains("sk-never"));
+    }
+
+    #[tokio::test]
+    async fn registry_resolver_uses_active_ready_model_and_returns_run_snapshot() {
+        std::fs::create_dir_all("/tmp/portico-resolver-selection-test").expect("test root");
+        let storage = Arc::new(SqliteStorage::open_in_memory().await.expect("open db"));
+        let registry: Arc<dyn ModelProviderRegistry> =
+            Arc::new(SqliteModelProviderRegistry::new(storage.pool().clone()));
+        let workspace = storage
+            .create_workspace("test", "/tmp/portico-resolver-selection-test", false)
+            .await
+            .expect("workspace");
+        let thread = storage.create_thread(workspace.id, "thread").await.expect("thread");
+        let run = storage.create_run(workspace.id, thread.id).await.expect("run");
+        let provider = registry
+            .create_provider(ProviderKind::OpenAI, "OpenAI", None, "openai-ref")
+            .await
+            .expect("provider");
+        let model = registry
+            .add_model(
+                provider.id,
+                "selected-model",
+                "Selected",
+                app_models::ModelCapability {
+                    supports_streaming: true,
+                    supports_tools: false,
+                    supports_json_schema: false,
+                    supports_vision: false,
+                    supports_pdf: false,
+                    supports_system_prompt: true,
+                    supports_embeddings: false,
+                    max_context_tokens: Some(32_000),
+                    input_price_per_1k: None,
+                    output_price_per_1k: None,
+                },
+            )
+            .await
+            .expect("model");
+        registry
+            .set_active_model(
+                app_models::ModelSelectionScope::Global,
+                None,
+                None,
+                provider.id,
+                model.id,
+            )
+            .await
+            .expect("select");
+        registry
+            .record_provider_health(ProviderHealth {
+                provider_id: provider.id,
+                model_id: model.id,
+                status: ProviderHealthStatus::Ready,
+                error_code: None,
+                message: Some("ready".to_owned()),
+                checked_at: chrono::Utc::now(),
+            })
+            .await
+            .expect("health");
+        let secrets = Arc::new(InMemorySecretStore::new());
+        secrets.set("openai-ref", "sk-test").expect("secret");
+        let executor_resolver =
+            RegistryExecutorResolver::new(registry, Arc::new(PorticoToolRegistry::new()), secrets);
+
+        let resolved_executor = executor_resolver
+            .resolve(workspace.id, thread.id, run.id)
+            .await
+            .expect("resolve");
+        assert_eq!(resolved_executor.snapshot.run_id, run.id);
+        assert_eq!(resolved_executor.snapshot.provider_id, provider.id);
+        assert_eq!(resolved_executor.snapshot.model_id, model.id);
+        assert_eq!(resolved_executor.snapshot.model_name, "selected-model");
     }
 }

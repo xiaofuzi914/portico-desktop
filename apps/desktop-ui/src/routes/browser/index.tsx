@@ -228,7 +228,9 @@ function BrowserPage() {
             >
               {ACTION_KINDS.map((kind) => (
                 <option key={kind} value={kind}>
-                  {t(`browser.action.${kind === "ExtractVisibleText" ? "extractVisibleText" : kind.toLowerCase()}`)}
+                  {t(
+                    `browser.action.${kind === "ExtractVisibleText" ? "extractVisibleText" : kind.toLowerCase()}`,
+                  )}
                 </option>
               ))}
             </select>

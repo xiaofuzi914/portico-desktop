@@ -3,4 +3,4 @@
 /**
  * High-level lifecycle status of an agent run.
  */
-export type AgentRunStatus = "Queued" | "Running" | "WaitingApproval" | "Paused" | "Cancelled" | "Failed" | "Completed";
+export type AgentRunStatus = "Queued" | "Running" | "WaitingApproval" | "Paused" | "Cancelled" | "Failed" | "Interrupted" | "Completed";

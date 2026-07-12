@@ -232,7 +232,8 @@ mod tests {
             simple_hash_embedding("chunk0"),
             simple_hash_embedding("chunk1"),
         ];
-        let chunks = RagIndex::build_chunks(workspace_id, "/docs/readme.md", contents, embeddings).unwrap();
+        let chunks =
+            RagIndex::build_chunks(workspace_id, "/docs/readme.md", contents, embeddings).unwrap();
 
         assert_eq!(chunks.len(), 2);
         assert_eq!(chunks[0].document_path, "/docs/readme.md");

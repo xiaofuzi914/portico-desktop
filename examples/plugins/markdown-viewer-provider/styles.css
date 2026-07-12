@@ -1,0 +1,284 @@
+:root {
+  color-scheme: light;
+  --doc-bg: #f3efe6;
+  --paper: #fbf9f5;
+  --ink: #1c1915;
+  --muted: #6b645a;
+  --line: #e4dccf;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+/*
+ * Host mounts this document inside a fixed-height iframe (h-full of the preview
+ * pane). WKWebView + sandboxed srcdoc often fails to scroll <body> reliably —
+ * make #document (.doc-surface) the sole scrollport instead.
+ */
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: linear-gradient(180deg, #f3efe6 0%, #ebe4d8 100%);
+  color: var(--ink);
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+.doc-surface {
+  box-sizing: border-box;
+  height: 100%;
+  max-width: none;
+  margin: 0;
+  padding: 24px max(28px, calc((100% - 920px) / 2)) 64px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+  background: var(--paper);
+  box-shadow: inset 0 0 0 1px var(--line);
+  /* Prefer scrollbar always available so users notice the surface scrolls */
+  scrollbar-gutter: stable;
+}
+
+.doc-placeholder {
+  color: var(--muted);
+  text-align: center;
+  margin-top: 30vh;
+  font-size: 0.95rem;
+}
+
+.doc-version-pill {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  justify-content: flex-end;
+  margin: -8px 0 12px;
+  pointer-events: none;
+}
+
+.doc-version-pill span {
+  pointer-events: auto;
+  font-size: 11px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  padding: 0.2rem 0.55rem;
+  border-radius: 999px;
+  background: #e8f0fa;
+  color: #2a4f7a;
+  border: 1px solid #d4e2f3;
+}
+
+markdown-viewer {
+  display: block;
+  min-height: 40vh;
+}
+
+.engine-error {
+  color: #8a3b2b;
+  white-space: pre-wrap;
+  font-size: 0.88rem;
+  font-family: ui-monospace, Menlo, monospace;
+  padding: 12px;
+  border: 1px solid #e8cfc7;
+  border-radius: 8px;
+  background: #fff8f6;
+}
+
+.doc-body {
+  line-height: 1.75;
+  font-size: 16px;
+}
+
+.doc-body h1 {
+  text-align: center;
+  font-size: 1.85rem;
+  margin: 0 0 1rem;
+}
+
+.doc-body h2 {
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 0.35rem;
+  margin-top: 1.75rem;
+}
+
+.doc-body pre {
+  overflow: auto;
+  padding: 12px 14px;
+  border-radius: 8px;
+  background: #f3f0e9;
+  border: 1px solid var(--line);
+}
+
+/*
+ * Mermaid zoom shell (Portico bridge — re-applied on every plugin upgrade).
+ * Natural SVG size + scroll; do not squash max-width:100% on large graphs.
+ */
+.doc-body .mermaid-wrap,
+.doc-body .diagram-zoom-shell {
+  position: relative;
+  margin: 1rem 0;
+  padding: 0;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.doc-body .diagram-zoom-scroll {
+  overflow: auto;
+  max-height: min(70vh, 560px);
+  padding: 1rem;
+  text-align: center;
+}
+
+.doc-body .diagram-zoom-scroll svg {
+  max-width: none;
+  height: auto;
+  display: inline-block;
+  vertical-align: middle;
+}
+
+.doc-body .diagram-zoom-open-btn {
+  position: absolute;
+  top: 0.5rem;
+  right: 0.5rem;
+  z-index: 3;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  border: 1px solid #b8d0ea;
+  border-radius: 999px;
+  background: #f0f6fc;
+  color: #1e4d7b;
+  padding: 0.25rem 0.6rem;
+  font-size: 11px;
+  font-weight: 600;
+  font-family: system-ui, sans-serif;
+  cursor: pointer;
+  box-shadow: 0 1px 4px #2a4f7a22;
+}
+
+.doc-body .diagram-zoom-open-btn:hover {
+  background: #fff;
+}
+
+/* Lightbox — lives on document.body (iframe-local fullscreen) */
+.diagram-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  flex-direction: column;
+  background: rgba(15, 23, 42, 0.55);
+  backdrop-filter: blur(2px);
+}
+
+.diagram-lightbox-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  background: #1e293b;
+  color: #f8fafc;
+  border-bottom: 1px solid #334155;
+}
+
+.diagram-lightbox-title {
+  margin: 0;
+  flex: 1;
+  min-width: 0;
+  font-size: 0.875rem;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.diagram-lightbox-tools {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.diagram-lightbox-tool {
+  border: 0;
+  background: transparent;
+  color: #e2e8f0;
+  width: 2rem;
+  height: 2rem;
+  border-radius: 0.375rem;
+  cursor: pointer;
+  font-size: 1rem;
+  line-height: 1;
+}
+
+.diagram-lightbox-tool:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.diagram-lightbox-pct {
+  width: 3rem;
+  text-align: center;
+  font-size: 0.75rem;
+  color: #94a3b8;
+  font-variant-numeric: tabular-nums;
+}
+
+.diagram-lightbox-viewport {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  cursor: grab;
+}
+
+.diagram-lightbox-viewport:active {
+  cursor: grabbing;
+}
+
+.diagram-lightbox-stage {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform-origin: center center;
+}
+
+.diagram-lightbox-stage svg {
+  max-width: none;
+  height: auto;
+  background: #fff;
+  border-radius: 8px;
+  padding: 12px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.28);
+}
+
+.diagram-lightbox-hint {
+  margin: 0;
+  padding: 0.4rem 0.75rem;
+  text-align: center;
+  font-size: 11px;
+  color: #94a3b8;
+  background: #1e293b;
+  border-top: 1px solid #334155;
+}
+
+.doc-body .katex-display {
+  margin: 1rem 0;
+  overflow-x: auto;
+  text-align: center;
+}
+
+.doc-body table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 1rem 0;
+  font-size: 0.92rem;
+}
+
+.doc-body th,
+.doc-body td {
+  border: 1px solid var(--line);
+  padding: 8px 10px;
+}

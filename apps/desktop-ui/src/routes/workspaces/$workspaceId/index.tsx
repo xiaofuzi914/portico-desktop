@@ -8,17 +8,19 @@ import {
   MessageSquare,
   Plus,
   ShieldCheck,
+  Trash2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   createThread,
+  deleteThread,
   listThreads,
   listWorkspaces,
   trustWorkspace,
 } from "@/lib/tauri-api";
 import { formatRelativeTime } from "@/lib/formatters";
-import { asWorkspaceId } from "@/lib/schemas";
-import { useEffect, useMemo, useRef } from "react";
+import { asWorkspaceId, type ThreadId } from "@/lib/schemas";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "@/lib/i18n-react";
 import { typography } from "@/components/ui/typography";
 import { workspaceKeys } from "@/lib/query-keys";
@@ -34,6 +36,7 @@ function ProjectDetailPage() {
   const queryClient = useQueryClient();
   const navigate = useNavigate({ from: Route.fullPath });
   const { t } = useTranslation();
+  const [keepEmptyAfterDelete, setKeepEmptyAfterDelete] = useState(false);
 
   const { data: workspaces, isLoading: workspaceLoading } = useQuery({
     queryKey: workspaceKeys.list(),
@@ -53,6 +56,7 @@ function ProjectDetailPage() {
   const create = useMutation({
     mutationFn: () => createThread(workspaceId, t("thread.defaultTitle")),
     onSuccess: (thread) => {
+      setKeepEmptyAfterDelete(false);
       void queryClient.invalidateQueries({ queryKey: workspaceKeys.threads(workspaceId) });
       void navigate({
         to: "/workspaces/$workspaceId/threads/$threadId",
@@ -64,16 +68,36 @@ function ProjectDetailPage() {
 
   useEffect(() => {
     autoCreateStarted.current = false;
+    setKeepEmptyAfterDelete(false);
   }, [workspaceId]);
 
   useEffect(() => {
-    if (threadsLoading || !threads || threads.length > 0 || autoCreateStarted.current) {
+    if (
+      threadsLoading ||
+      !threads ||
+      threads.length > 0 ||
+      autoCreateStarted.current ||
+      keepEmptyAfterDelete
+    ) {
       return;
     }
 
     autoCreateStarted.current = true;
     create.mutate();
-  }, [create, threads, threadsLoading]);
+  }, [create, keepEmptyAfterDelete, threads, threadsLoading]);
+
+  const remove = useMutation({
+    mutationFn: (threadId: ThreadId) => deleteThread(workspaceId, threadId),
+    onSuccess: (_data, threadId) => {
+      setKeepEmptyAfterDelete((threads?.length ?? 0) <= 1);
+      queryClient.removeQueries({ queryKey: ["messages", threadId] });
+      queryClient.removeQueries({ queryKey: ["runs", threadId] });
+      queryClient.removeQueries({
+        predicate: (query) => query.queryKey.includes(threadId),
+      });
+      void queryClient.invalidateQueries({ queryKey: workspaceKeys.threads(workspaceId) });
+    },
+  });
 
   const trust = useMutation({
     mutationFn: (trusted: boolean) => trustWorkspace(workspaceId, trusted),
@@ -165,23 +189,45 @@ function ProjectDetailPage() {
                       </p>
                     ) : (
                       threads?.map((thread) => (
-                        <Link
-                          key={thread.id}
-                          to="/workspaces/$workspaceId/threads/$threadId"
-                          params={{ workspaceId, threadId: thread.id }}
-                          className="hover:bg-muted/70 flex items-center justify-between gap-4 px-4 py-3 transition-colors"
-                        >
-                          <div className="min-w-0">
-                            <p className={`truncate ${typography.itemTitle}`}>{thread.title}</p>
-                            <p className={`mt-1 ${typography.metadata}`}>
-                              {t("thread.updated")} {formatRelativeTime(thread.updated_at)}
-                            </p>
-                          </div>
-                          <ArrowRight className="text-muted-foreground h-4 w-4 shrink-0" />
-                        </Link>
+                        <div key={thread.id} className="hover:bg-muted/70 flex items-center gap-2">
+                          <Link
+                            to="/workspaces/$workspaceId/threads/$threadId"
+                            params={{ workspaceId, threadId: thread.id }}
+                            className="flex min-w-0 flex-1 items-center justify-between gap-4 px-4 py-3 transition-colors"
+                          >
+                            <div className="min-w-0">
+                              <p className={`truncate ${typography.itemTitle}`}>{thread.title}</p>
+                              <p className={`mt-1 ${typography.metadata}`}>
+                                {t("thread.updated")} {formatRelativeTime(thread.updated_at)}
+                              </p>
+                            </div>
+                            <ArrowRight className="text-muted-foreground h-4 w-4 shrink-0" />
+                          </Link>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon"
+                            className="text-muted-foreground hover:text-destructive mr-3 shrink-0"
+                            aria-label={t("thread.delete")}
+                            title={t("thread.delete")}
+                            disabled={remove.isPending}
+                            onClick={() => {
+                              if (window.confirm(t("thread.deleteConfirm"))) {
+                                remove.mutate(thread.id);
+                              }
+                            }}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </div>
                       ))
                     )}
                   </div>
+                  {remove.isError && (
+                    <p className="text-destructive border-t px-4 py-3 text-sm">
+                      {remove.error instanceof Error ? remove.error.message : String(remove.error)}
+                    </p>
+                  )}
                 </div>
               </div>
             </div>
@@ -190,7 +236,26 @@ function ProjectDetailPage() {
           <div className="min-h-0 flex-1" />
         )}
 
-        {!shouldShowThreadList && (
+        {!shouldShowThreadList && keepEmptyAfterDelete && (
+          <div className="flex min-h-0 flex-1 items-center justify-center p-6">
+            <div className="text-center">
+              <p className={typography.sectionTitle}>{t("thread.noThreads")}</p>
+              <Button
+                className="mt-4"
+                onClick={() => {
+                  setKeepEmptyAfterDelete(false);
+                  autoCreateStarted.current = true;
+                  create.mutate();
+                }}
+              >
+                <Plus className="h-4 w-4" />
+                {t("sidebar.newThread")}
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {!shouldShowThreadList && !keepEmptyAfterDelete && (
           <div className="bg-surface/70 shrink-0 border-t px-6 py-4">
             <ConversationComposer
               disabled

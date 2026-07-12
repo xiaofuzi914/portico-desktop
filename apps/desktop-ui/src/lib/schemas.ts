@@ -13,6 +13,9 @@ export type ThreadId = z.infer<typeof threadIdSchema>;
 export const agentRunIdSchema = z.string().min(1).brand<"AgentRunId">();
 export type AgentRunId = z.infer<typeof agentRunIdSchema>;
 
+export const messageIdSchema = z.string().min(1).brand<"MessageId">();
+export type MessageId = z.infer<typeof messageIdSchema>;
+
 export const worktreeIdSchema = z.string().min(1).brand<"WorktreeId">();
 export type WorktreeId = z.infer<typeof worktreeIdSchema>;
 
@@ -116,6 +119,51 @@ export const modelInfoSchema = z.object({
 });
 export type ModelInfo = z.infer<typeof modelInfoSchema>;
 
+export const modelSelectionScopeSchema = z.enum(["Global", "Workspace", "Thread"]);
+export type ModelSelectionScope = z.infer<typeof modelSelectionScopeSchema>;
+
+export const activeModelSelectionSchema = z.object({
+  scope: modelSelectionScopeSchema,
+  workspace_id: workspaceIdSchema.nullable(),
+  thread_id: threadIdSchema.nullable(),
+  provider_id: providerIdSchema,
+  model_id: modelIdSchema,
+  provider_name: z.string(),
+  model_name: z.string(),
+  updated_at: z.string().datetime(),
+});
+export type ActiveModelSelection = z.infer<typeof activeModelSelectionSchema>;
+
+export const providerHealthStatusSchema = z.enum([
+  "Checking",
+  "Ready",
+  "Degraded",
+  "InvalidCredentials",
+  "Unsupported",
+]);
+export type ProviderHealthStatus = z.infer<typeof providerHealthStatusSchema>;
+
+export const providerHealthSchema = z.object({
+  provider_id: providerIdSchema,
+  model_id: modelIdSchema,
+  status: providerHealthStatusSchema,
+  error_code: z.string().nullable(),
+  message: z.string().nullable(),
+  checked_at: z.string().datetime(),
+});
+export type ProviderHealth = z.infer<typeof providerHealthSchema>;
+
+export const runModelSnapshotSchema = z.object({
+  run_id: agentRunIdSchema,
+  provider_id: providerIdSchema,
+  model_id: modelIdSchema,
+  provider_name: z.string(),
+  model_name: z.string(),
+  provider_config_updated_at: z.string().datetime(),
+  created_at: z.string().datetime(),
+});
+export type RunModelSnapshot = z.infer<typeof runModelSnapshotSchema>;
+
 export const usageBudgetSchema = z.object({
   per_run_usd: z.number().nonnegative().nullable(),
   daily_usd: z.number().nonnegative().nullable(),
@@ -148,6 +196,7 @@ export const agentRunStatusSchema = z.enum([
   "Paused",
   "Cancelled",
   "Failed",
+  "Interrupted",
   "Completed",
 ]);
 export type AgentRunStatus = z.infer<typeof agentRunStatusSchema>;
@@ -200,6 +249,20 @@ export const agentRunSchema = z.object({
   completed_at: z.string().datetime().nullable(),
 });
 export type AgentRun = z.infer<typeof agentRunSchema>;
+
+export const messageRoleSchema = z.enum(["User", "Assistant", "System"]);
+export type MessageRole = z.infer<typeof messageRoleSchema>;
+
+export const messageSchema = z.object({
+  id: messageIdSchema,
+  thread_id: threadIdSchema,
+  run_id: agentRunIdSchema.nullable(),
+  role: messageRoleSchema,
+  content: z.string(),
+  client_request_id: z.string().nullable(),
+  created_at: z.string().datetime(),
+});
+export type Message = z.infer<typeof messageSchema>;
 
 export const runEventSchema = z.object({
   id: z.number().int(),
@@ -501,6 +564,14 @@ export const pluginPermissionsSchema = z.object({
 });
 export type PluginPermissions = z.infer<typeof pluginPermissionsSchema>;
 
+export const pluginCapabilitySchema = z.enum([
+  "markdown.preview",
+  "markdown.export.html",
+  "markdown.export.docx",
+  "markdown.export.pdf",
+]);
+export type PluginCapability = z.infer<typeof pluginCapabilitySchema>;
+
 export const pluginManifestSchema = z.object({
   id: pluginIdSchema,
   name: z.string().min(1),
@@ -509,6 +580,9 @@ export const pluginManifestSchema = z.object({
   description: z.string(),
   skills: z.array(z.string()),
   tools: z.array(z.string()),
+  entrypoint: z.string().min(1).nullable().optional(),
+  capabilities: z.array(pluginCapabilitySchema).default([]),
+  install_path: z.string().min(1).nullable().optional(),
   permissions: pluginPermissionsSchema,
   enabled: z.boolean(),
   installed_at: z.string().datetime(),
@@ -598,11 +672,78 @@ export const subagentRunSchema = z.object({
 });
 export type SubagentRun = z.infer<typeof subagentRunSchema>;
 
+export const workflowPatternIdSchema = z.string().uuid().brand<"WorkflowPatternId">();
+export type WorkflowPatternId = z.infer<typeof workflowPatternIdSchema>;
+
+export const workflowPatternStatusSchema = z.enum(["active", "suggested", "muted"]);
+export type WorkflowPatternStatus = z.infer<typeof workflowPatternStatusSchema>;
+
+export const workflowPatternSchema = z.object({
+  id: workflowPatternIdSchema,
+  // Inline enum — memoryScopeSchema is declared later in this module.
+  scope: z.enum(["Session", "Thread", "Workspace", "User"]),
+  workspace_id: workspaceIdSchema.nullable(),
+  name: z.string(),
+  summary: z.string(),
+  trigger_text: z.string(),
+  preferred_roles: z.array(z.string()),
+  collaboration_style: z.string(),
+  strength: z.number(),
+  success_count: z.number(),
+  failure_count: z.number(),
+  last_used_at: z.string().datetime().nullable().optional(),
+  status: workflowPatternStatusSchema,
+  created_at: z.string().datetime(),
+  updated_at: z.string().datetime(),
+});
+export type WorkflowPattern = z.infer<typeof workflowPatternSchema>;
+
+export const patternHintSchema = z.object({
+  id: workflowPatternIdSchema,
+  name: z.string(),
+  summary: z.string(),
+  preferred_roles: z.array(z.string()),
+  collaboration_style: z.string(),
+  strength: z.number(),
+  score: z.number(),
+});
+export type PatternHint = z.infer<typeof patternHintSchema>;
+
 export const orchestrationPlanSchema = z.object({
   parent_run_id: agentRunIdSchema,
   subagents: z.array(subagentRunSchema),
+  pattern_ids: z.array(workflowPatternIdSchema).default([]),
+  planning_rationale: z.string().default(""),
 });
 export type OrchestrationPlan = z.infer<typeof orchestrationPlanSchema>;
+
+export const orchestrationIdSchema = z.string().uuid().brand<"OrchestrationId">();
+export type OrchestrationId = z.infer<typeof orchestrationIdSchema>;
+
+export const orchestrationStatusSchema = z.enum([
+  "Planning",
+  "Running",
+  "Completed",
+  "Failed",
+  "Cancelled",
+]);
+export type OrchestrationStatus = z.infer<typeof orchestrationStatusSchema>;
+
+export const orchestrationSchema = z.object({
+  id: orchestrationIdSchema,
+  parent_run_id: agentRunIdSchema,
+  workspace_id: workspaceIdSchema,
+  thread_id: threadIdSchema,
+  task: z.string(),
+  status: orchestrationStatusSchema,
+  plan: orchestrationPlanSchema,
+  pattern_ids: z.array(workflowPatternIdSchema).default([]),
+  result_summary: z.string().nullable(),
+  created_at: z.string().datetime(),
+  updated_at: z.string().datetime(),
+  completed_at: z.string().datetime().nullable(),
+});
+export type Orchestration = z.infer<typeof orchestrationSchema>;
 
 // Memory / context schemas
 

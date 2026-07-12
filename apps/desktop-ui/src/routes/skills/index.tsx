@@ -6,5 +6,5 @@ export const Route = createFileRoute("/skills/")({
 });
 
 function SkillsPage() {
-  return <CapabilitiesCenter defaultTab="skills" />;
+  return <CapabilitiesCenter />;
 }

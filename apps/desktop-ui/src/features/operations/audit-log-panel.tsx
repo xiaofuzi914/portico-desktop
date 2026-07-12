@@ -70,9 +70,7 @@ export function AuditLogPanel() {
           </Button>
         </form>
 
-        <p className="text-muted-foreground text-xs">
-          {t("operations.auditHint")}
-        </p>
+        <p className="text-muted-foreground text-xs">{t("operations.auditHint")}</p>
 
         <AllowedPathsSummary
           workspaceId={filters.workspaceId ? asWorkspaceId(filters.workspaceId) : null}
@@ -111,27 +109,17 @@ export function AuditLogPanel() {
                     <td className="py-2 pr-4">
                       <DecisionBadge decision={entry.decision} />
                     </td>
-                    <td className="text-muted-foreground py-2 pr-4">
-                      {entry.reason ?? "—"}
-                    </td>
-                    <td className="text-muted-foreground py-2 pr-4">
-                      {entry.run_id ?? "—"}
-                    </td>
-                    <td className="text-muted-foreground py-2 pr-4">
-                      {entry.thread_id ?? "—"}
-                    </td>
-                    <td className="text-muted-foreground py-2">
-                      {entry.workspace_id ?? "—"}
-                    </td>
+                    <td className="text-muted-foreground py-2 pr-4">{entry.reason ?? "—"}</td>
+                    <td className="text-muted-foreground py-2 pr-4">{entry.run_id ?? "—"}</td>
+                    <td className="text-muted-foreground py-2 pr-4">{entry.thread_id ?? "—"}</td>
+                    <td className="text-muted-foreground py-2">{entry.workspace_id ?? "—"}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
         ) : data && data.length === 0 ? (
-          <p className="text-muted-foreground">
-            {t("operations.noAuditMatches")}
-          </p>
+          <p className="text-muted-foreground">{t("operations.noAuditMatches")}</p>
         ) : null}
       </CardContent>
     </Card>
@@ -149,8 +137,6 @@ function DecisionBadge({ decision }: { decision: string }) {
           ? "bg-red-100 text-red-800"
           : "bg-gray-100 text-gray-800";
   return (
-    <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${classes}`}>
-      {decision}
-    </span>
+    <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${classes}`}>{decision}</span>
   );
 }

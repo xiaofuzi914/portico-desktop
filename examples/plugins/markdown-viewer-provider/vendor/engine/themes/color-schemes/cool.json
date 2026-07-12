@@ -1,0 +1,37 @@
+{
+  "id": "cool",
+  "name": "冷色调",
+  "name_en": "Cool",
+  "description": "冷静的蓝灰色系，适合技术和现代阅读",
+  "description_en": "Calm blue-gray scheme for technical and modern reading",
+  
+  "text": {
+    "primary": "#111827",
+    "secondary": "#334155",
+    "muted": "#667085"
+  },
+  
+  "accent": {
+    "link": "#2563eb",
+    "linkHover": "#1d4ed8"
+  },
+  
+  "background": {
+    "page": "#f8fafc",
+    "surface": "#eef4fb",
+    "code": "#f3f7fb",
+    "blockquote": "#eef6ff"
+  },
+  
+  "blockquote": {
+    "border": "#93c5fd"
+  },
+  
+  "table": {
+    "border": "#cbd5e1",
+    "headerBackground": "#e8f1fb",
+    "headerText": "#1e3a5f",
+    "zebraEven": "#f3f7fb",
+    "zebraOdd": "#ffffff"
+  }
+}

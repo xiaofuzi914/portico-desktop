@@ -4,10 +4,6 @@ import { describe, expect, it, vi } from "vitest";
 import { I18nProvider } from "@/lib/i18n-react";
 import * as WorkspacesModule from "./index";
 
-(
-  globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
-).IS_REACT_ACT_ENVIRONMENT = true;
-
 interface ProjectStartGuideProps {
   onOpenExistingProject: () => void;
   onCreateNewProject: () => void;

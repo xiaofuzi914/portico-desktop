@@ -1,430 +1,558 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { listen } from "@tauri-apps/api/event";
+import { FolderOpen, Github, HardDrive, Loader2, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
 import {
-  addMcpServer,
   enablePlugin,
-  installPlugin,
-  listMcpServers,
+  getPorticoUserDirs,
+  installCatalogPlugin,
+  installPluginFromGithub,
+  installPluginPackage,
+  listPluginSources,
   listPlugins,
-  refreshMcpTools,
-  removeMcpServer,
+  openPorticoPluginsDir,
+  seedCatalogPlugins,
   uninstallPlugin,
+  type PluginSourceEntry,
 } from "@/lib/tauri-api";
-import {
-  asPluginId,
-  mcpServerConfigSchema,
-  pluginManifestSchema,
-  type McpServerConfig,
-  type McpTransport,
-  type PluginPermissions,
-} from "@/lib/schemas";
+import { asPluginId, type PluginManifest } from "@/lib/schemas";
 import { useTranslation } from "@/lib/i18n-react";
-import { mcpKeys, pluginKeys } from "@/lib/query-keys";
+import { pluginKeys } from "@/lib/query-keys";
+import { BUNDLED_PLUGIN_CATALOG, findCatalogEntry } from "./plugin-catalog";
+import { cn } from "@/lib/utils";
 
-function defaultMcpConfig(): Omit<McpServerConfig, "id"> {
-  return {
-    name: "",
-    transport: "Stdio",
-    command: null,
-    args: [],
-    url: null,
-    env: {},
-    enabled: true,
-  };
+const MARKDOWN_PROVIDER_STORAGE_KEY = "portico.markdownProvider";
+const PLUGIN_INSTALL_PROGRESS_EVENT = "plugin-install-progress";
+
+interface InstallLogLine {
+  id: string;
+  phase: string;
+  message: string;
+  level: string;
+  ts: number;
+}
+
+function sourceForPlugin(
+  plugin: PluginManifest,
+  sources: PluginSourceEntry[],
+): PluginSourceEntry | undefined {
+  return sources.find(
+    (s) => s.id === plugin.id || s.name === plugin.name || s.id === (plugin.id as string),
+  );
+}
+
+function latestHint(
+  plugin: PluginManifest,
+  sources: PluginSourceEntry[],
+): { label: string; canUpdate: boolean; source?: PluginSourceEntry } {
+  const src = sourceForPlugin(plugin, sources);
+  // Catalog display name often embeds version; prefer github recipe package version from installed compare.
+  // For markdown-viewer we treat source as "update via github/local closed-loop".
+  if (src?.github) {
+    // Without remote fetch, "latest" means reinstall from registered source (always offered).
+    return {
+      label: src.github,
+      canUpdate: true,
+      source: src,
+    };
+  }
+  if (src?.kind === "portico-package") {
+    return { label: src.name, canUpdate: true, source: src };
+  }
+  return { label: "", canUpdate: false };
 }
 
 export function PluginCapabilitiesPanel() {
   const queryClient = useQueryClient();
   const { t } = useTranslation();
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [actionMessage, setActionMessage] = useState<string | null>(null);
+  const [githubSource, setGithubSource] = useState(
+    "https://github.com/markdown-viewer/markdown-viewer-extension",
+  );
+  const [installPhase, setInstallPhase] = useState<string | null>(null);
+  const [installLog, setInstallLog] = useState<InstallLogLine[]>([]);
+  const logEndRef = useRef<HTMLDivElement>(null);
+  const logBoxRef = useRef<HTMLDivElement>(null);
 
-  const [manifestJson, setManifestJson] = useState("");
-  const [manifestError, setManifestError] = useState<string | null>(null);
+  // Live install progress from Rust (scrollable so long builds don't look frozen).
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    void listen<{ phase: string; message: string; ts: number; level: string }>(
+      PLUGIN_INSTALL_PROGRESS_EVENT,
+      (event) => {
+        const p = event.payload;
+        setInstallLog((prev) => [
+          ...prev,
+          {
+            id: `${p.ts}-${prev.length}-${Math.random().toString(36).slice(2, 7)}`,
+            phase: p.phase,
+            message: p.message,
+            level: p.level || "info",
+            ts: p.ts,
+          },
+        ]);
+      },
+    ).then((fn) => {
+      unlisten = fn;
+    });
+    return () => {
+      unlisten?.();
+    };
+  }, []);
 
-  const [expandedPlugin, setExpandedPlugin] = useState<string | null>(null);
+  useEffect(() => {
+    logEndRef.current?.scrollIntoView({ block: "end", behavior: "smooth" });
+  }, [installLog]);
 
-  const [mcpConfig, setMcpConfig] = useState<Omit<McpServerConfig, "id">>(defaultMcpConfig());
-  const [envKey, setEnvKey] = useState("");
-  const [envValue, setEnvValue] = useState("");
-
-  const { data: plugins, isLoading: pluginsLoading } = useQuery({
+  const { data: plugins = [], isLoading: pluginsLoading } = useQuery({
     queryKey: pluginKeys.list(),
     queryFn: listPlugins,
   });
 
-  const { data: mcpServers, isLoading: mcpServersLoading } = useQuery({
-    queryKey: mcpKeys.list(),
-    queryFn: listMcpServers,
+  const { data: userDirs } = useQuery({
+    queryKey: pluginKeys.userDirs(),
+    queryFn: getPorticoUserDirs,
   });
 
-  const install = useMutation({
-    mutationFn: async () => {
-      setManifestError(null);
-      let parsed: unknown;
+  useQuery({
+    queryKey: pluginKeys.available(),
+    queryFn: async () => {
       try {
-        parsed = JSON.parse(manifestJson) as unknown;
-      } catch (err) {
-        throw new Error(err instanceof Error ? err.message : "Invalid JSON");
+        await seedCatalogPlugins();
+      } catch {
+        /* ignore */
       }
-      const result = pluginManifestSchema.safeParse(parsed);
-      if (!result.success) {
-        throw new Error(result.error.errors.map((e) => e.message).join("; "));
-      }
-      return installPlugin(result.data);
+      return null;
     },
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: pluginKeys.list() });
-      setManifestJson("");
+  });
+
+  const { data: pluginSources = [] } = useQuery({
+    queryKey: [...pluginKeys.list(), "sources"],
+    queryFn: listPluginSources,
+  });
+
+  const clearFeedback = (opts?: { keepLog?: boolean }) => {
+    setActionError(null);
+    setActionMessage(null);
+    setInstallPhase(null);
+    if (!opts?.keepLog) setInstallLog([]);
+  };
+
+  const pushLocalLog = (phase: string, message: string, level = "info") => {
+    setInstallLog((prev) => [
+      ...prev,
+      {
+        id: `${Date.now()}-${prev.length}`,
+        phase,
+        message,
+        level,
+        ts: Date.now(),
+      },
+    ]);
+  };
+
+  const afterInstall = async (plugin: PluginManifest) => {
+    await queryClient.invalidateQueries({ queryKey: pluginKeys.list() });
+    if (plugin.capabilities.includes("markdown.preview")) {
+      localStorage.setItem(MARKDOWN_PROVIDER_STORAGE_KEY, plugin.id);
+    }
+    setInstallPhase(null);
+    pushLocalLog("done", `${plugin.display_name} v${plugin.version}`, "ok");
+    setActionMessage(
+      `${t("capabilities.pluginInstallSuccess")}: ${plugin.display_name} v${plugin.version}`,
+    );
+  };
+
+  /** Fast local/catalog install — never starts multi-minute GitHub build. */
+  const installLocalCatalog = useMutation({
+    mutationFn: async (packageName: string) => {
+      clearFeedback();
+      setInstallPhase(t("capabilities.installPhaseLocal"));
+      pushLocalLog("ui", t("capabilities.installPhaseLocal"));
+      return installCatalogPlugin(packageName);
+    },
+    onSuccess: (plugin) => {
+      void afterInstall(plugin);
     },
     onError: (err) => {
-      setManifestError(err instanceof Error ? err.message : String(err));
+      setInstallPhase(null);
+      const msg = err instanceof Error ? err.message : String(err);
+      pushLocalLog("error", msg, "error");
+      setActionError(msg);
+    },
+  });
+
+  const installFromGithub = useMutation({
+    mutationFn: async (source: string) => {
+      clearFeedback();
+      setInstallPhase(t("capabilities.installPhaseGithub"));
+      pushLocalLog("ui", t("capabilities.installPhaseGithub"));
+      pushLocalLog("ui", source.trim());
+      return installPluginFromGithub(source.trim());
+    },
+    onSuccess: (plugin) => {
+      void afterInstall(plugin);
+    },
+    onError: (err) => {
+      setInstallPhase(null);
+      const msg = err instanceof Error ? err.message : String(err);
+      pushLocalLog("error", msg, "error");
+      setActionError(msg);
+    },
+  });
+
+  const installCustom = useMutation({
+    mutationFn: async () => {
+      clearFeedback();
+      setInstallPhase(t("capabilities.installPhaseLocal"));
+      pushLocalLog("ui", t("capabilities.installPhaseLocal"));
+      const selection = await openDialog({
+        directory: true,
+        multiple: false,
+        defaultPath: userDirs?.plugins_available,
+      });
+      if (!selection || Array.isArray(selection)) {
+        setInstallPhase(null);
+        pushLocalLog("ui", t("capabilities.installCancelled"), "warn");
+        return null;
+      }
+      pushLocalLog("ui", String(selection));
+      return installPluginPackage(selection);
+    },
+    onSuccess: (plugin) => {
+      if (!plugin) {
+        setInstallPhase(null);
+        return;
+      }
+      void afterInstall(plugin);
+    },
+    onError: (err) => {
+      setInstallPhase(null);
+      const msg = err instanceof Error ? err.message : String(err);
+      pushLocalLog("error", msg, "error");
+      setActionError(msg);
     },
   });
 
   const toggleEnable = useMutation({
     mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) =>
       enablePlugin(asPluginId(id), enabled),
-    onSuccess: () => {
+    onSuccess: (_void, vars) => {
       void queryClient.invalidateQueries({ queryKey: pluginKeys.list() });
+      if (!vars.enabled && localStorage.getItem(MARKDOWN_PROVIDER_STORAGE_KEY) === vars.id) {
+        localStorage.setItem(MARKDOWN_PROVIDER_STORAGE_KEY, "builtin");
+      }
+    },
+    onError: (err) => {
+      setActionError(err instanceof Error ? err.message : String(err));
     },
   });
 
   const uninstall = useMutation({
-    mutationFn: (id: string) => uninstallPlugin(asPluginId(id)),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: pluginKeys.list() });
+    mutationFn: async (id: string) => {
+      clearFeedback();
+      await uninstallPlugin(asPluginId(id));
+      return id;
     },
-  });
-
-  const addMcp = useMutation({
-    mutationFn: () => {
-      const result = mcpServerConfigSchema.omit({ id: true }).safeParse(mcpConfig);
-      if (!result.success) {
-        throw new Error(result.error.errors.map((e) => e.message).join("; "));
+    onSuccess: async (id) => {
+      await queryClient.invalidateQueries({ queryKey: pluginKeys.list() });
+      if (localStorage.getItem(MARKDOWN_PROVIDER_STORAGE_KEY) === id) {
+        localStorage.setItem(MARKDOWN_PROVIDER_STORAGE_KEY, "builtin");
       }
-      return addMcpServer(result.data);
+      setActionMessage(
+        `${t("capabilities.pluginUninstallSuccess")} (${t("capabilities.pluginFilesRemoved")})`,
+      );
     },
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: mcpKeys.list() });
-      void refreshMcpTools();
-      setMcpConfig(defaultMcpConfig());
-      setEnvKey("");
-      setEnvValue("");
+    onError: (err) => {
+      setActionError(err instanceof Error ? err.message : String(err));
     },
   });
 
-  const removeMcp = useMutation({
-    mutationFn: (id: number) => removeMcpServer(id),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: mcpKeys.list() });
-      void refreshMcpTools();
-    },
-  });
-
-  const permissionsForDisplay = (permissions: PluginPermissions) => (
-    <div className="text-muted-foreground space-y-1 text-sm">
-      <p>
-        {t("capabilities.filesystem")}{" "}
-        <span className="text-foreground font-medium">{permissions.filesystem}</span>
-      </p>
-      <p>
-        {t("capabilities.network")}{" "}
-        {permissions.network.length ? permissions.network.join(", ") : t("common.none")}
-      </p>
-    </div>
-  );
+  const busy =
+    installFromGithub.isPending ||
+    installLocalCatalog.isPending ||
+    installCustom.isPending;
 
   return (
     <div className="space-y-6">
+      {/* ——— Section 1: Install ——— */}
       <Card>
-        <CardHeader>
-          <CardTitle>{t("capabilities.installPlugin")}</CardTitle>
+        <CardHeader className="pb-3">
+          <CardTitle>{t("capabilities.pluginInstallSection")}</CardTitle>
         </CardHeader>
-        <CardContent className="space-y-4">
-          <p className="text-muted-foreground text-sm">
-            {t("capabilities.installPluginBody")}
-          </p>
-          <Textarea
-            placeholder='{"id":"...","name":"...","version":"...",...}'
-            value={manifestJson}
-            onChange={(e) => setManifestJson(e.target.value)}
-            rows={6}
-          />
-          {manifestError && <p className="text-destructive text-sm">{manifestError}</p>}
-          <Button
-            onClick={() => install.mutate()}
-            disabled={install.isPending || !manifestJson.trim()}
-          >
-            {t("capabilities.install")}
-          </Button>
+        <CardContent className="space-y-4 text-sm">
+          <p className="text-muted-foreground">{t("capabilities.pluginInstallSectionBody")}</p>
+          {userDirs && (
+            <div className="text-muted-foreground flex flex-wrap items-center gap-2 text-xs">
+              <code className="bg-muted max-w-full truncate rounded px-1.5 py-0.5">
+                {userDirs.plugins}
+              </code>
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-7 px-2"
+                onClick={() => void openPorticoPluginsDir("available")}
+              >
+                <FolderOpen className="mr-1 h-3.5 w-3.5" />
+                {t("capabilities.openAvailableDir")}
+              </Button>
+            </div>
+          )}
+
+          {/* 1a GitHub */}
+          <div className="space-y-2 rounded-md border p-3">
+            <div className="flex items-center gap-2 text-sm font-medium">
+              <Github className="h-4 w-4" />
+              {t("capabilities.installFromGithub")}
+            </div>
+            <p className="text-muted-foreground text-xs">{t("capabilities.installFromGithubBody")}</p>
+            <div className="flex flex-col gap-2 sm:flex-row">
+              <input
+                className="border-input bg-background ring-offset-background placeholder:text-muted-foreground focus-visible:ring-ring flex h-9 w-full rounded-md border px-3 text-sm focus-visible:ring-2 focus-visible:outline-none"
+                value={githubSource}
+                onChange={(e) => setGithubSource(e.target.value)}
+                placeholder="https://github.com/owner/repo"
+                spellCheck={false}
+                disabled={busy}
+              />
+              <Button
+                size="sm"
+                className="shrink-0 gap-1.5"
+                disabled={busy || !githubSource.trim()}
+                onClick={() => installFromGithub.mutate(githubSource)}
+              >
+                {installFromGithub.isPending ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Github className="h-3.5 w-3.5" />
+                )}
+                {installFromGithub.isPending
+                  ? t("capabilities.installingFromGithub")
+                  : t("capabilities.installFromGithubAction")}
+              </Button>
+            </div>
+            {pluginSources.some((s) => s.github) && (
+              <p className="text-muted-foreground text-[11px]">
+                {t("capabilities.knownGithubSources")}:{" "}
+                {pluginSources
+                  .filter((s) => s.github)
+                  .map((s) => (
+                    <button
+                      key={s.name}
+                      type="button"
+                      className="text-foreground underline-offset-2 hover:underline"
+                      disabled={busy}
+                      onClick={() => setGithubSource(s.github || "")}
+                    >
+                      {s.display_name || s.github}
+                    </button>
+                  ))
+                  .reduce<React.ReactNode[]>((acc, node, i) => {
+                    if (i > 0) acc.push(" · ");
+                    acc.push(node);
+                    return acc;
+                  }, [])}
+              </p>
+            )}
+          </div>
+
+          {/* 1b Local */}
+          <div className="space-y-2 rounded-md border p-3">
+            <div className="flex items-center gap-2 text-sm font-medium">
+              <HardDrive className="h-4 w-4" />
+              {t("capabilities.installFromLocal")}
+            </div>
+            <p className="text-muted-foreground text-xs">{t("capabilities.installFromLocalBody")}</p>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                size="sm"
+                variant="outline"
+                className="gap-1.5"
+                disabled={busy}
+                onClick={() => installCustom.mutate()}
+              >
+                {installCustom.isPending ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <FolderOpen className="h-3.5 w-3.5" />
+                )}
+                {t("capabilities.installPluginPackage")}
+              </Button>
+              {/* Quick local catalog packages (monorepo / available) */}
+              {BUNDLED_PLUGIN_CATALOG.map((entry) => (
+                <Button
+                  key={entry.id}
+                  size="sm"
+                  variant="outline"
+                  disabled={busy}
+                  onClick={() => installLocalCatalog.mutate(entry.name)}
+                  title={t("capabilities.installLocalCatalogHint")}
+                >
+                  {installLocalCatalog.isPending && installLocalCatalog.variables === entry.name
+                    ? t("common.loading")
+                    : `${t("capabilities.install")}: ${t(entry.displayNameKey)}`}
+                </Button>
+              ))}
+            </div>
+          </div>
+
+          {(installPhase || installLog.length > 0) && (
+            <div className="space-y-2">
+              {installPhase && (
+                <p className="text-muted-foreground flex items-center gap-2 text-xs">
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  {installPhase}
+                </p>
+              )}
+              <div
+                ref={logBoxRef}
+                className="bg-muted/40 max-h-56 overflow-y-auto rounded-md border px-3 py-2 font-mono text-[11px] leading-5"
+                aria-live="polite"
+                aria-label={t("capabilities.installLog")}
+              >
+                {installLog.length === 0 ? (
+                  <p className="text-muted-foreground">{t("capabilities.installLogWaiting")}</p>
+                ) : (
+                  installLog.map((line) => (
+                    <div
+                      key={line.id}
+                      className={cn(
+                        "whitespace-pre-wrap break-all",
+                        line.level === "error" && "text-destructive",
+                        line.level === "ok" && "text-green-700",
+                        line.level === "warn" && "text-amber-700",
+                        line.level === "info" && "text-muted-foreground",
+                      )}
+                    >
+                      <span className="text-foreground/70">[{line.phase}]</span> {line.message}
+                    </div>
+                  ))
+                )}
+                <div ref={logEndRef} />
+              </div>
+            </div>
+          )}
+          {actionError && <p className="text-destructive text-sm whitespace-pre-wrap">{actionError}</p>}
+          {actionMessage && <p className="text-sm text-green-700">{actionMessage}</p>}
         </CardContent>
       </Card>
 
+      {/* ——— Section 2: Installed + version ——— */}
       <Card>
-        <CardHeader>
-          <CardTitle>{t("capabilities.installedPlugins")}</CardTitle>
+        <CardHeader className="pb-3">
+          <CardTitle>{t("capabilities.installedPluginsSection")}</CardTitle>
         </CardHeader>
-        <CardContent>
+        <CardContent className="space-y-3">
+          <p className="text-muted-foreground text-sm">{t("capabilities.installedPluginsSectionBody")}</p>
           {pluginsLoading ? (
-            <p className="text-muted-foreground">{t("capabilities.loadingPlugins")}</p>
-          ) : plugins?.length ? (
-            <ul className="divide-y">
+            <p className="text-muted-foreground text-sm">{t("common.loading")}</p>
+          ) : plugins.length === 0 ? (
+            <p className="text-muted-foreground text-sm">{t("capabilities.noPlugins")}</p>
+          ) : (
+            <ul className="divide-y rounded-md border">
               {plugins.map((plugin) => {
-                const isExpanded = expandedPlugin === plugin.id;
+                const catalog = findCatalogEntry(plugin.id);
+                const update = latestHint(plugin, pluginSources);
                 return (
-                  <li key={plugin.id} className="py-4">
-                    <div className="flex items-start justify-between gap-4">
-                      <div className="flex-1">
-                        <div className="flex items-center gap-2">
-                          <span className="font-medium">{plugin.display_name}</span>
-                          <span className="text-muted-foreground text-xs">
-                            {plugin.name}@{plugin.version}
-                          </span>
-                          {plugin.enabled ? (
-                            <span className="text-xs text-green-600">{t("common.enabled")}</span>
-                          ) : (
-                            <span className="text-xs text-amber-600">{t("common.disabled")}</span>
-                          )}
-                        </div>
-                        <p className="text-muted-foreground text-sm">{plugin.description}</p>
-                        <div className="text-muted-foreground mt-1 flex flex-wrap gap-2 text-xs">
-                          <span>
-                            {plugin.skills.length} {t("capabilities.skillsCount")}
-                          </span>
-                          <span>
-                            {plugin.tools.length} {t("capabilities.toolsCount")}
-                          </span>
-                        </div>
+                  <li
+                    key={plugin.id}
+                    className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between"
+                  >
+                    <div className="min-w-0 space-y-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="font-medium">
+                          {catalog ? t(catalog.displayNameKey) : plugin.display_name}
+                        </span>
+                        <span
+                          className="bg-muted text-foreground rounded px-1.5 py-0.5 font-mono text-[11px] tabular-nums"
+                          title={t("capabilities.installedVersion")}
+                        >
+                          v{plugin.version}
+                        </span>
+                        <span className="text-xs text-green-600">
+                          {plugin.enabled
+                            ? t("capabilities.catalogInstalledEnabled")
+                            : t("capabilities.catalogInstalledDisabled")}
+                        </span>
                       </div>
-                      <div className="flex items-center gap-2">
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => setExpandedPlugin(isExpanded ? null : plugin.id)}
-                        >
-                          {isExpanded ? t("capabilities.hide") : t("capabilities.permissions")}
-                        </Button>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() =>
-                            toggleEnable.mutate({ id: plugin.id, enabled: !plugin.enabled })
-                          }
-                          disabled={toggleEnable.isPending}
-                        >
-                          {plugin.enabled ? t("capabilities.disable") : t("capabilities.enable")}
-                        </Button>
-                        <Button
-                          variant="destructive"
-                          size="sm"
-                          onClick={() => uninstall.mutate(plugin.id)}
-                          disabled={uninstall.isPending}
-                        >
-                          {t("capabilities.uninstall")}
-                        </Button>
-                      </div>
+                      <p className="text-muted-foreground text-sm line-clamp-2">
+                        {plugin.description}
+                      </p>
+                      {plugin.capabilities?.length > 0 && (
+                        <div className="flex flex-wrap gap-1">
+                          {plugin.capabilities.map((cap) => (
+                            <span
+                              key={cap}
+                              className="bg-muted text-muted-foreground rounded px-1.5 py-0.5 text-[10px]"
+                            >
+                              {cap}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                      {update.canUpdate && update.source?.github && (
+                        <p className="text-muted-foreground text-[11px]">
+                          {t("capabilities.updateSource")}: {update.source.github}
+                        </p>
+                      )}
                     </div>
-                    {isExpanded && (
-                      <div className="bg-muted mt-3 rounded-md p-3">
-                        <p className="text-sm font-medium">{t("capabilities.permissions")}</p>
-                        {permissionsForDisplay(plugin.permissions)}
-                        <div className="text-muted-foreground mt-2 text-sm">
-                          <p>
-                            {t("capabilities.skills")}:{" "}
-                            {plugin.skills.join(", ") || t("common.none")}
-                          </p>
-                          <p>
-                            {t("capability.tools")}: {plugin.tools.join(", ") || t("common.none")}
-                          </p>
-                        </div>
-                      </div>
-                    )}
+                    <div className="flex shrink-0 flex-wrap gap-2">
+                      {update.canUpdate && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="gap-1"
+                          disabled={busy}
+                          title={t("capabilities.checkUpdateHint")}
+                          onClick={() => {
+                            if (update.source?.github) {
+                              installFromGithub.mutate(update.source.github);
+                            } else if (update.source?.name) {
+                              installLocalCatalog.mutate(update.source.name);
+                            } else if (catalog) {
+                              installLocalCatalog.mutate(catalog.name);
+                            }
+                          }}
+                        >
+                          <RefreshCw className="h-3.5 w-3.5" />
+                          {t("capabilities.updateToLatest")}
+                        </Button>
+                      )}
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={toggleEnable.isPending}
+                        onClick={() =>
+                          toggleEnable.mutate({
+                            id: plugin.id,
+                            enabled: !plugin.enabled,
+                          })
+                        }
+                      >
+                        {plugin.enabled ? t("capabilities.disable") : t("capabilities.enable")}
+                      </Button>
+                      <Button
+                        variant="destructive"
+                        size="sm"
+                        disabled={uninstall.isPending}
+                        onClick={() => {
+                          if (window.confirm(t("capabilities.confirmUninstall"))) {
+                            uninstall.mutate(plugin.id);
+                          }
+                        }}
+                      >
+                        {t("capabilities.uninstall")}
+                      </Button>
+                    </div>
                   </li>
                 );
               })}
             </ul>
-          ) : (
-            <p className="text-muted-foreground">{t("capabilities.noPlugins")}</p>
           )}
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>{t("capabilities.mcpServers")}</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="grid gap-3 sm:grid-cols-2">
-            <Input
-              placeholder={t("capabilities.serverName")}
-              value={mcpConfig.name}
-              onChange={(e) => setMcpConfig((prev) => ({ ...prev, name: e.target.value }))}
-            />
-            <select
-              className="border-input bg-background h-9 rounded-md border px-3 text-sm"
-              value={mcpConfig.transport}
-              onChange={(e) =>
-                setMcpConfig((prev) => ({
-                  ...prev,
-                  transport: e.target.value as McpTransport,
-                }))
-              }
-            >
-              <option value="Stdio">Stdio</option>
-              <option value="Http">HTTP</option>
-            </select>
-          </div>
-
-          {mcpConfig.transport === "Stdio" ? (
-            <div className="grid gap-3 sm:grid-cols-2">
-              <Input
-                placeholder={t("capabilities.command")}
-                value={mcpConfig.command ?? ""}
-                onChange={(e) =>
-                  setMcpConfig((prev) => ({
-                    ...prev,
-                    command: e.target.value || null,
-                  }))
-                }
-              />
-              <Input
-                placeholder={t("capabilities.arguments")}
-                value={mcpConfig.args.join(" ")}
-                onChange={(e) =>
-                  setMcpConfig((prev) => ({
-                    ...prev,
-                    args: e.target.value.split(" ").filter(Boolean),
-                  }))
-                }
-              />
-            </div>
-          ) : (
-            <Input
-              placeholder={t("capabilities.url")}
-              value={mcpConfig.url ?? ""}
-              onChange={(e) =>
-                setMcpConfig((prev) => ({
-                  ...prev,
-                  url: e.target.value || null,
-                }))
-              }
-            />
-          )}
-
-          <div className="space-y-2">
-            <p className="text-sm font-medium">{t("capabilities.environmentVariables")}</p>
-            <div className="flex flex-col gap-2 sm:flex-row">
-              <Input
-                placeholder={t("capabilities.key")}
-                value={envKey}
-                onChange={(e) => setEnvKey(e.target.value)}
-              />
-              <Input
-                placeholder={t("capabilities.value")}
-                value={envValue}
-                onChange={(e) => setEnvValue(e.target.value)}
-              />
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => {
-                  if (!envKey.trim()) return;
-                  setMcpConfig((prev) => ({
-                    ...prev,
-                    env: { ...prev.env, [envKey.trim()]: envValue },
-                  }));
-                  setEnvKey("");
-                  setEnvValue("");
-                }}
-              >
-                {t("capabilities.add")}
-              </Button>
-            </div>
-            {Object.entries(mcpConfig.env).map(([key, value]) => (
-              <div key={key} className="flex items-center justify-between text-sm">
-                <span>
-                  {key}={value}
-                </span>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  onClick={() =>
-                    setMcpConfig((prev) => {
-                      const next = { ...prev.env };
-                      delete next[key];
-                      return { ...prev, env: next };
-                    })
-                  }
-                >
-                  {t("capabilities.remove")}
-                </Button>
-              </div>
-            ))}
-          </div>
-
-          <label className="flex items-center gap-2 text-sm">
-            <input
-              type="checkbox"
-              checked={mcpConfig.enabled}
-              onChange={(e) => setMcpConfig((prev) => ({ ...prev, enabled: e.target.checked }))}
-              className="h-4 w-4"
-            />
-            {t("operations.enabled")}
-          </label>
-
-          <Button
-            onClick={() => addMcp.mutate()}
-            disabled={addMcp.isPending || !mcpConfig.name.trim()}
-          >
-            {t("capabilities.addMcpServer")}
-          </Button>
-
-          {addMcp.error && (
-            <p className="text-destructive text-sm">
-              {addMcp.error instanceof Error ? addMcp.error.message : String(addMcp.error)}
-            </p>
-          )}
-
-          <div className="pt-4">
-            {mcpServersLoading ? (
-              <p className="text-muted-foreground">{t("capabilities.loadingMcpServers")}</p>
-            ) : mcpServers?.length ? (
-              <ul className="divide-y">
-                {mcpServers.map((server) => (
-                  <li key={server.id} className="flex items-center justify-between py-3">
-                    <div>
-                      <span className="font-medium">{server.name}</span>
-                      <span className="text-muted-foreground ml-2 text-sm">{server.transport}</span>
-                      <span
-                        className={`ml-2 text-xs ${server.enabled ? "text-green-600" : "text-amber-600"}`}
-                      >
-                        {server.enabled ? t("common.enabled") : t("common.disabled")}
-                      </span>
-                      <p className="text-muted-foreground text-xs">
-                        {server.transport === "Stdio"
-                          ? [server.command, ...server.args].filter(Boolean).join(" ")
-                          : server.url}
-                      </p>
-                    </div>
-                    <Button
-                      variant="destructive"
-                      size="sm"
-                      onClick={() => removeMcp.mutate(server.id)}
-                      disabled={removeMcp.isPending}
-                    >
-                      {t("capabilities.remove")}
-                    </Button>
-                  </li>
-                ))}
-              </ul>
-            ) : (
-              <p className="text-muted-foreground">{t("capabilities.noMcpServers")}</p>
-            )}
-          </div>
         </CardContent>
       </Card>
     </div>

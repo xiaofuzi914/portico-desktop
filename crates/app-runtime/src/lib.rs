@@ -1,5 +1,6 @@
 //! Runtime and event bus abstractions for Portico.
 
+pub mod approval_broker;
 pub mod audit_logger;
 pub mod context;
 pub mod events;
@@ -8,43 +9,54 @@ pub mod notification_center;
 pub mod provider_registry;
 pub mod repo_root_provider;
 pub mod runner;
+pub mod safe_tools;
 pub mod storage;
 pub mod task_queue;
+pub mod tool_execution;
 pub mod workspace;
 pub mod worktree;
 
 // Re-export memory/embedding abstractions used by the Tauri bridge.
 pub use app_memory::{
-    EmbeddingProvider, HashEmbeddingProvider, OllamaEmbeddingProvider, OpenAiCompatEmbeddingProvider,
-    SqliteRagStore,
+    EmbeddingProvider, HashEmbeddingProvider, OllamaEmbeddingProvider,
+    OpenAiCompatEmbeddingProvider, SqliteRagStore,
 };
 
 // Re-export product types from app-models so consumers only depend on app-runtime.
 pub use app_models::{
-    AgentDefinition, AgentRun, AgentRunId, AgentRunStatus, AppError, ApprovalRequest,
-    ApprovalRequestId, ApprovalRequestStatus, Artifact, Automation, AutomationId,
+    ActiveModelSelection, AgentDefinition, AgentRun, AgentRunId, AgentRunStatus, AppError,
+    ApprovalRequest, ApprovalRequestId, ApprovalRequestStatus, Artifact, Automation, AutomationId,
     AutomationTrigger, BackgroundTask, BackgroundTaskId, BackgroundTaskStatus, BuiltInAgent,
-    ContextSummary, InstructionFile, McpServerConfig, McpTransport, MemoryId, MemoryItem,
-    MemoryScope, ModelCapability, ModelId, ModelInfo, Notification, NotificationCategory,
-    NotificationId, OrchestrationPlan, PermissionScope, PluginId, PluginManifest,
-    PluginPermissions, ProviderConfig, ProviderId, ProviderKind, RagChunk, RetryPolicy, RunEvent,
-    Skill, SkillId, SubagentRun, TaskKind, Thread, ThreadId, UsageBudget, UsageRecord, Workspace,
+    ContextSummary, ExecutionContext, FeatureCapabilities, InstructionFile, McpServerConfig,
+    McpTransport, MemoryId, MemoryItem, MemoryScope, Message, MessageId, MessageRole,
+    ModelCapability, ModelId, ModelInfo, ModelSelectionScope, Notification, NotificationCategory,
+    NotificationId, Orchestration, OrchestrationId, OrchestrationPlan, OrchestrationStatus,
+    PermissionScope, PluginId, PluginManifest, PluginPermissions, ProviderConfig, ProviderHealth,
+    ProviderHealthStatus, ProviderId, ProviderKind, RagChunk, RetryPolicy, RunEvent,
+    RunModelSnapshot, Skill, SkillId, SubagentRun, TaskKind, Thread, ThreadId, ToolInvocation,
+    ToolInvocationId, ToolInvocationStatus, UsageBudget, UsageRecord, WorkflowPatternId, Workspace,
     WorkspaceId, Worktree, WorktreeId,
 };
 
 // Re-export runtime modules.
 pub use app_plugins::{McpClientManager, PluginRegistry, SqlitePluginRegistry};
 pub use app_security::SecurityContext;
+pub use approval_broker::{ApprovalBroker, ApprovalExecutionOutcome, ExecutionGrant};
 pub use audit_logger::SqliteAuditLogger;
 pub use context::ContextInspector;
 pub use events::{EventBus, EventStream, MemoryEventBus, RuntimeEvent};
-pub use executor::{AgentExecutor, MockAgentExecutor};
+pub use executor::{
+    AgentExecutionOutcome, AgentExecutor, AgentExecutorResolver, MockAgentExecutor,
+    ResolvedAgentExecutor,
+};
 pub use notification_center::NotificationCenter;
 pub use provider_registry::{ModelProviderRegistry, SqliteModelProviderRegistry};
 pub use repo_root_provider::StorageRepoRootProvider;
 pub use runner::PorticoRuntimeHandle;
-pub use storage::{AuditLogEntry, SqliteStorage, Storage};
+pub use safe_tools::{SafeToolExecutor, ToolReconciliation};
+pub use storage::{AgentCheckpoint, AuditLogEntry, SqliteStorage, Storage};
 pub use task_queue::BackgroundTaskQueue;
+pub use tool_execution::{PolicyGate, PreparedToolRequest, ToolGateOutcome};
 pub use workspace::WorkspaceManager;
 pub use worktree::WorktreeManager;
 
@@ -78,6 +90,9 @@ pub trait PorticoRuntime: Send + Sync {
 
     /// List threads in a workspace.
     async fn list_threads(&self, workspace_id: WorkspaceId) -> Result<Vec<Thread>, AppError>;
+
+    /// Delete a thread and its conversation history.
+    async fn delete_thread(&self, workspace_id: WorkspaceId, id: ThreadId) -> Result<(), AppError>;
 
     /// Start a new agent run.
     async fn start_run(
@@ -130,6 +145,10 @@ mod tests {
 
     struct DummyEngine;
 
+    fn ensure_test_directory(path: &str) {
+        std::fs::create_dir_all(path).expect("create test workspace directory");
+    }
+
     impl PermissionEngine for DummyEngine {
         fn evaluate(
             &self,
@@ -156,12 +175,19 @@ mod tests {
     }
 
     async fn setup() -> (PorticoRuntimeHandle, Workspace, Thread) {
+        ensure_test_directory("/tmp/test");
         let storage = Arc::new(SqliteStorage::open_in_memory().await.expect("open db"));
         let event_bus = Arc::new(MemoryEventBus::default());
         let registry = Arc::new(SqliteModelProviderRegistry::new(storage.pool().clone()));
-        let runtime = PorticoRuntimeHandle::new(storage, event_bus, registry, None, None)
-            .await
-            .expect("create runtime");
+        let runtime = PorticoRuntimeHandle::new(
+            storage,
+            event_bus,
+            registry,
+            Some(Arc::new(MockAgentExecutor)),
+            None,
+        )
+        .await
+        .expect("create runtime");
         let workspace = runtime
             .create_workspace("test", "/tmp/test", false)
             .await
@@ -198,6 +224,86 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn send_message_is_idempotent_and_persists_the_user_turn() {
+        let (runtime, workspace, thread) = setup().await;
+        let first = runtime
+            .send_message(thread.id, "hello", Some("request-1"))
+            .await
+            .expect("first send");
+        let second = runtime
+            .send_message(thread.id, "hello", Some("request-1"))
+            .await
+            .expect("idempotent retry");
+
+        assert_eq!(first.id, second.id);
+        let messages = runtime.list_messages(thread.id).await.expect("list messages");
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].role, MessageRole::User);
+        assert_eq!(messages[0].content, "hello");
+        assert_eq!(messages[0].run_id, Some(first.id));
+        assert_eq!(messages[0].client_request_id.as_deref(), Some("request-1"));
+
+        let runs = runtime.list_runs(thread.id).await.expect("list runs");
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].workspace_id, workspace.id);
+    }
+
+    #[tokio::test]
+    async fn send_message_validates_content_and_idempotency_key() {
+        let (runtime, _workspace, thread) = setup().await;
+
+        assert!(runtime.send_message(thread.id, "   ", Some("request-1")).await.is_err());
+        assert!(
+            runtime
+                .send_message(thread.id, &"x".repeat(32_001), Some("request-2"))
+                .await
+                .is_err()
+        );
+        assert!(runtime.send_message(thread.id, "hello", Some("bad key!")).await.is_err());
+
+        assert!(runtime.list_messages(thread.id).await.expect("messages").is_empty());
+        assert!(runtime.list_runs(thread.id).await.expect("runs").is_empty());
+    }
+
+    #[tokio::test]
+    async fn send_message_rejects_a_second_active_turn() {
+        let (runtime, _workspace, thread) = setup().await;
+        let first = runtime
+            .send_message(thread.id, "first", Some("active-1"))
+            .await
+            .expect("first send");
+
+        let duplicate = runtime
+            .send_message(thread.id, "first", Some("active-1"))
+            .await
+            .expect("idempotent retry");
+        assert_eq!(duplicate.id, first.id);
+
+        let second = runtime.send_message(thread.id, "second", Some("active-2")).await;
+        assert!(
+            matches!(second, Err(AppError::Internal { ref message }) if message.contains("RUN_ALREADY_ACTIVE"))
+        );
+    }
+
+    #[tokio::test]
+    async fn create_run_rejects_a_thread_from_another_workspace() {
+        let (runtime, workspace, _thread) = setup().await;
+        ensure_test_directory("/tmp/other");
+        let other = runtime
+            .create_workspace("other", "/tmp/other", false)
+            .await
+            .expect("create other workspace");
+        let other_thread =
+            runtime.create_thread(other.id, "other").await.expect("create other thread");
+
+        let err = runtime
+            .start_run(workspace.id, other_thread.id)
+            .await
+            .expect_err("cross-workspace run must fail");
+        assert!(matches!(err, AppError::PermissionDenied { .. }));
+    }
+
+    #[tokio::test]
     async fn submit_message_streams_and_completes() {
         let (runtime, workspace, thread) = setup().await;
         let run = runtime.start_run(workspace.id, thread.id).await.expect("start run");
@@ -212,6 +318,11 @@ mod tests {
         let persisted_events = runtime.list_run_events(run.id).await.expect("list events");
         assert!(!persisted_events.is_empty());
 
+        let messages = runtime.list_messages(thread.id).await.expect("list messages");
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].role, MessageRole::Assistant);
+        assert_eq!(messages[0].run_id, Some(run.id));
+
         // Consume at least the MessageCompleted event from the bus.
         let mut found_completion = false;
         while let Ok(Some(event)) = stream.next().await {
@@ -221,6 +332,35 @@ mod tests {
             }
         }
         assert!(found_completion);
+    }
+
+    #[tokio::test]
+    async fn submit_message_without_executor_fails_without_mock_response() {
+        ensure_test_directory("/tmp/test");
+        let storage = Arc::new(SqliteStorage::open_in_memory().await.expect("open db"));
+        let event_bus = Arc::new(MemoryEventBus::default());
+        let registry = Arc::new(SqliteModelProviderRegistry::new(storage.pool().clone()));
+        let runtime = PorticoRuntimeHandle::new(storage, event_bus, registry, None, None)
+            .await
+            .expect("create runtime");
+        let workspace = runtime
+            .create_workspace("test", "/tmp/test", false)
+            .await
+            .expect("create workspace");
+        let thread = runtime.create_thread(workspace.id, "thread").await.expect("create thread");
+        let run = runtime.start_run(workspace.id, thread.id).await.expect("start run");
+
+        let err = runtime
+            .submit_message(run.id, "hello")
+            .await
+            .expect_err("a real provider is required");
+
+        assert!(err.to_string().contains("PROVIDER_UNAVAILABLE"));
+        let messages = runtime.list_messages(thread.id).await.expect("list messages");
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].role, MessageRole::System);
+        assert!(messages[0].content.contains("No model provider"));
+        assert!(runtime.list_run_events(run.id).await.expect("list events").is_empty());
     }
 
     #[tokio::test]
@@ -265,6 +405,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn runtime_evaluates_permissions_and_audits() {
+        ensure_test_directory("/tmp/test");
         let storage = Arc::new(SqliteStorage::open_in_memory().await.expect("open db"));
         let event_bus = Arc::new(MemoryEventBus::default());
         let registry = Arc::new(SqliteModelProviderRegistry::new(storage.pool().clone()));
@@ -315,6 +456,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn submit_message_emits_audit_events() {
+        ensure_test_directory("/tmp/test");
         let storage = Arc::new(SqliteStorage::open_in_memory().await.expect("open db"));
         let event_bus = Arc::new(MemoryEventBus::default());
         let registry = Arc::new(SqliteModelProviderRegistry::new(storage.pool().clone()));
@@ -325,15 +467,26 @@ mod tests {
             Arc::new(app_security::DefaultNetworkPolicy::new()),
             audit.clone(),
         ));
-        let runtime = PorticoRuntimeHandle::new(storage, event_bus, registry, None, None)
-            .await
-            .expect("create runtime")
-            .with_security(security);
+        let runtime = PorticoRuntimeHandle::new(
+            storage,
+            event_bus,
+            registry,
+            Some(Arc::new(MockAgentExecutor)),
+            None,
+        )
+        .await
+        .expect("create runtime")
+        .with_security(security);
 
         let workspace = runtime
             .create_workspace("test", "/tmp/test", true)
             .await
             .expect("create workspace");
+        runtime
+            .workspace_manager()
+            .trust_workspace(workspace.id, true)
+            .await
+            .expect("trust workspace");
         let thread = runtime.create_thread(workspace.id, "thread").await.expect("create thread");
         let run = runtime.start_run(workspace.id, thread.id).await.expect("start run");
 
@@ -347,6 +500,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn evaluate_permission_for_run_creates_approval_request() {
+        ensure_test_directory("/tmp/test");
         let storage = Arc::new(SqliteStorage::open_in_memory().await.expect("open db"));
         let event_bus = Arc::new(MemoryEventBus::default());
         let registry = Arc::new(SqliteModelProviderRegistry::new(storage.pool().clone()));
@@ -365,6 +519,11 @@ mod tests {
             .create_workspace("test", "/tmp/test", true)
             .await
             .expect("create workspace");
+        runtime
+            .workspace_manager()
+            .trust_workspace(workspace.id, true)
+            .await
+            .expect("trust workspace");
         let thread = runtime.create_thread(workspace.id, "thread").await.expect("create thread");
         let run = runtime.start_run(workspace.id, thread.id).await.expect("start run");
 
@@ -373,8 +532,8 @@ mod tests {
                 workspace_id: workspace.id,
                 thread_id: Some(thread.id),
                 run_id: Some(run.id),
-                action: "filesystem.write".to_owned(),
-                resource: "/tmp/test/file.txt".to_owned(),
+                action: "mcp.invoke.write".to_owned(),
+                resource: "test.write".to_owned(),
                 trusted_workspace: true,
             })
             .await
@@ -396,8 +555,47 @@ mod tests {
         assert_eq!(pending[0].status, ApprovalRequestStatus::Pending);
     }
 
+    #[tokio::test]
+    async fn evaluate_permission_for_run_uses_persisted_ownership_and_trust() {
+        let (runtime, workspace, thread) = setup().await;
+        let run = runtime.start_run(workspace.id, thread.id).await.expect("start run");
+
+        let forged_trust = runtime
+            .evaluate_permission_for_run(app_security::PermissionRequest {
+                workspace_id: workspace.id,
+                thread_id: Some(thread.id),
+                run_id: Some(run.id),
+                action: "filesystem.read".to_owned(),
+                resource: "/tmp/test/file.txt".to_owned(),
+                trusted_workspace: true,
+            })
+            .await
+            .expect("evaluate forged trust");
+        assert!(matches!(
+            forged_trust,
+            app_security::PermissionResult::Denied { .. }
+        ));
+
+        let other_workspace_id = WorkspaceId::new();
+        let forged_owner = runtime
+            .evaluate_permission_for_run(app_security::PermissionRequest {
+                workspace_id: other_workspace_id,
+                thread_id: Some(thread.id),
+                run_id: Some(run.id),
+                action: "filesystem.write".to_owned(),
+                resource: "/tmp/test/file.txt".to_owned(),
+                trusted_workspace: true,
+            })
+            .await;
+        assert!(matches!(
+            forged_owner,
+            Err(AppError::PermissionDenied { .. })
+        ));
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn approve_request_resumes_run() {
+        ensure_test_directory("/tmp/test");
         let storage = Arc::new(SqliteStorage::open_in_memory().await.expect("open db"));
         let event_bus = Arc::new(MemoryEventBus::default());
         let registry = Arc::new(SqliteModelProviderRegistry::new(storage.pool().clone()));
@@ -416,6 +614,11 @@ mod tests {
             .create_workspace("test", "/tmp/test", true)
             .await
             .expect("create workspace");
+        runtime
+            .workspace_manager()
+            .trust_workspace(workspace.id, true)
+            .await
+            .expect("trust workspace");
         let thread = runtime.create_thread(workspace.id, "thread").await.expect("create thread");
         let run = runtime.start_run(workspace.id, thread.id).await.expect("start run");
 
@@ -424,8 +627,8 @@ mod tests {
                 workspace_id: workspace.id,
                 thread_id: Some(thread.id),
                 run_id: Some(run.id),
-                action: "filesystem.write".to_owned(),
-                resource: "/tmp/test/file.txt".to_owned(),
+                action: "mcp.invoke.write".to_owned(),
+                resource: "test.write".to_owned(),
                 trusted_workspace: true,
             })
             .await
@@ -444,8 +647,44 @@ mod tests {
         assert_eq!(approval.status, ApprovalRequestStatus::Approved);
     }
 
+    #[tokio::test]
+    async fn cancel_waiting_run_closes_pending_approvals() {
+        let (runtime, workspace, thread) = setup().await;
+        runtime
+            .workspace_manager()
+            .trust_workspace(workspace.id, true)
+            .await
+            .expect("trust workspace");
+        let run = runtime.start_run(workspace.id, thread.id).await.expect("start run");
+        let result = runtime
+            .evaluate_permission_for_run(app_security::PermissionRequest {
+                workspace_id: workspace.id,
+                thread_id: Some(thread.id),
+                run_id: Some(run.id),
+                action: "mcp.invoke.write".to_owned(),
+                resource: "test.write".to_owned(),
+                trusted_workspace: true,
+            })
+            .await
+            .expect("evaluate permission");
+        let app_security::PermissionResult::Ask { request } = result else {
+            panic!("expected approval request");
+        };
+
+        runtime.cancel_run(run.id).await.expect("cancel run");
+
+        assert_eq!(
+            runtime.get_run(run.id).await.expect("run").status,
+            AgentRunStatus::Cancelled
+        );
+        let approval = runtime.get_approval_request(request.id).await.expect("approval");
+        assert_eq!(approval.status, ApprovalRequestStatus::Denied);
+        assert_eq!(approval.resolution_reason.as_deref(), Some("run cancelled"));
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn deny_request_fails_run() {
+        ensure_test_directory("/tmp/test");
         let storage = Arc::new(SqliteStorage::open_in_memory().await.expect("open db"));
         let event_bus = Arc::new(MemoryEventBus::default());
         let registry = Arc::new(SqliteModelProviderRegistry::new(storage.pool().clone()));
@@ -464,6 +703,11 @@ mod tests {
             .create_workspace("test", "/tmp/test", true)
             .await
             .expect("create workspace");
+        runtime
+            .workspace_manager()
+            .trust_workspace(workspace.id, true)
+            .await
+            .expect("trust workspace");
         let thread = runtime.create_thread(workspace.id, "thread").await.expect("create thread");
         let run = runtime.start_run(workspace.id, thread.id).await.expect("start run");
 
@@ -472,8 +716,8 @@ mod tests {
                 workspace_id: workspace.id,
                 thread_id: Some(thread.id),
                 run_id: Some(run.id),
-                action: "filesystem.write".to_owned(),
-                resource: "/tmp/test/file.txt".to_owned(),
+                action: "mcp.invoke.write".to_owned(),
+                resource: "test.write".to_owned(),
                 trusted_workspace: true,
             })
             .await

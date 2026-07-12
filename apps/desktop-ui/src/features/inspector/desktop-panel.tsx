@@ -137,9 +137,9 @@ export function DesktopPanel({ workspaceId }: DesktopPanelProps) {
         </Button>
       </div>
 
-      {firstError && <InlineError title={t("inspector.actionFailed")} message={firstError.message} />}
+      {firstError && (
+        <InlineError title={t("inspector.actionFailed")} message={firstError.message} />
+      )}
     </div>
   );
 }
-
-

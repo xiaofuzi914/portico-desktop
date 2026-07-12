@@ -73,10 +73,10 @@ impl DefaultNetworkPolicy {
         if self.allowed_hosts.contains(host) {
             return true;
         }
-        if let Some(host_without_port) = host.split_once(':').map(|(h, _)| h) {
-            if self.allowed_hosts.contains(host_without_port) {
-                return true;
-            }
+        if let Some(host_without_port) = host.split_once(':').map(|(h, _)| h)
+            && self.allowed_hosts.contains(host_without_port)
+        {
+            return true;
         }
         false
     }

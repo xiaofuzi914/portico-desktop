@@ -8,7 +8,12 @@ import { deriveProjectNameFromPath, normalizeDirectorySelection } from "@/lib/pa
 import { useTranslation } from "@/lib/i18n-react";
 import { workspaceKeys } from "@/lib/query-keys";
 
-export function SidebarProjectActions() {
+interface SidebarProjectActionsProps {
+  /** Icon-only trigger for the collapsed sidebar. */
+  compact?: boolean;
+}
+
+export function SidebarProjectActions({ compact = false }: SidebarProjectActionsProps) {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -25,7 +30,7 @@ export function SidebarProjectActions() {
       });
       const rootPath = normalizeDirectorySelection(selection);
       if (!rootPath) return null;
-      return createWorkspace(deriveProjectNameFromPath(rootPath), rootPath, false);
+      return createWorkspace(deriveProjectNameFromPath(rootPath), rootPath);
     },
     onSuccess: (workspace) => {
       void queryClient.invalidateQueries({ queryKey: workspaceKeys.list() });
@@ -43,18 +48,29 @@ export function SidebarProjectActions() {
     <div className="relative">
       <button
         type="button"
-        className="hover:bg-sidebar-accent hover:text-foreground flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground transition-colors"
+        className={
+          compact
+            ? "hover:bg-sidebar-accent hover:text-foreground text-muted-foreground flex h-8 w-8 items-center justify-center rounded-md transition-colors"
+            : "hover:bg-sidebar-accent hover:text-foreground text-muted-foreground flex h-6 w-6 items-center justify-center rounded-md transition-colors"
+        }
         aria-label={t("projects.addProject")}
+        title={t("projects.addProject")}
         onClick={() => {
           setError(null);
           setOpen((current) => !current);
         }}
       >
-        <Plus className="h-3.5 w-3.5" />
+        <Plus className={compact ? "h-4 w-4" : "h-3.5 w-3.5"} />
       </button>
 
       {open && (
-        <div className="bg-background absolute top-7 right-0 z-20 w-56 rounded-lg border p-1 shadow-lg">
+        <div
+          className={
+            compact
+              ? "bg-background absolute top-9 left-0 z-20 w-56 rounded-lg border p-1 shadow-lg"
+              : "bg-background absolute top-7 right-0 z-20 w-56 rounded-lg border p-1 shadow-lg"
+          }
+        >
           <button
             type="button"
             className="hover:bg-muted flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-sm"

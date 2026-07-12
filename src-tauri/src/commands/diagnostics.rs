@@ -1,16 +1,17 @@
 //! Diagnostics bundle collection and upload commands.
 
 use app_models::{DiagnosticsBundle, DiagnosticsBundleId, WorkspaceId};
-use app_security::{AuditEvent, PermissionResult, SecretRedactor};
-use tauri::{AppHandle, Manager, State};
+use app_security::{AuditEvent, PermissionResult};
+use tauri::State;
 
 use crate::AppState;
 use crate::error::ApiResponse;
 
 /// Collect a redacted diagnostics bundle for support or debugging.
 ///
-/// The bundle includes the latest application log, a redacted audit summary,
-/// app version, and OS information. It is stored under the app data directory.
+/// The bundle includes only allowlisted metadata and aggregate audit counts.
+/// Raw logs and audit payloads are deliberately omitted because regex-based
+/// redaction cannot safely recognize arbitrary provider or tool secrets.
 ///
 /// # Errors
 ///
@@ -19,48 +20,30 @@ use crate::error::ApiResponse;
 #[allow(clippy::needless_pass_by_value)]
 #[tauri::command]
 pub async fn collect_diagnostics_bundle(
-    app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<ApiResponse<DiagnosticsBundle>, String> {
     let bundle_id = DiagnosticsBundleId::new();
-    let app_data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("failed to resolve app data dir: {e}"))?;
+    let app_data_dir = &state.app_data_dir;
     let bundle_dir = app_data_dir.join("diagnostics").join(bundle_id.0.to_string());
     std::fs::create_dir_all(&bundle_dir)
         .map_err(|e| format!("failed to create diagnostics bundle dir: {e}"))?;
 
-    // Copy the most recent log file, or write a placeholder if none exists.
-    let log_dir = app_data_dir.join("logs");
+    // Never copy raw application logs into an export. Unknown credential formats
+    // cannot be made safe by a best-effort regex redactor.
     let dest_log = bundle_dir.join("app.log");
-    if let Err(err) = copy_latest_log(&log_dir, &dest_log) {
-        let placeholder = format!("log file unavailable: {err}");
-        std::fs::write(&dest_log, placeholder)
-            .map_err(|e| format!("failed to write log placeholder: {e}"))?;
-    }
+    std::fs::write(&dest_log, safe_log_export(None))
+        .map_err(|e| format!("failed to write safe log notice: {e}"))?;
 
-    // Build a redacted audit summary.
+    // Export aggregate counts only. Audit resources may contain paths, prompts,
+    // command arguments, or other user-controlled sensitive values.
     let audit_summary_path = bundle_dir.join("audit-summary.jsonl");
-    let redactor = app_security::DefaultSecretRedactor::new();
-    match state.runtime.list_audit_log(None, None, None).await {
-        Ok(entries) => {
-            let mut summary_lines = Vec::with_capacity(entries.len());
-            for entry in entries {
-                let line = serde_json::to_string(&entry)
-                    .map_err(|e| format!("failed to serialize audit entry: {e}"))?;
-                summary_lines.push(redactor.redact(&line));
-            }
-            let summary = summary_lines.join("\n");
-            std::fs::write(&audit_summary_path, summary)
-                .map_err(|e| format!("failed to write audit summary: {e}"))?;
-        }
-        Err(err) => {
-            let message = format!("audit summary unavailable: {err}");
-            std::fs::write(&audit_summary_path, message)
-                .map_err(|e| format!("failed to write audit summary placeholder: {e}"))?;
-        }
-    }
+    let audit_entries = state.runtime.list_audit_log(None, None, None).await;
+    let (audit_count, collection_succeeded) =
+        audit_entries.as_ref().map_or((0, false), |entries| (entries.len(), true));
+    let summary = serde_json::to_vec_pretty(&safe_audit_summary(audit_count, collection_succeeded))
+        .map_err(|e| format!("failed to serialize safe audit summary: {e}"))?;
+    std::fs::write(&audit_summary_path, summary)
+        .map_err(|e| format!("failed to write safe audit summary: {e}"))?;
 
     let size_bytes =
         dir_size(&bundle_dir).map_err(|e| format!("failed to compute bundle size: {e}"))?;
@@ -89,70 +72,17 @@ pub async fn collect_diagnostics_bundle(
     Ok(ApiResponse::ok(bundle))
 }
 
-/// Simulate uploading a diagnostics bundle and record an audit event.
-///
-/// This is a placeholder: no network request is performed.
-///
-/// # Errors
-///
-/// Returns an error response if the bundle is missing or the audit event
-/// cannot be recorded.
-#[allow(clippy::needless_pass_by_value)]
-#[tauri::command]
-pub async fn upload_diagnostics_bundle(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    bundle_id: DiagnosticsBundleId,
-) -> Result<ApiResponse<()>, String> {
-    let app_data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("failed to resolve app data dir: {e}"))?;
-    let bundle_dir = app_data_dir.join("diagnostics").join(bundle_id.0.to_string());
-    if !bundle_dir.exists() {
-        return Ok(ApiResponse::err(format!(
-            "diagnostics bundle {bundle_id:?} not found"
-        )));
-    }
-
-    // Placeholder for an approved upload; in production this would POST to an
-    // update/diagnostics endpoint with the bundle contents.
-    if let Err(err) = state.runtime.audit(AuditEvent {
-        workspace_id: WorkspaceId(uuid::Uuid::nil()),
-        thread_id: None,
-        run_id: None,
-        action: "diagnostics.upload".to_owned(),
-        resource: bundle_id.0.to_string(),
-        outcome: PermissionResult::Allowed,
-    }) {
-        return Ok(ApiResponse::err(format!(
-            "failed to record upload audit event: {err}"
-        )));
-    }
-
-    Ok(ApiResponse::ok(()))
+const fn safe_log_export(_raw_log: Option<&str>) -> &'static str {
+    "Raw application logs are omitted from diagnostics exports.\n"
 }
 
-/// Copy the most recent `.log` file from `log_dir` to `dest`, if any.
-fn copy_latest_log(log_dir: &std::path::Path, dest: &std::path::Path) -> Result<(), String> {
-    let mut entries: Vec<std::path::PathBuf> = std::fs::read_dir(log_dir)
-        .map_err(|e| format!("failed to read log dir: {e}"))?
-        .filter_map(|entry| entry.ok().map(|e| e.path()))
-        .filter(|path| path.extension().is_some_and(|ext| ext == "log"))
-        .collect();
-
-    if entries.is_empty() {
-        return Err("no log files found".to_owned());
-    }
-
-    entries.sort_by(|a, b| {
-        let ma = a.metadata().and_then(|m| m.modified()).ok();
-        let mb = b.metadata().and_then(|m| m.modified()).ok();
-        mb.cmp(&ma)
-    });
-
-    std::fs::copy(&entries[0], dest).map_err(|e| format!("failed to copy log file: {e}"))?;
-    Ok(())
+fn safe_audit_summary(total_events: usize, collection_succeeded: bool) -> serde_json::Value {
+    serde_json::json!({
+        "format_version": 1,
+        "collection_succeeded": collection_succeeded,
+        "total_events": total_events,
+        "payloads_included": false,
+    })
 }
 
 /// Recursively compute the total size of a directory in bytes.
@@ -168,4 +98,27 @@ fn dir_size(path: &std::path::Path) -> Result<u64, std::io::Error> {
         }
     }
     Ok(size)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exported_log_omits_raw_content_even_when_it_contains_an_unknown_secret() {
+        let canary = "portico-canary-7b4dc16d-unknown-format";
+        let exported = safe_log_export(Some(&format!("provider failed with {canary}")));
+
+        assert!(!exported.contains(canary));
+        assert!(exported.contains("omitted"));
+    }
+
+    #[test]
+    fn audit_summary_contains_counts_but_no_event_payload() {
+        let summary = safe_audit_summary(7, true);
+
+        assert_eq!(summary["format_version"], 1);
+        assert_eq!(summary["total_events"], 7);
+        assert_eq!(summary["payloads_included"], false);
+    }
 }

@@ -1,0 +1,22 @@
+{
+  "id": "manuscript",
+  "name": "手稿风格",
+  "name_en": "Manuscript",
+  "description": "淡灰草稿纸面，紧凑学术表格，适合研究笔记、评审稿和工作论文",
+  "description_en": "Soft gray draft-paper surface with compact academic tables for research notes, review drafts, and working papers",
+  "author": "docu.md Markdown Viewer",
+  "version": "2.0.0",
+  "fontScheme": {
+    "body": {
+      "fontFamily": "Palatino Linotype"
+    },
+    "headings": {},
+    "code": {
+      "fontFamily": "Consolas"
+    }
+  },
+  "layoutScheme": "compact",
+  "colorScheme": "draft",
+  "tableStyle": "academic",
+  "codeTheme": "light-clean"
+}

@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 import { Link, useParams } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
-import { Bot, Folder, MessageSquare, Settings } from "lucide-react";
+import { AlertTriangle, Folder, MessageSquare, Settings } from "lucide-react";
 import { NotificationCenter } from "@/components/notifications/notification-center";
 import { listThreads, listWorkspaces } from "@/lib/tauri-api";
 import { asThreadId, asWorkspaceId } from "@/lib/schemas";
@@ -72,8 +72,8 @@ export function AppTopbar() {
       </div>
       <div className="flex shrink-0 items-center gap-2">
         <div className="text-muted-foreground hidden items-center gap-1 rounded-md border px-2 py-1 text-xs lg:flex">
-          <Bot className="h-3.5 w-3.5" />
-          {t("app.ready")}
+          <AlertTriangle className="h-3.5 w-3.5" />
+          {t("app.recoveryInProgress")}
         </div>
         <LanguageToggle />
         <Link

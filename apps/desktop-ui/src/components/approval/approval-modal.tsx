@@ -40,9 +40,7 @@ export function ApprovalModal({
         <h2 id="approval-title" className="text-lg font-semibold">
           {t("approval.required")}
         </h2>
-        <p className="text-muted-foreground mt-2 text-sm">
-          {t("approval.body")}
-        </p>
+        <p className="text-muted-foreground mt-2 text-sm">{t("approval.body")}</p>
 
         <div className="bg-muted mt-4 space-y-3 rounded-lg p-3 text-sm">
           <div>

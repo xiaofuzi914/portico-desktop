@@ -9,11 +9,7 @@ import { BackgroundTaskList } from "./background-task-list";
 import { AuditLogPanel } from "./audit-log-panel";
 import { useTranslation } from "@/lib/i18n-react";
 
-export type OperationsTab =
-  | "automations"
-  | "notifications"
-  | "background-tasks"
-  | "audit";
+export type OperationsTab = "automations" | "notifications" | "background-tasks" | "audit";
 
 interface OperationsCenterProps {
   defaultTab?: OperationsTab;
@@ -35,14 +31,9 @@ export function OperationsCenter({ defaultTab = "automations" }: OperationsCente
       <div className="flex items-start justify-between gap-4">
         <div>
           <h1 className={typography.pageTitle}>{t("operations.title")}</h1>
-          <p className={typography.pageDescription}>
-            {t("operations.description")}
-          </p>
+          <p className={typography.pageDescription}>{t("operations.description")}</p>
         </div>
-        <Link
-          to="/"
-          className="text-primary flex items-center gap-1.5 text-sm hover:underline"
-        >
+        <Link to="/" className="text-primary flex items-center gap-1.5 text-sm hover:underline">
           <Home className="h-4 w-4" />
           {t("common.home")}
         </Link>

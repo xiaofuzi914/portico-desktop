@@ -1,7 +1,8 @@
 //! Embedding provider selection and construction for the Tauri backend.
 
 use app_memory::{
-    EmbeddingProvider, HashEmbeddingProvider, OllamaEmbeddingProvider, OpenAiCompatEmbeddingProvider,
+    EmbeddingProvider, HashEmbeddingProvider, OllamaEmbeddingProvider,
+    OpenAiCompatEmbeddingProvider,
 };
 use app_models::{ProviderConfig, ProviderKind};
 use app_runtime::ModelProviderRegistry;
@@ -52,10 +53,8 @@ pub async fn build_embedding_provider(
             .await
             .unwrap_or_else(|| "nomic-embed-text".to_owned());
         let dimension = known_dimension(ProviderKind::Ollama, &model);
-        let base_url = ollama
-            .base_url
-            .clone()
-            .unwrap_or_else(|| "http://localhost:11434".to_owned());
+        let base_url =
+            ollama.base_url.clone().unwrap_or_else(|| "http://localhost:11434".to_owned());
 
         match OllamaEmbeddingProvider::new("ollama", base_url, model, dimension) {
             Ok(provider) => return Ok(Arc::new(provider)),
@@ -80,12 +79,9 @@ pub async fn build_embedding_provider(
         let (model, dimension) = if provider.kind == ProviderKind::OpenAI {
             ("text-embedding-3-small".to_owned(), 1536usize)
         } else {
-            let model = embedding_model_for_provider(
-                registry.clone(),
-                provider,
-                "text-embedding-3-small",
-            )
-            .await;
+            let model =
+                embedding_model_for_provider(registry.clone(), provider, "text-embedding-3-small")
+                    .await;
             if let Some(model) = model {
                 let dimension = known_dimension(provider.kind, &model);
                 (model, dimension)
@@ -113,8 +109,7 @@ pub async fn build_embedding_provider(
             .unwrap_or_else(|| default_openai_base_url(provider.kind));
         let provider_id = format!("{}-{}", provider.kind.as_str(), provider.id.0);
 
-        match OpenAiCompatEmbeddingProvider::new(provider_id, base_url, model, api_key, dimension)
-        {
+        match OpenAiCompatEmbeddingProvider::new(provider_id, base_url, model, api_key, dimension) {
             Ok(openai) => return Ok(Arc::new(openai)),
             Err(err) => {
                 tracing::warn!(error = %err, "failed to create OpenAI-compatible embedding provider, falling back");

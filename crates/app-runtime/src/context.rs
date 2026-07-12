@@ -1,4 +1,7 @@
 //! Context inspector: assembles instructions, memories, and RAG chunks for a run.
+//!
+//! Also owns workspace indexer (disk scan → chunk → embed → persist) so RAG is not
+//! a dead data panel: rebuild/index populates from the real project tree.
 
 use app_memory::{
     EmbeddingProvider, HashEmbeddingProvider, InstructionLoader, MemoryManager, RagIndex,
@@ -9,8 +12,40 @@ use app_models::{
     ThreadId, WorkspaceId,
 };
 use std::collections::HashSet;
+use std::fmt::Write as _;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
+
+const INDEX_MAX_FILE_BYTES: u64 = 256 * 1024;
+const INDEX_MAX_FILES: usize = 400;
+const INDEX_MAX_DEPTH: usize = 12;
+const PROMPT_INSTRUCTION_CHARS: usize = 6_000;
+const PROMPT_MEMORY_CHARS: usize = 3_000;
+const PROMPT_RAG_CHARS: usize = 4_000;
+
+const SKIP_DIR_NAMES: &[&str] = &[
+    ".git",
+    "node_modules",
+    "target",
+    "dist",
+    "build",
+    ".next",
+    ".turbo",
+    "coverage",
+    "__pycache__",
+    ".venv",
+    "venv",
+    ".idea",
+    ".vscode",
+    "vendor",
+];
+
+const INDEX_EXTENSIONS: &[&str] = &[
+    "rs", "ts", "tsx", "js", "jsx", "mjs", "cjs", "py", "go", "java", "kt", "swift", "md", "mdx",
+    "txt", "toml", "yaml", "yml", "json", "jsonc", "css", "scss", "html", "sql", "sh", "zsh",
+    "bash", "env.example", "gitignore", "dockerfile", "makefile", "c", "h", "cpp", "hpp", "rb",
+    "php", "cs", "xml", "gradle", "properties",
+];
 
 /// Assembles the full prompt context for an agent run.
 pub struct ContextInspector {
@@ -58,7 +93,11 @@ impl ContextInspector {
 
         let chunks = self
             .rag_store
-            .load_matching_chunks(workspace_id, self.embedding.id(), self.embedding.dimension())
+            .load_matching_chunks(
+                workspace_id,
+                self.embedding.id(),
+                self.embedding.dimension(),
+            )
             .await?;
 
         {
@@ -119,7 +158,8 @@ impl ContextInspector {
                 .await?,
         );
 
-        // Flag sensitive content and filter sensitive memories out of RAG.
+        // Flag sensitive content; sensitive memories stay in summary for Inspector
+        // but are excluded from model prompt assembly (see assemble_prompt_context).
         for memory in &memories {
             if memory.sensitive {
                 privacy_flags.push(format!(
@@ -130,7 +170,7 @@ impl ContextInspector {
             }
         }
 
-        // Run RAG over non-sensitive memories and workspace documents.
+        // Run RAG over workspace documents.
         let rag_chunks = self.search_rag(workspace_id, query, 5).await;
 
         let estimated_tokens = estimate_tokens(&instructions, &memories, &rag_chunks);
@@ -144,6 +184,167 @@ impl ContextInspector {
             estimated_tokens,
             privacy_flags,
         })
+    }
+
+    /// Build a prompt-safe context block (non-sensitive only) for agent execution.
+    ///
+    /// Sensitive memories are never included. RAG and instructions are budget-capped.
+    pub async fn assemble_prompt_context(
+        &self,
+        thread_id: ThreadId,
+        workspace_id: WorkspaceId,
+        workspace_root: &str,
+        query: &str,
+    ) -> String {
+        let summary = self
+            .summarize_context(
+                AgentRunId::new(),
+                thread_id,
+                workspace_id,
+                workspace_root,
+                query,
+            )
+            .await;
+        let Ok(summary) = summary else {
+            return String::new();
+        };
+
+        let mut parts = Vec::new();
+
+        let mut instruction_budget = PROMPT_INSTRUCTION_CHARS;
+        let mut instruction_block = String::new();
+        for file in &summary.instructions {
+            if instruction_budget == 0 {
+                break;
+            }
+            let body = truncate_chars(&file.content, instruction_budget);
+            let used = body.chars().count();
+            instruction_budget = instruction_budget.saturating_sub(used);
+            instruction_block.push_str("### ");
+            instruction_block.push_str(&file.path);
+            instruction_block.push_str(" (");
+            instruction_block.push_str(&file.scope);
+            instruction_block.push_str(")\n");
+            instruction_block.push_str(&body);
+            instruction_block.push_str("\n\n");
+        }
+        if !instruction_block.trim().is_empty() {
+            parts.push(format!("## Project instructions\n{instruction_block}"));
+        }
+
+        let mut memory_budget = PROMPT_MEMORY_CHARS;
+        let mut memory_block = String::new();
+        for memory in summary.memories.iter().filter(|m| !m.sensitive) {
+            if memory_budget == 0 {
+                break;
+            }
+            let line = format!("- [{}] {}: {}\n", memory.scope.as_str(), memory.key, memory.value);
+            let used = line.chars().count();
+            if used > memory_budget {
+                memory_block.push_str(&truncate_chars(&line, memory_budget));
+                memory_budget = 0;
+            } else {
+                memory_block.push_str(&line);
+                memory_budget = memory_budget.saturating_sub(used);
+            }
+        }
+        if !memory_block.trim().is_empty() {
+            parts.push(format!("## Remembered facts (non-sensitive)\n{memory_block}"));
+        }
+
+        let mut rag_budget = PROMPT_RAG_CHARS;
+        let mut rag_block = String::new();
+        for chunk in &summary.rag_chunks {
+            if rag_budget == 0 {
+                break;
+            }
+            let body = truncate_chars(&chunk.content, rag_budget.min(800));
+            let used = body.chars().count() + chunk.document_path.chars().count() + 32;
+            rag_budget = rag_budget.saturating_sub(used);
+            let _ = write!(
+                rag_block,
+                "### {}#{} (score {:.2})\n{}\n\n",
+                chunk.document_path, chunk.chunk_index, chunk.score, body
+            );
+        }
+        if !rag_block.trim().is_empty() {
+            parts.push(format!(
+                "## Relevant project excerpts (cite paths; do not invent)\n{rag_block}"
+            ));
+        }
+
+        parts.join("\n")
+    }
+
+    /// Scan a workspace directory from disk and (re)build the RAG index.
+    ///
+    /// Clears existing chunks for the workspace, then indexes text-like files
+    /// under ignore rules (`node_modules`, `target`, `.git`, …).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the root is invalid or embedding/persistence fails.
+    pub async fn index_workspace_from_disk(
+        &self,
+        workspace_id: WorkspaceId,
+        workspace_root: &str,
+    ) -> Result<usize, AppError> {
+        let root = Path::new(workspace_root)
+            .canonicalize()
+            .map_err(|e| AppError::Internal {
+                message: format!("workspace root for indexing is unavailable: {e}"),
+            })?;
+        if !root.is_dir() {
+            return Err(AppError::Internal {
+                message: "workspace root for indexing is not a directory".to_owned(),
+            });
+        }
+
+        self.rag_store.clear_workspace(workspace_id).await?;
+        {
+            let mut loaded = self.loaded_workspaces.lock().map_err(|_| AppError::Internal {
+                message: "loaded workspaces lock poisoned".to_owned(),
+            })?;
+            loaded.remove(&workspace_id);
+        }
+
+        let mut files = Vec::new();
+        collect_indexable_files(&root, &root, 0, &mut files)?;
+        let mut total_chunks = 0usize;
+        for relative in files {
+            let absolute = root.join(&relative);
+            let Ok(content) = std::fs::read_to_string(&absolute) else {
+                continue;
+            };
+            if content.trim().is_empty() || content.contains('\0') {
+                continue;
+            }
+            match self
+                .index_document(workspace_id, &relative.replace('\\', "/"), &content)
+                .await
+            {
+                Ok(()) => {
+                    total_chunks = total_chunks.saturating_add(1);
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        path = %relative,
+                        error = %err,
+                        "skip document during workspace index"
+                    );
+                }
+            }
+        }
+
+        // Force reload cache after bulk insert.
+        {
+            let mut loaded = self.loaded_workspaces.lock().map_err(|_| AppError::Internal {
+                message: "loaded workspaces lock poisoned".to_owned(),
+            })?;
+            loaded.remove(&workspace_id);
+        }
+        self.ensure_workspace_loaded(workspace_id).await?;
+        Ok(total_chunks)
     }
 
     /// Add a workspace document to the RAG index.
@@ -255,14 +456,23 @@ impl ContextInspector {
         &self.embedding
     }
 
-    /// Rebuild the RAG index for a workspace using the current embedding provider.
+    /// Rebuild the RAG index for a workspace.
     ///
-    /// Clears persisted chunks, re-embeds stored content, and refreshes the cache.
+    /// When `workspace_root` is provided, performs a full disk scan (preferred).
+    /// Otherwise re-embeds previously stored chunk contents (legacy path).
     ///
     /// # Errors
     ///
     /// Returns an error if clearing, reading, embedding, or inserting fails.
-    pub async fn rebuild_workspace(&self, workspace_id: WorkspaceId) -> Result<usize, AppError> {
+    pub async fn rebuild_workspace(
+        &self,
+        workspace_id: WorkspaceId,
+        workspace_root: Option<&str>,
+    ) -> Result<usize, AppError> {
+        if let Some(root) = workspace_root {
+            return self.index_workspace_from_disk(workspace_id, root).await;
+        }
+
         let contents = self.rag_store.load_all_contents(workspace_id).await?;
         if contents.is_empty() {
             return Ok(0);
@@ -300,7 +510,13 @@ impl ContextInspector {
             );
 
             self.rag_store
-                .insert_chunks(workspace_id, &document_path, provider_id, dimension, vec![chunk])
+                .insert_chunks(
+                    workspace_id,
+                    &document_path,
+                    provider_id,
+                    dimension,
+                    vec![chunk],
+                )
                 .await?;
             total += 1;
         }
@@ -332,6 +548,93 @@ fn estimate_tokens(
 
     (text_len / CHARS_PER_TOKEN).max(1)
 }
+
+fn truncate_chars(input: &str, max_chars: usize) -> String {
+    if input.chars().count() <= max_chars {
+        return input.to_owned();
+    }
+    let mut out: String = input.chars().take(max_chars.saturating_sub(1)).collect();
+    out.push('…');
+    out
+}
+
+fn collect_indexable_files(
+    root: &Path,
+    current: &Path,
+    depth: usize,
+    out: &mut Vec<String>,
+) -> Result<(), AppError> {
+    if out.len() >= INDEX_MAX_FILES || depth > INDEX_MAX_DEPTH {
+        return Ok(());
+    }
+    let entries = std::fs::read_dir(current).map_err(|e| AppError::Internal {
+        message: format!("index walk failed at {}: {e}", current.display()),
+    })?;
+    for entry in entries {
+        if out.len() >= INDEX_MAX_FILES {
+            break;
+        }
+        let entry = entry.map_err(|e| AppError::Internal {
+            message: format!("index walk entry failed: {e}"),
+        })?;
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.starts_with('.') && name != ".gitignore" && name != ".env.example" {
+            // Still allow common config files; skip hidden dirs/files by default.
+            if path.is_dir() {
+                continue;
+            }
+        }
+        let file_type = entry.file_type().map_err(|e| AppError::Internal {
+            message: format!("index walk file type failed: {e}"),
+        })?;
+        if file_type.is_dir() {
+            if SKIP_DIR_NAMES.iter().any(|skip| name.eq_ignore_ascii_case(skip)) {
+                continue;
+            }
+            collect_indexable_files(root, &path, depth + 1, out)?;
+            continue;
+        }
+        if !file_type.is_file() {
+            continue;
+        }
+        if !is_indexable_file(&path) {
+            continue;
+        }
+        let metadata = entry.metadata().map_err(|e| AppError::Internal {
+            message: format!("index walk metadata failed: {e}"),
+        })?;
+        if metadata.len() == 0 || metadata.len() > INDEX_MAX_FILE_BYTES {
+            continue;
+        }
+        let relative = path.strip_prefix(root).unwrap_or(&path);
+        out.push(relative.to_string_lossy().into_owned());
+    }
+    Ok(())
+}
+
+fn is_indexable_file(path: &Path) -> bool {
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if matches!(
+        name.as_str(),
+        "makefile" | "dockerfile" | "agents.md" | "readme" | "readme.md" | "license" | "cargo.toml"
+            | "package.json" | "pnpm-workspace.yaml" | "go.mod"
+    ) {
+        return true;
+    }
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    INDEX_EXTENSIONS.iter().any(|allowed| *allowed == ext)
+}
+
+
 
 #[cfg(test)]
 mod tests {

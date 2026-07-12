@@ -1,0 +1,37 @@
+{
+  "id": "candy",
+  "name": "糖果甜心",
+  "name_en": "Candy",
+  "description": "轻快的粉橙点缀，适合活泼但易读的内容",
+  "description_en": "Light pink-orange accents for playful but readable content",
+  
+  "text": {
+    "primary": "#3b2630",
+    "secondary": "#5f4a52",
+    "muted": "#8a7179"
+  },
+  
+  "accent": {
+    "link": "#d43f5f",
+    "linkHover": "#b8324e"
+  },
+  
+  "background": {
+    "page": "#fff8f6",
+    "surface": "#fde9e4",
+    "code": "#fff3f1",
+    "blockquote": "#fdecea"
+  },
+  
+  "blockquote": {
+    "border": "#efa6a4"
+  },
+  
+  "table": {
+    "border": "#efc4bf",
+    "headerBackground": "#f8d6d2",
+    "headerText": "#512631",
+    "zebraEven": "#fff2ef",
+    "zebraOdd": "#fffaf4"
+  }
+}

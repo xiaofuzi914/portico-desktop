@@ -56,7 +56,9 @@ export function TerminalPanel({ threadId }: TerminalPanelProps) {
 
   return (
     <div className="flex h-full flex-col gap-3 overflow-auto p-3">
-      {terminalError && <InlineError title={t("inspector.terminalError")} message={terminalError} />}
+      {terminalError && (
+        <InlineError title={t("inspector.terminalError")} message={terminalError} />
+      )}
       {!terminalId && !terminalError && <PanelLoading />}
       {terminalId && (
         <>
@@ -104,5 +106,3 @@ export function TerminalPanel({ threadId }: TerminalPanelProps) {
     </div>
   );
 }
-
-

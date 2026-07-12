@@ -71,7 +71,10 @@ impl PorticoTool for McpToolAdapter {
             let reason = match permission_result {
                 PermissionResult::Allowed => unreachable!(),
                 PermissionResult::Ask { ref request } => {
-                    format!("approval required for {} on {}", request.action, request.resource)
+                    format!(
+                        "approval required for {} on {}",
+                        request.action, request.resource
+                    )
                 }
                 PermissionResult::Denied { ref reason } => reason.clone(),
             };
@@ -121,8 +124,8 @@ impl McpToolAdapter {
 mod tests {
     use super::*;
     use app_security::{
-        DefaultCommandPolicy, DefaultNetworkPolicy, MemoryAuditLogger,
-        PermissionEngine, PermissionRequest, PermissionResult,
+        DefaultCommandPolicy, DefaultNetworkPolicy, MemoryAuditLogger, PermissionEngine,
+        PermissionRequest, PermissionResult,
     };
 
     struct AllowAllEngine;
@@ -216,7 +219,10 @@ mod tests {
             })
             .await;
 
-        assert!(matches!(result, Err(app_models::AppError::PermissionDenied { .. })));
+        assert!(matches!(
+            result,
+            Err(app_models::AppError::PermissionDenied { .. })
+        ));
 
         let events = audit.events().expect("read events");
         assert!(events.iter().any(|e| e.action == "mcp.invoke.write"));
@@ -235,11 +241,7 @@ mod tests {
             side_effects: false,
             input_schema: None,
         };
-        let adapter = McpToolAdapter::new(
-            info,
-            Arc::new(McpClientManager::new()),
-            test_security(),
-        );
+        let adapter = McpToolAdapter::new(info, Arc::new(McpClientManager::new()), test_security());
 
         let result = adapter
             .invoke(ToolInput {

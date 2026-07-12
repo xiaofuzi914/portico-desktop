@@ -1,4 +1,4 @@
-import type { AgentRunId, RunEvent, RuntimeEvent, ThreadId } from "@/lib/schemas";
+import type { AgentRunId, Message, RunEvent, RuntimeEvent, ThreadId } from "@/lib/schemas";
 
 export type ConversationBlockKind =
   "message" | "tool" | "approval" | "artifact" | "status" | "error" | "diagnostic";
@@ -14,6 +14,29 @@ export interface ConversationBlock {
   tone: ConversationBlockTone;
   createdAt: string;
   raw: RunEvent;
+}
+
+export function mapMessageToBlock(message: Message): ConversationBlock {
+  const isUser = message.role === "User";
+  const isSystem = message.role === "System";
+  return {
+    id: `message-${message.id}`,
+    sequence: Date.parse(message.created_at),
+    kind: isSystem ? "error" : "message",
+    title: isUser ? "You" : message.role === "Assistant" ? "Assistant" : "Run failed",
+    body: message.content,
+    tone: isSystem ? "danger" : isUser ? "default" : "muted",
+    createdAt: message.created_at,
+    raw: {
+      id: -Date.parse(message.created_at),
+      run_id: message.run_id ?? ("unknown" as AgentRunId),
+      thread_id: message.thread_id,
+      sequence: Date.parse(message.created_at),
+      event_type: "Message",
+      payload: { role: message.role, content: message.content },
+      created_at: message.created_at,
+    },
+  };
 }
 
 interface MessagePayload {

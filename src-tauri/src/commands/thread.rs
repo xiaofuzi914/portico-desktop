@@ -56,3 +56,37 @@ pub async fn get_thread(
         Err(err) => ApiResponse::err(err.to_string()),
     })
 }
+
+/// Delete a thread and its conversation history.
+///
+/// # Errors
+///
+/// Returns an error response if the thread cannot be deleted.
+#[tauri::command]
+pub async fn delete_thread(
+    state: State<'_, AppState>,
+    workspace_id: WorkspaceId,
+    id: ThreadId,
+) -> Result<ApiResponse<()>, String> {
+    Ok(match state.runtime.delete_thread(workspace_id, id).await {
+        Ok(()) => ApiResponse::ok(()),
+        Err(err) => ApiResponse::err(err.to_string()),
+    })
+}
+
+/// Update a thread's display title (session topic).
+///
+/// # Errors
+///
+/// Returns an error response if the title is empty or the thread is missing.
+#[tauri::command]
+pub async fn update_thread_title(
+    state: State<'_, AppState>,
+    id: ThreadId,
+    title: String,
+) -> Result<ApiResponse<Thread>, String> {
+    Ok(match state.runtime.update_thread_title(id, &title).await {
+        Ok(thread) => ApiResponse::ok(thread),
+        Err(err) => ApiResponse::err(err.to_string()),
+    })
+}

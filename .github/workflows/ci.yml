@@ -16,7 +16,14 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt, clippy
+          components: rustfmt, clippy, llvm-tools-preview
+
+      - name: Install Linux desktop dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
+            librsvg2-dev libxdo-dev libssl-dev
 
       - name: Check formatting
         run: cargo fmt --check
@@ -26,6 +33,20 @@ jobs:
 
       - name: Run Rust tests
         run: cargo test --workspace
+
+      - name: Audit Rust dependencies
+        run: |
+          cargo install cargo-audit --locked
+          # sqlx's disabled optional MySQL driver is the only owner of rsa.
+          test -z "$(cargo tree --target all -i rsa@0.9.10 2>/dev/null)"
+          cargo audit --ignore RUSTSEC-2023-0071
+
+      - name: Measure Rust coverage
+        run: |
+          cargo install cargo-llvm-cov --locked
+          cargo llvm-cov --workspace --summary-only \
+            --ignore-filename-regex '(src-tauri|crates/app-(models|plugins|tools|memory|workflows)/)' \
+            --fail-under-lines 80
 
   frontend:
     runs-on: ubuntu-latest
@@ -41,16 +62,61 @@ jobs:
       - name: Install pnpm
         uses: pnpm/action-setup@v3
         with:
-          version: 9
+          version: 10.6.0
 
       - name: Install dependencies
-        run: pnpm install
+        run: pnpm install --frozen-lockfile
 
       - name: Typecheck
         run: pnpm typecheck
+
+      - name: Check frontend formatting
+        run: pnpm format:check
 
       - name: Lint
         run: pnpm lint
 
       - name: Test
         run: pnpm test
+
+      - name: Verify frontend logic coverage
+        run: pnpm test:coverage
+
+      - name: Audit production dependencies
+        run: pnpm audit --prod --audit-level high
+
+      - name: Scan tracked production files for embedded credentials
+        run: |
+          if git grep -nE '(sk-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|AIza[0-9A-Za-z_-]{20,}|BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY|Authorization:[[:space:]]*Bearer[[:space:]]+[A-Za-z0-9._~-]{12,})' -- ':!*.lock' ':!docs/**'; then
+            echo "Potential embedded credential found"
+            exit 1
+          fi
+
+  desktop-e2e-macos:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 10.6.0
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify native test prerequisites
+        run: command -v sqlite3 && command -v strings && command -v uuidgen
+
+      - name: Run native WebView restart golden path
+        run: pnpm tauri:e2e:desktop

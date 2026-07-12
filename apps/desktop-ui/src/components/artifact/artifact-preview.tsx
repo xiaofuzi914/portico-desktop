@@ -1,8 +1,11 @@
 import { useMemo } from "react";
 import type { ArtifactPreview } from "@/lib/schemas";
+import { MarkdownBody } from "@/components/markdown/markdown-body";
 
 interface ArtifactPreviewProps {
   preview: ArtifactPreview;
+  /** View-layer presentation classes for Markdown (mode / polish). */
+  presentationClassName?: string;
 }
 
 function buildDataUrl(mimeType: string, contentBase64: string): string {
@@ -13,7 +16,13 @@ function parseCsv(content: string): string[][] {
   return content.split("\n").map((line) => line.split(","));
 }
 
-export function ArtifactPreview({ preview }: ArtifactPreviewProps) {
+function decodeBase64Utf8(contentBase64: string): string {
+  const binary = atob(contentBase64);
+  const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+  return new TextDecoder().decode(bytes);
+}
+
+export function ArtifactPreview({ preview, presentationClassName }: ArtifactPreviewProps) {
   const { path, mime_type, content_base64 } = preview;
   const dataUrl = useMemo(
     () => buildDataUrl(mime_type, content_base64),
@@ -36,7 +45,7 @@ export function ArtifactPreview({ preview }: ArtifactPreviewProps) {
   }
 
   if (mime_type === "text/csv") {
-    const rows = parseCsv(atob(content_base64));
+    const rows = parseCsv(decodeBase64Utf8(content_base64));
     return (
       <div className="overflow-auto rounded-md border">
         <table className="w-full border-collapse text-sm">
@@ -56,12 +65,10 @@ export function ArtifactPreview({ preview }: ArtifactPreviewProps) {
     );
   }
 
-  const text = atob(content_base64);
+  const text = decodeBase64Utf8(content_base64);
 
   if (mime_type === "text/markdown") {
-    return (
-      <div className="rounded-md border p-4 font-mono text-sm whitespace-pre-wrap">{text}</div>
-    );
+    return <MarkdownBody content={text} presentationClassName={presentationClassName} />;
   }
 
   return (

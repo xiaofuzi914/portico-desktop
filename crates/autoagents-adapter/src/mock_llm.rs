@@ -44,10 +44,45 @@ impl MockLlmProvider {
     }
 
     fn should_emit_tool(messages: &[ChatMessage], tools: Option<&[Tool]>) -> bool {
-        tools.is_some() && Self::is_first_turn(messages) && Self::user_wants_tool(messages)
+        tools.is_some()
+            && Self::is_first_turn(messages)
+            && (Self::user_wants_tool(messages)
+                || messages.iter().any(|message| {
+                    message.content.contains("PORTICO_TEST_READ:")
+                        || message.content.contains("PORTICO_TEST_WRITE:")
+                }))
     }
 
-    fn mock_tool_call() -> ToolCall {
+    fn mock_tool_call(messages: &[ChatMessage]) -> ToolCall {
+        let content = messages
+            .iter()
+            .find(|message| message.role == ChatRole::User)
+            .map(|message| message.content.as_str())
+            .unwrap_or_default();
+        if let Some(path) = content.split("PORTICO_TEST_READ:").nth(1).map(str::trim) {
+            return ToolCall {
+                id: "mock_read_1".to_owned(),
+                call_type: "function".to_owned(),
+                function: FunctionCall {
+                    name: "fs_read".to_owned(),
+                    arguments: serde_json::json!({"path": path}).to_string(),
+                },
+            };
+        }
+        if let Some(path) = content.split("PORTICO_TEST_WRITE:").nth(1).map(str::trim) {
+            return ToolCall {
+                id: "mock_write_1".to_owned(),
+                call_type: "function".to_owned(),
+                function: FunctionCall {
+                    name: "fs_write".to_owned(),
+                    arguments: serde_json::json!({
+                        "path": path,
+                        "content": "approved by durable loop\n"
+                    })
+                    .to_string(),
+                },
+            };
+        }
         ToolCall {
             id: "mock_call_1".to_owned(),
             call_type: "function".to_owned(),
@@ -84,7 +119,7 @@ impl ChatProvider for MockLlmProvider {
         };
 
         let tool_calls = if emit_tool {
-            Some(vec![Self::mock_tool_call()])
+            Some(vec![Self::mock_tool_call(messages)])
         } else {
             None
         };
@@ -133,7 +168,7 @@ impl ChatProvider for MockLlmProvider {
             chunks.push(Ok(StreamChunk::Text("I will use a tool.".to_owned())));
             chunks.push(Ok(StreamChunk::ToolUseComplete {
                 index: 0,
-                tool_call: Self::mock_tool_call(),
+                tool_call: Self::mock_tool_call(messages),
             }));
             chunks.push(Ok(StreamChunk::Done {
                 stop_reason: "tool_use".to_owned(),

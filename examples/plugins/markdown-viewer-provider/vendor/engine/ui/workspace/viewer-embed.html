@@ -1,0 +1,14 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<!-- Apply cached dark-mode class synchronously before the stylesheet parses. -->
+<script src="dark-preload.js"></script>
+<!-- Hide body until viewer-main has applied the theme and sets opacity:1. -->
+<style id="markdown-viewer-preload">body{opacity:0}</style>
+<link rel="stylesheet" href="../styles.css">
+</head>
+<body>
+<script src="viewer-embed.js"></script>
+</body>
+</html>

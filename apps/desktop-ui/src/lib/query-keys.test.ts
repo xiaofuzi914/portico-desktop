@@ -18,13 +18,7 @@ import {
   usageKeys,
   workspaceKeys,
 } from "./query-keys";
-import type {
-  AgentRunId,
-  ProviderId,
-  TerminalId,
-  ThreadId,
-  WorkspaceId,
-} from "./schemas";
+import type { AgentRunId, ProviderId, TerminalId, ThreadId, WorkspaceId } from "./schemas";
 
 const workspaceId = "ws-1" as WorkspaceId;
 const threadId = "th-1" as ThreadId;
@@ -35,21 +29,9 @@ const providerId = "prov-1" as ProviderId;
 describe("query key factories", () => {
   it("workspace keys", () => {
     expect(workspaceKeys.list()).toEqual(["workspaces"]);
-    expect(workspaceKeys.threads(workspaceId)).toEqual([
-      "workspaces",
-      workspaceId,
-      "threads",
-    ]);
-    expect(workspaceKeys.worktrees(workspaceId)).toEqual([
-      "workspaces",
-      workspaceId,
-      "worktrees",
-    ]);
-    expect(workspaceKeys.memories(workspaceId)).toEqual([
-      "workspaces",
-      workspaceId,
-      "memories",
-    ]);
+    expect(workspaceKeys.threads(workspaceId)).toEqual(["workspaces", workspaceId, "threads"]);
+    expect(workspaceKeys.worktrees(workspaceId)).toEqual(["workspaces", workspaceId, "worktrees"]);
+    expect(workspaceKeys.memories(workspaceId)).toEqual(["workspaces", workspaceId, "memories"]);
   });
 
   it("git keys use a single shape", () => {
@@ -67,13 +49,7 @@ describe("query key factories", () => {
       "diff",
       "repo",
     ]);
-    expect(gitKeys.status(workspaceId)).toEqual([
-      "workspaces",
-      workspaceId,
-      "git",
-      "status",
-      "",
-    ]);
+    expect(gitKeys.status(workspaceId)).toEqual(["workspaces", workspaceId, "git", "status", ""]);
   });
 
   it("run keys include thread id and normalize missing run id", () => {
@@ -108,48 +84,27 @@ describe("query key factories", () => {
   });
 
   it("terminal keys", () => {
-    expect(terminalKeys.history(terminalId)).toEqual([
-      "terminals",
-      terminalId,
-      "history",
-    ]);
-    expect(terminalKeys.history(undefined)).toEqual([
-      "terminals",
-      undefined,
-      "history",
-    ]);
+    expect(terminalKeys.history(terminalId)).toEqual(["terminals", terminalId, "history"]);
+    expect(terminalKeys.history(undefined)).toEqual(["terminals", undefined, "history"]);
   });
 
   it("browser window and desktop keys", () => {
     expect(browserWindowKeys.list()).toEqual(["browser-windows"]);
-    expect(desktopKeys.capture(workspaceId)).toEqual([
-      "desktop-capture",
-      workspaceId,
-    ]);
+    expect(desktopKeys.capture(workspaceId)).toEqual(["desktop-capture", workspaceId]);
   });
 
   it("notification and background task keys", () => {
-    expect(notificationKeys.list(null, true)).toEqual([
-      "notifications",
-      null,
-      true,
-    ]);
+    expect(notificationKeys.list(null, true)).toEqual(["notifications", null, true]);
     expect(notificationKeys.list(workspaceId, false)).toEqual([
       "notifications",
       workspaceId,
       false,
     ]);
-    expect(backgroundTaskKeys.list(workspaceId)).toEqual([
-      "background-tasks",
-      workspaceId,
-    ]);
+    expect(backgroundTaskKeys.list(workspaceId)).toEqual(["background-tasks", workspaceId]);
   });
 
   it("automation keys", () => {
-    expect(automationKeys.list(workspaceId)).toEqual([
-      "automations",
-      workspaceId,
-    ]);
+    expect(automationKeys.list(workspaceId)).toEqual(["automations", workspaceId]);
     expect(automationKeys.list(null)).toEqual(["automations", null]);
   });
 
@@ -175,11 +130,6 @@ describe("query key factories", () => {
       threadId,
       runId,
     ]);
-    expect(auditKeys.log(null, null, null)).toEqual([
-      "audit-log",
-      null,
-      null,
-      null,
-    ]);
+    expect(auditKeys.log(null, null, null)).toEqual(["audit-log", null, null, null]);
   });
 });

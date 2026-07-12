@@ -1,24 +1,14 @@
 //! Model provider registry Tauri commands.
 
 use app_models::{
-    AgentRunId, ModelCapability, ModelId, ModelInfo, ProviderConfig, ProviderId, ProviderKind,
+    ActiveModelSelection, AgentRunId, ModelCapability, ModelId, ModelInfo, ModelSelectionScope,
+    ProviderConfig, ProviderHealth, ProviderId, ProviderKind, RunModelSnapshot, ThreadId,
+    WorkspaceId,
 };
-use serde::Serialize;
 use tauri::State;
 
 use crate::AppState;
 use crate::error::ApiResponse;
-
-/// Summary of today's usage against the app-level budget.
-#[derive(Debug, Serialize)]
-pub struct UsageSummary {
-    /// Total USD spent across all providers today.
-    pub daily_usage_usd: f64,
-    /// Per-run budget in USD, if configured.
-    pub per_run_budget_usd: Option<f64>,
-    /// Daily budget in USD, if configured.
-    pub daily_budget_usd: Option<f64>,
-}
 
 /// List all provider configurations.
 ///
@@ -155,49 +145,131 @@ pub async fn delete_model(
     })
 }
 
-/// Return today's usage summary against the app-level budget.
+/// Set an active provider/model selection at a global, workspace, or thread scope.
 ///
 /// # Errors
 ///
-/// Returns an error response if usage cannot be read.
+/// Returns a transport error if the response cannot be constructed.
 #[tauri::command]
-pub async fn get_usage_summary(
+pub async fn set_active_model(
     state: State<'_, AppState>,
-) -> Result<ApiResponse<UsageSummary>, String> {
-    let registry = state.runtime.registry();
-    let budget = registry.budget();
-
-    match registry.get_total_daily_usage().await {
-        Ok(daily_usage_usd) => Ok(ApiResponse::ok(UsageSummary {
-            daily_usage_usd,
-            per_run_budget_usd: budget.per_run_usd,
-            daily_budget_usd: budget.daily_usd,
-        })),
-        Err(err) => Ok(ApiResponse::err(err.to_string())),
-    }
-}
-
-/// Check whether an estimated cost is within budget for a run.
-///
-/// # Errors
-///
-/// Returns an error response if the budget check fails.
-#[tauri::command]
-pub async fn check_budget(
-    state: State<'_, AppState>,
+    scope: ModelSelectionScope,
+    workspace_id: Option<WorkspaceId>,
+    thread_id: Option<ThreadId>,
     provider_id: ProviderId,
-    run_id: AgentRunId,
-    estimated_cost_usd: f64,
-) -> Result<ApiResponse<()>, String> {
+    model_id: ModelId,
+) -> Result<ApiResponse<ActiveModelSelection>, String> {
     Ok(
         match state
             .runtime
             .registry()
-            .check_budget(provider_id, run_id, estimated_cost_usd)
+            .set_active_model(scope, workspace_id, thread_id, provider_id, model_id)
             .await
         {
-            Ok(()) => ApiResponse::ok(()),
-            Err(err) => ApiResponse::err(err.to_string()),
+            Ok(selection) => ApiResponse::ok(selection),
+            Err(error) => ApiResponse::err(error.to_string()),
+        },
+    )
+}
+
+/// Load one exact active provider/model selection.
+///
+/// # Errors
+///
+/// Returns a transport error if the response cannot be constructed.
+#[tauri::command]
+pub async fn get_active_model(
+    state: State<'_, AppState>,
+    scope: ModelSelectionScope,
+    workspace_id: Option<WorkspaceId>,
+    thread_id: Option<ThreadId>,
+) -> Result<ApiResponse<Option<ActiveModelSelection>>, String> {
+    Ok(
+        match state.runtime.registry().get_active_model(scope, workspace_id, thread_id).await {
+            Ok(selection) => ApiResponse::ok(selection),
+            Err(error) => ApiResponse::err(error.to_string()),
+        },
+    )
+}
+
+/// Resolve the effective thread/workspace/global provider/model selection.
+///
+/// # Errors
+///
+/// Returns a transport error if the response cannot be constructed.
+#[tauri::command]
+pub async fn resolve_active_model(
+    state: State<'_, AppState>,
+    workspace_id: WorkspaceId,
+    thread_id: ThreadId,
+) -> Result<ApiResponse<ActiveModelSelection>, String> {
+    Ok(
+        match state.runtime.registry().resolve_active_model(workspace_id, thread_id).await {
+            Ok(selection) => ApiResponse::ok(selection),
+            Err(error) => ApiResponse::err(error.to_string()),
+        },
+    )
+}
+
+/// Perform a bounded provider/model connection check and persist a safe summary.
+///
+/// # Errors
+///
+/// Returns a transport error if the response cannot be constructed.
+#[tauri::command]
+pub async fn test_provider_connection(
+    state: State<'_, AppState>,
+    provider_id: ProviderId,
+    model_id: ModelId,
+) -> Result<ApiResponse<ProviderHealth>, String> {
+    Ok(
+        match autoagents_adapter::check_provider_health(
+            state.runtime.registry().clone(),
+            state.secret_store.clone(),
+            provider_id,
+            model_id,
+        )
+        .await
+        {
+            Ok(health) => ApiResponse::ok(health),
+            Err(error) => ApiResponse::err(error.to_string()),
+        },
+    )
+}
+
+/// Load the last provider health result.
+///
+/// # Errors
+///
+/// Returns a transport error if the response cannot be constructed.
+#[tauri::command]
+pub async fn get_provider_health(
+    state: State<'_, AppState>,
+    provider_id: ProviderId,
+    model_id: ModelId,
+) -> Result<ApiResponse<Option<ProviderHealth>>, String> {
+    Ok(
+        match state.runtime.registry().get_provider_health(provider_id, model_id).await {
+            Ok(health) => ApiResponse::ok(health),
+            Err(error) => ApiResponse::err(error.to_string()),
+        },
+    )
+}
+
+/// Load the immutable provider/model snapshot captured for a run.
+///
+/// # Errors
+///
+/// Returns a transport error if the response cannot be constructed.
+#[tauri::command]
+pub async fn get_run_model_snapshot(
+    state: State<'_, AppState>,
+    run_id: AgentRunId,
+) -> Result<ApiResponse<Option<RunModelSnapshot>>, String> {
+    Ok(
+        match state.runtime.registry().get_run_model_snapshot(run_id).await {
+            Ok(snapshot) => ApiResponse::ok(snapshot),
+            Err(error) => ApiResponse::err(error.to_string()),
         },
     )
 }

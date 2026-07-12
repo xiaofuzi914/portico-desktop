@@ -78,6 +78,9 @@ impl SqlitePluginRegistry {
                 description TEXT NOT NULL,
                 skills TEXT NOT NULL,
                 tools TEXT NOT NULL,
+                entrypoint TEXT,
+                capabilities TEXT NOT NULL DEFAULT '[]',
+                install_path TEXT,
                 permissions TEXT NOT NULL,
                 enabled INTEGER NOT NULL DEFAULT 1,
                 installed_at TEXT NOT NULL
@@ -143,12 +146,16 @@ impl PluginRegistry for SqlitePluginRegistry {
             serde_json::to_string(&manifest.permissions).map_err(|e| AppError::Internal {
                 message: format!("serialize permissions failed: {e}"),
             })?;
+        let capabilities_json =
+            serde_json::to_string(&manifest.capabilities).map_err(|e| AppError::Internal {
+                message: format!("serialize capabilities failed: {e}"),
+            })?;
 
         sqlx::query(
             "INSERT INTO plugins (
-                id, name, version, display_name, description, skills, tools,
-                permissions, enabled, installed_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                id, name, version, display_name, description, skills, tools, entrypoint,
+                capabilities, install_path, permissions, enabled, installed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 name = excluded.name,
                 version = excluded.version,
@@ -156,6 +163,9 @@ impl PluginRegistry for SqlitePluginRegistry {
                 description = excluded.description,
                 skills = excluded.skills,
                 tools = excluded.tools,
+                entrypoint = excluded.entrypoint,
+                capabilities = excluded.capabilities,
+                install_path = excluded.install_path,
                 permissions = excluded.permissions,
                 enabled = excluded.enabled,
                 installed_at = excluded.installed_at",
@@ -167,6 +177,9 @@ impl PluginRegistry for SqlitePluginRegistry {
         .bind(&manifest.description)
         .bind(skills_json)
         .bind(tools_json)
+        .bind(&manifest.entrypoint)
+        .bind(capabilities_json)
+        .bind(&manifest.install_path)
         .bind(permissions_json)
         .bind(i64::from(manifest.enabled))
         .bind(manifest.installed_at)
@@ -181,8 +194,8 @@ impl PluginRegistry for SqlitePluginRegistry {
 
     async fn list_plugins(&self) -> Result<Vec<PluginManifest>, AppError> {
         let rows = sqlx::query_as::<_, PluginRow>(
-            "SELECT id, name, version, display_name, description, skills, tools,
-                    permissions, enabled, installed_at
+            "SELECT id, name, version, display_name, description, skills, tools, entrypoint,
+                    capabilities, install_path, permissions, enabled, installed_at
              FROM plugins
              ORDER BY installed_at ASC",
         )
@@ -385,6 +398,9 @@ struct PluginRow {
     description: String,
     skills: String,
     tools: String,
+    entrypoint: Option<String>,
+    capabilities: String,
+    install_path: Option<String>,
     permissions: String,
     enabled: i64,
     installed_at: chrono::DateTime<chrono::Utc>,
@@ -406,6 +422,10 @@ impl TryFrom<PluginRow> for PluginManifest {
             serde_json::from_str(&row.permissions).map_err(|e| AppError::Internal {
                 message: format!("deserialize permissions failed: {e}"),
             })?;
+        let capabilities =
+            serde_json::from_str(&row.capabilities).map_err(|e| AppError::Internal {
+                message: format!("deserialize capabilities failed: {e}"),
+            })?;
 
         Ok(Self {
             id: PluginId(row.id),
@@ -415,6 +435,9 @@ impl TryFrom<PluginRow> for PluginManifest {
             description: row.description,
             skills,
             tools,
+            entrypoint: row.entrypoint,
+            capabilities,
+            install_path: row.install_path,
             permissions,
             enabled: row.enabled != 0,
             installed_at: row.installed_at,
@@ -495,7 +518,7 @@ impl TryFrom<McpServerRow> for McpServerConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use app_models::McpTransport;
+    use app_models::{McpTransport, PluginCapability};
     use chrono::Utc;
 
     async fn setup() -> SqlitePluginRegistry {
@@ -511,6 +534,12 @@ mod tests {
             description: "A test plugin".to_owned(),
             skills: vec!["summarize".to_owned()],
             tools: vec!["read_file".to_owned()],
+            entrypoint: Some("dist/index.html".to_owned()),
+            capabilities: vec![
+                PluginCapability::MarkdownPreview,
+                PluginCapability::MarkdownExportHtml,
+            ],
+            install_path: Some("/tmp/portico/plugins/test-plugin".to_owned()),
             permissions: PluginPermissions {
                 network: vec!["*.example.com".to_owned()],
                 filesystem: "read".to_owned(),
@@ -544,6 +573,9 @@ mod tests {
         assert_eq!(plugins.len(), 1);
         assert_eq!(plugins[0].name, "test-plugin");
         assert!(plugins[0].enabled);
+        assert_eq!(plugins[0].entrypoint.as_deref(), Some("dist/index.html"));
+        assert_eq!(plugins[0].capabilities, manifest.capabilities);
+        assert_eq!(plugins[0].install_path, manifest.install_path);
 
         registry.enable_plugin(manifest.id, false).await.expect("disable plugin");
         let after_disable = registry.list_plugins().await.expect("list after disable");

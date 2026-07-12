@@ -197,5 +197,3 @@ export function BrowserPanel({ workspaceId }: BrowserPanelProps) {
     </div>
   );
 }
-
-

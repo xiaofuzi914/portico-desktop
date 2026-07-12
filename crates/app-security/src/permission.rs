@@ -19,8 +19,8 @@ impl PolicyPermissionEngine {
     ///
     /// Default rules:
     /// - Deny all `shell.*` actions.
-    /// - Allow `filesystem.read` only in trusted workspaces.
-    /// - Ask (deny with an approval reason) for `filesystem.write`.
+    /// - Allow `filesystem.read` / `filesystem.write` / `git.read` in trusted
+    ///   workspaces (path allowlists enforced by the policy gate).
     /// - Allow read-only MCP tool invocations.
     /// - Ask for side-effect MCP tool invocations.
     /// - Allow `network.*` at the action level; private host/port checks are
@@ -34,12 +34,8 @@ impl PolicyPermissionEngine {
                 decision: crate::PermissionDecision::Deny,
                 scope: crate::PermissionScope::Global,
             },
-            crate::PermissionRule {
-                action_pattern: "filesystem.write".to_owned(),
-                resource_pattern: "*".to_owned(),
-                decision: crate::PermissionDecision::Ask,
-                scope: crate::PermissionScope::Once,
-            },
+            // Untrusted / non-default write handling falls through to
+            // apply_default_policy, which Allows only when trusted_workspace is set.
             crate::PermissionRule {
                 action_pattern: "mcp.invoke.read".to_owned(),
                 resource_pattern: "*".to_owned(),
@@ -102,10 +98,10 @@ fn matches_glob(pattern: &str, value: &str) -> bool {
     }
 
     // Support patterns like "filesystem.*" by matching the prefix up to the wildcard.
-    if let Some(prefix) = pattern.strip_suffix(".*") {
-        if let Some(value_prefix) = value.rsplit_once('.').map(|(p, _)| p) {
-            return prefix == value_prefix;
-        }
+    if let Some(prefix) = pattern.strip_suffix(".*")
+        && let Some(value_prefix) = value.rsplit_once('.').map(|(p, _)| p)
+    {
+        return prefix == value_prefix;
     }
 
     // Support a single trailing `*` that matches the remainder of the value.
@@ -127,9 +123,18 @@ fn apply_default_policy(request: &PermissionRequest) -> PermissionResult {
         return PermissionResult::Allowed;
     }
 
+    if request.action == "git.read" && request.trusted_workspace {
+        return PermissionResult::Allowed;
+    }
+
+    // Trusted projects may write inside their allowlist (path checks happen in
+    // PolicyGate). Untrusted workspaces still require an explicit approval path.
     if request.action == "filesystem.write" {
+        if request.trusted_workspace {
+            return PermissionResult::Allowed;
+        }
         return PermissionResult::Denied {
-            reason: "filesystem write requires approval".to_owned(),
+            reason: "filesystem write requires a trusted project or approval".to_owned(),
         };
     }
 
@@ -187,12 +192,22 @@ mod tests {
     }
 
     #[test]
-    fn filesystem_write_requires_approval() {
+    fn filesystem_write_allowed_in_trusted_workspace() {
         let engine = PolicyPermissionEngine::default_rules();
         let result = engine.evaluate(request("filesystem.write", "/tmp/foo", true));
         assert!(
-            matches!(result, PermissionResult::Ask { .. }),
-            "expected Ask result, got {result:?}"
+            matches!(result, PermissionResult::Allowed),
+            "expected Allowed for trusted write, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn filesystem_write_denied_in_untrusted_workspace() {
+        let engine = PolicyPermissionEngine::default_rules();
+        let result = engine.evaluate(request("filesystem.write", "/tmp/foo", false));
+        assert!(
+            matches!(result, PermissionResult::Denied { .. }),
+            "expected Denied for untrusted write, got {result:?}"
         );
     }
 

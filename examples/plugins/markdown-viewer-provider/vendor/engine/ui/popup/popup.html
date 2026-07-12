@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Markdown Viewer</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+
+<body>
+  <div class="tab-wrapper">
+    <div class="header">
+      <div class="header-content">
+        <img src="../../icons/icon48.png" alt="Logo" class="logo">
+        <div class="header-text">
+          <h1 data-i18n="popup_title" id="extension-title" class="clickable-title">docu.md</h1>
+          <div class="version-row">
+            <span class="version"><span data-i18n="popup_version_label" id="version-text">Version</span> · <a href="https://docu.md" target="_blank" class="author">docu.md</a></span>
+            <a href="#" id="review-link" class="review-link" title="Rate & Review">
+              <span class="star-icon">★</span>
+              <span data-i18n="popup_review_link">Rate</span>
+            </a>
+            <button id="language-selector" class="language-btn" title="Language">en</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="tabs">
+      <button class="tab active" data-tab="history" data-i18n="tab_history"></button>
+      <button class="tab" data-tab="theme" data-i18n="tab_theme"></button>
+      <button class="tab" data-tab="settings" data-i18n="tab_settings"></button>
+    </div>
+
+    <div class="tab-content">
+      <!-- History tab (merged with overview) -->
+      <div class="tab-panel active" id="history">
+        <!-- Open Project button -->
+        <div class="info-section" style="padding-bottom: 0;">
+          <button class="btn btn-project" id="open-project-btn">
+            <span class="btn-icon" aria-hidden="true">↗</span> <span data-i18n="workspace_open">Open Workspace</span>
+          </button>
+        </div>
+
+        <!-- File access warning (only shown when permission is disabled) -->
+        <div id="file-access-warning" class="warning-box" style="display: none;">
+          <div class="warning-dot"></div>
+          <div class="warning-content">
+            <div class="warning-title" data-i18n="file_access_disabled"></div>
+            <div class="warning-desc" id="file-access-warning-desc"></div>
+          </div>
+        </div>
+
+        <!-- History list -->
+        <div class="info-section">
+          <h3 data-i18n="history_title"></h3>
+          <div class="settings-note" style="margin-bottom: 10px;" data-i18n="history_description"></div>
+          
+          <div class="cache-items" id="history-items" data-empty="true">
+            <div class="cache-item cache-item--empty">
+              <div class="empty-state-icon" aria-hidden="true">↺</div>
+              <div data-i18n="history_items_empty"></div>
+            </div>
+          </div>
+
+          <div class="cache-actions">
+            <button class="btn" id="refresh-history" data-i18n="history_refresh"></button>
+            <button class="btn danger" id="clear-history" data-i18n="history_clear"></button>
+          </div>
+        </div>
+      </div>
+      <template id="history-item-template">
+        <div class="cache-item history-item" data-cache-item="dynamic">
+          <div class="history-item-main">
+            <div class="cache-item-key history-item-url"></div>
+            <div class="cache-item-info">
+              <span class="history-item-title"></span>
+            </div>
+          </div>
+          <button type="button" class="history-item-remove" aria-label="Remove from list">×</button>
+          <div class="cache-item-meta history-item-accessed"></div>
+        </div>
+      </template>
+
+      <!-- Theme tab -->
+      <div class="tab-panel" id="theme">
+        <div class="info-section">
+          <h3 data-i18n="settings_theme_label">Theme</h3>
+          <div style="margin: 10px 0;">
+            <select id="theme-selector">
+              <option value="default">Loading themes...</option>
+            </select>
+            <div id="theme-description" class="settings-note"></div>
+          </div>
+
+          <div style="margin: 10px 0;">
+            <label for="frontmatter-display" data-i18n="settings_frontmatter_display"></label>
+            <select id="frontmatter-display">
+              <option value="hide" selected data-i18n="settings_frontmatter_hide">Hide</option>
+              <option value="table" data-i18n="settings_frontmatter_table">Table</option>
+              <option value="raw" data-i18n="settings_frontmatter_raw">Raw (blockquote)</option>
+            </select>
+            <div class="settings-note" data-i18n="settings_frontmatter_note"></div>
+          </div>
+
+          <div style="margin: 10px 0;">
+            <label for="table-layout" data-i18n="settings_table_layout"></label>
+            <select id="table-layout">
+              <option value="left" data-i18n="settings_table_layout_left"></option>
+              <option value="center" data-i18n="settings_table_layout_center"></option>
+              <option value="center-full-width" data-i18n="settings_table_layout_full_width"></option>
+            </select>
+          </div>
+
+          <div style="margin: 10px 0;">
+            <label class="checkbox-label">
+              <input type="checkbox" id="table-merge-empty" checked>
+              <span data-i18n="settings_table_merge_empty"></span>
+            </label>
+            <div class="settings-note" data-i18n="settings_table_merge_empty_note"></div>
+          </div>
+
+          <div style="margin: 10px 0;">
+            <label class="checkbox-label">
+              <input type="checkbox" id="swap-panel-side">
+              <span data-i18n="settings_swap_panel_side"></span>
+            </label>
+            <div class="settings-note" data-i18n="settings_swap_panel_side_note"></div>
+          </div>
+
+          <div style="margin: 10px 0;">
+            <label for="docx-emoji-style" data-i18n="settings_docx_emoji_style"></label>
+            <select id="docx-emoji-style">
+              <option value="system" selected data-i18n="settings_docx_emoji_style_system">System style</option>
+              <option value="windows" data-i18n="settings_docx_emoji_style_windows">Windows style</option>
+              <option value="apple" data-i18n="settings_docx_emoji_style_apple">Apple style</option>
+            </select>
+            <div class="settings-note" data-i18n="settings_docx_emoji_style_note"></div>
+          </div>
+
+          <div style="margin: 10px 0;">
+            <label for="docx-hr-display" data-i18n="settings_docx_hr_display"></label>
+            <select id="docx-hr-display">
+              <option value="hide" data-i18n="settings_docx_hr_display_hide"></option>
+              <option value="line" data-i18n="settings_docx_hr_display_line"></option>
+              <option value="pageBreak" data-i18n="settings_docx_hr_display_page_break"></option>
+            </select>
+            <div class="settings-note" data-i18n="settings_docx_hr_display_note"></div>
+          </div>
+
+          <div style="margin: 10px 0;">
+            <label for="first-line-indent" data-i18n="settings_first_line_indent"></label>
+            <select id="first-line-indent">
+              <option value="0" data-i18n="settings_first_line_indent_off">不缩进</option>
+              <option value="1" data-i18n="settings_first_line_indent_1">1 字符</option>
+              <option value="2" data-i18n="settings_first_line_indent_2" selected>2 字符</option>
+              <option value="3" data-i18n="settings_first_line_indent_3">3 字符</option>
+              <option value="4" data-i18n="settings_first_line_indent_4">4 字符</option>
+            </select>
+            <div class="settings-note" data-i18n="settings_first_line_indent_note"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Settings tab -->
+      <div class="tab-panel" id="settings">
+        <div class="info-section">
+          <h3 data-i18n="settings_auto_refresh_title">Auto Refresh</h3>
+          <div style="margin: 10px 0;">
+            <label class="checkbox-label">
+              <input type="checkbox" id="auto-refresh-enabled" checked>
+              <span data-i18n="settings_auto_refresh">Auto Refresh</span>
+            </label>
+            <div class="settings-note" data-i18n="settings_auto_refresh_note">Automatically reload when local file changes</div>
+          </div>
+
+          <div style="margin: 10px 0;">
+            <label for="auto-refresh-interval" data-i18n="settings_auto_refresh_interval">Refresh Interval</label>
+            <select id="auto-refresh-interval">
+              <option value="500">0.5s</option>
+              <option value="1000" selected>1s</option>
+              <option value="2000">2s</option>
+              <option value="5000">5s</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="info-section">
+          <h3 data-i18n="remark_cfg_title">Remark Mode</h3>
+          <div style="margin: 10px 0;">
+            <label class="checkbox-label">
+              <input type="checkbox" id="remark-auto-delete-empty" checked>
+              <span data-i18n="remark_cfg_auto_delete">Auto-delete empty remarks</span>
+            </label>
+          </div>
+          <div style="margin: 10px 0;">
+            <label class="checkbox-label">
+              <input type="checkbox" id="remark-close-after-copy">
+              <span data-i18n="remark_cfg_close_after_copy">Close tab after copy</span>
+            </label>
+          </div>
+          <div style="margin: 10px 0;">
+            <label for="remark-highlight-style" data-i18n="remark_cfg_highlight_style">Highlight style</label>
+            <select id="remark-highlight-style">
+              <option value="background" data-i18n="remark_cfg_style_bg">Background</option>
+              <option value="underline" data-i18n="remark_cfg_style_underline">Underline</option>
+              <option value="wavy" data-i18n="remark_cfg_style_wavy">Wavy</option>
+              <option value="border" data-i18n="remark_cfg_style_border">Border</option>
+            </select>
+          </div>
+          <div style="margin: 10px 0;">
+            <label for="remark-default-color" data-i18n="remark_cfg_default_color">Default color</label>
+            <select id="remark-default-color">
+              <option value="yellow">Suggestion</option>
+              <option value="green">Keep</option>
+              <option value="blue">Question</option>
+              <option value="pink">Concern</option>
+            </select>
+          </div>
+          <div style="margin: 10px 0;">
+            <label for="remark-font-size" data-i18n="remark_cfg_font_size">Font size</label>
+            <select id="remark-font-size">
+              <option value="12">12px</option>
+              <option value="13" selected>13px</option>
+              <option value="14">14px</option>
+              <option value="15">15px</option>
+              <option value="16">16px</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="info-section">
+          <h3 data-i18n="settings_cache_title">Cache</h3>
+          <div class="cache-stats" id="cache-stats">
+            <div class="stat-item">
+              <div class="stat-value" id="cache-stat-item-count">--</div>
+              <div class="stat-label" data-i18n="cache_stat_item_label"></div>
+            </div>
+            <div class="stat-item">
+              <div class="stat-value" id="cache-stat-size">--</div>
+              <div class="stat-label" data-i18n="cache_stat_size_label"></div>
+            </div>
+          </div>
+
+          <div style="margin: 10px 0;">
+            <label for="max-cache-items" data-i18n="settings_max_cache_label"></label>
+            <select id="max-cache-items">
+              <option value="100">100</option>
+              <option value="200">200</option>
+              <option value="500">500</option>
+              <option value="1000">1000</option>
+              <option value="2000">2000</option>
+              <option value="5000">5000</option>
+            </select>
+          </div>
+
+          <div class="cache-actions">
+            <button class="btn" id="refresh-cache" data-i18n="cache_refresh"></button>
+            <button class="btn danger" id="clear-cache" data-i18n="cache_clear"></button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Language Dropdown -->
+    <div id="language-dropdown" class="language-dropdown" style="display: none;">
+      <div class="language-dropdown-content" id="language-dropdown-content">
+        <!-- Language options will be populated by JavaScript -->
+      </div>
+    </div>
+
+    <!-- Modal Dialog -->
+    <div id="confirm-modal" class="modal-overlay" style="display: none;">
+      <div class="modal-content">
+        <h3 class="modal-title" id="modal-title">Confirm</h3>
+        <p class="modal-message" id="modal-message">Are you sure?</p>
+        <div class="modal-actions">
+          <button class="btn" id="modal-cancel">Cancel</button>
+          <button class="btn danger" id="modal-confirm">Confirm</button>
+        </div>
+      </div>
+    </div>
+
+    <script src="popup.js"></script>
+</body>
+
+</html>

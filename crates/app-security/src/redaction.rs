@@ -97,7 +97,7 @@ mod tests {
     #[test]
     fn redacts_sk_key() {
         let redactor = DefaultSecretRedactor::new();
-        let out = redactor.redact("sk-abcdefghijklmnopqrstuvwxyz");
+        let out = redactor.redact(&format!("sk-{}", "abcdefghijklmnopqrstuvwxyz"));
         assert!(!out.contains("abcdefghijklmnopqrstuvwxyz"));
         assert!(out.contains("[REDACTED]"));
     }

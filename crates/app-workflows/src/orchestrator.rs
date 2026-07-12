@@ -13,7 +13,9 @@ use tokio::time::timeout;
 use crate::AgentRegistry;
 
 /// Default timeout for an individual subagent run.
-const SUBAGENT_TIMEOUT: Duration = Duration::from_secs(60);
+/// Keep in the same ballpark as `DEFAULT_RUN_TIMEOUT` (300s): tool-using
+/// explorers on real projects routinely need >60s with remote models.
+const SUBAGENT_TIMEOUT: Duration = Duration::from_secs(240);
 
 /// Coordinates subagent planning, execution, and synthesis.
 pub struct Orchestrator {
@@ -86,6 +88,8 @@ impl Orchestrator {
         Ok(OrchestrationPlan {
             parent_run_id,
             subagents,
+            pattern_ids: Vec::new(),
+            planning_rationale: "Legacy keyword plan (no memory ports).".to_owned(),
         })
     }
 
@@ -141,25 +145,26 @@ impl Orchestrator {
         Ok(read_results)
     }
 
-    /// Synthesize a human-readable summary from subagent results.
+    /// Synthesize a **result-first** summary from subagent results.
+    ///
+    /// Leads with the most substantial completed deliverable text so the user
+    /// sees the outcome, not only a meta "Subagent results" roster.
     ///
     /// # Errors
     ///
     /// Returns an error if synthesis fails.
     #[allow(clippy::unused_async)]
     pub async fn synthesize(&self, results: &[SubagentRun]) -> Result<String, AppError> {
-        let mut lines = Vec::with_capacity(results.len() + 1);
-        lines.push("Subagent results:".to_owned());
-        for result in results {
-            let summary = result.output_summary.as_deref().unwrap_or("No summary available");
-            lines.push(format!(
-                "- {} ({}): {}",
-                result.agent_name,
-                result.status.as_str(),
-                summary.lines().next().unwrap_or(summary)
-            ));
-        }
-        Ok(lines.join("\n"))
+        Ok(synthesize_result_oriented(results))
+    }
+
+    /// Run one additional subagent (e.g. worker follow-up after planner).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the subagent cannot be started or persisted.
+    pub async fn run_one_subagent(&self, subagent: SubagentRun) -> Result<SubagentRun, AppError> {
+        run_subagent(self.runtime.clone(), subagent).await
     }
 
     /// Cancel a subagent run, if it has been started.
@@ -234,20 +239,32 @@ async fn run_subagent(
     let child = runtime.start_run(parent.workspace_id, parent.thread_id).await?;
     storage.update_subagent_child_run(subagent.id, child.id).await?;
 
-    let work = runtime.submit_message(child.id, &subagent.task_description);
+    // Keep the prompt tight: role name + task. Long system dumps waste context
+    // and slow tool-using explorers on remote models.
+    let prompt = compact_subagent_prompt(&subagent);
+    let work = runtime.submit_message(child.id, &prompt);
     let outcome = match timeout(SUBAGENT_TIMEOUT, work).await {
         Ok(Ok(())) => {
             let child_run = runtime.get_run(child.id).await?;
             let summary = summarize_run(&runtime, child.id).await?;
             (child_run.status, summary)
         }
-        Ok(Err(err)) => (AgentRunStatus::Failed, Some(err.to_string())),
+        Ok(Err(err)) => {
+            // submit_message already marks the child Failed; mirror that.
+            (AgentRunStatus::Failed, Some(user_facing_subagent_error(&err)))
+        }
         Err(_) => {
             let _ = runtime.cancel_run(child.id).await;
+            // Ensure the child does not linger as Running/Cancelled-without-reason.
+            let _ = runtime
+                .storage()
+                .update_run_status(child.id, AgentRunStatus::Failed)
+                .await;
             (
                 AgentRunStatus::Failed,
                 Some(format!(
-                    "subagent timed out after {} seconds",
+                    "子 Agent「{}」超时（{} 秒）。可缩短问题，或改用单次「对话」模式。",
+                    subagent.agent_name,
                     SUBAGENT_TIMEOUT.as_secs()
                 )),
             )
@@ -260,18 +277,112 @@ async fn run_subagent(
     storage.get_subagent(subagent.id).await
 }
 
+fn compact_subagent_prompt(subagent: &SubagentRun) -> String {
+    // task_description may already include role + mandate; keep first ~3k chars.
+    let body = subagent.task_description.trim();
+    let clipped: String = body.chars().take(3_000).collect();
+    let is_writer = matches!(
+        subagent.agent_name.as_str(),
+        "worker" | "doc-writer" | "tester"
+    );
+    let close = if is_writer {
+        "结果导向：直接产出用户要的文件/代码/图（如 PlantUML），并列出交付路径。\
+不要只写「下一步计划」就结束。中文回复。"
+    } else {
+        "结果导向：给出可验证结论与路径证据。若任务要求交付物，在你的角色范围内尽量推进到可交付。中文回复。"
+    };
+    format!(
+        "You are the「{}」subagent in a multi-agent session. Complete your role fully. {}\n\n{}",
+        subagent.agent_name, close, clipped
+    )
+}
+
+/// Public for orchestration follow-up synthesis tests.
+#[must_use]
+pub(crate) fn synthesize_result_oriented(results: &[SubagentRun]) -> String {
+    if results.is_empty() {
+        return "多角色协作未产生结果。".to_owned();
+    }
+
+    // Prefer the longest completed body as the primary deliverable.
+    let mut best: Option<&SubagentRun> = None;
+    let mut best_len = 0usize;
+    for r in results {
+        if r.status != AgentRunStatus::Completed && r.status != AgentRunStatus::WaitingApproval {
+            continue;
+        }
+        let len = r.output_summary.as_ref().map_or(0, String::len);
+        if len > best_len {
+            best_len = len;
+            best = Some(r);
+        }
+    }
+
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(primary) = best {
+        let body = primary.output_summary.as_deref().unwrap_or("").trim();
+        if !body.is_empty() {
+            parts.push("## 交付结果".to_owned());
+            // Keep enough content for real diagrams/plans (not a single line).
+            parts.push(body.chars().take(6_000).collect());
+        }
+    }
+
+    parts.push("## 角色执行摘要".to_owned());
+    for result in results {
+        let summary = result.output_summary.as_deref().unwrap_or("（无输出）");
+        let head: String = summary.chars().take(200).collect();
+        parts.push(format!(
+            "- **{}** ({})：{}",
+            result.agent_name,
+            result.status.as_str(),
+            head.replace('\n', " ")
+        ));
+    }
+    parts.join("\n\n")
+}
+
+fn user_facing_subagent_error(err: &AppError) -> String {
+    let raw = err.to_string();
+    // Prefer the public message body when present.
+    if let Some(rest) = raw.strip_prefix("Internal: ") {
+        return rest.to_owned();
+    }
+    raw
+}
+
 async fn summarize_run(
     runtime: &PorticoRuntimeHandle,
     run_id: AgentRunId,
 ) -> Result<Option<String>, AppError> {
+    // Keep enough text for deliverables (PlantUML / multi-step results).
+    // Previously 280 chars truncated plans into a useless one-liner.
+    const MAX_SUMMARY_CHARS: usize = 8_000;
+
+    // Prefer durable assistant messages (written when the child completes).
+    if let Ok(run) = runtime.get_run(run_id).await
+        && let Ok(messages) = runtime.list_messages(run.thread_id).await
+    {
+        for message in messages.iter().rev() {
+            if message.run_id == Some(run_id)
+                && message.role == app_models::MessageRole::Assistant
+            {
+                let trimmed = message.content.trim();
+                if !trimmed.is_empty() {
+                    return Ok(Some(trimmed.chars().take(MAX_SUMMARY_CHARS).collect()));
+                }
+            }
+        }
+    }
+
     let events = runtime.list_run_events(run_id).await?;
     for event in events.iter().rev() {
-        if event.event_type == "MessageCompleted" {
-            if let Some(content) = event.payload.get("content").and_then(|v| v.as_str()) {
-                let trimmed = content.trim();
-                if !trimmed.is_empty() {
-                    return Ok(Some(trimmed.chars().take(200).collect()));
-                }
+        if event.event_type == "MessageCompleted"
+            && let Some(content) = event.payload.get("content").and_then(|v| v.as_str())
+        {
+            let trimmed = content.trim();
+            if !trimmed.is_empty() {
+                return Ok(Some(trimmed.chars().take(MAX_SUMMARY_CHARS).collect()));
             }
         }
     }
@@ -335,7 +446,8 @@ fn is_write_tool(tool: &str) -> bool {
 mod tests {
     use super::*;
     use app_runtime::{
-        MemoryEventBus, PorticoRuntimeHandle, SqliteModelProviderRegistry, SqliteStorage, Storage,
+        MemoryEventBus, MockAgentExecutor, PorticoRuntimeHandle, SqliteModelProviderRegistry,
+        SqliteStorage, Storage,
     };
     use std::sync::Arc;
 
@@ -344,12 +456,20 @@ mod tests {
         app_models::Workspace,
         app_models::Thread,
     ) {
+        std::fs::create_dir_all("/tmp/portico-orchestrator-test")
+            .expect("create test workspace root");
         let storage = Arc::new(SqliteStorage::open_in_memory().await.expect("open db"));
         let event_bus = Arc::new(MemoryEventBus::default());
         let registry = Arc::new(SqliteModelProviderRegistry::new(storage.pool().clone()));
-        let runtime = PorticoRuntimeHandle::new(storage, event_bus, registry, None, None)
-            .await
-            .expect("create runtime");
+        let runtime = PorticoRuntimeHandle::new(
+            storage,
+            event_bus,
+            registry,
+            Some(Arc::new(MockAgentExecutor)),
+            None,
+        )
+        .await
+        .expect("create runtime");
         let workspace = runtime
             .create_workspace("test", "/tmp/portico-orchestrator-test", false)
             .await

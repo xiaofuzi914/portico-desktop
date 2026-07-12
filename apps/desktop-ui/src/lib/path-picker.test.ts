@@ -21,8 +21,6 @@ describe("deriveProjectNameFromPath", () => {
   });
 
   it("uses the final directory name for Windows paths", () => {
-    expect(deriveProjectNameFromPath("C:\\Users\\owen\\portico-desktop")).toBe(
-      "portico-desktop",
-    );
+    expect(deriveProjectNameFromPath("C:\\Users\\owen\\portico-desktop")).toBe("portico-desktop");
   });
 });

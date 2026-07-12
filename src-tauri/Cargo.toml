@@ -9,6 +9,12 @@ rust-version.workspace = true
 description = "Tauri 2 backend for Portico"
 build = "build.rs"
 
+[features]
+default = []
+# Test-only WebDriver server. Normal development and release builds do not
+# compile or register this plugin.
+desktop-e2e = ["dep:tauri-plugin-wdio-webdriver"]
+
 [dependencies]
 tauri = { workspace = true }
 tauri-plugin-notification = { workspace = true }
@@ -23,10 +29,9 @@ uuid = { workspace = true }
 chrono = { workspace = true }
 sqlx = { workspace = true }
 tracing = { workspace = true }
+log = { workspace = true }
 url = "2"
 dirs = "6"
-screenshots = "0.8"
-enigo = "0.6"
 base64 = "0.22"
 app-runtime = { workspace = true }
 app-models = { workspace = true }
@@ -35,9 +40,15 @@ app-tools = { workspace = true }
 app-memory = { workspace = true }
 app-workflows = { workspace = true }
 autoagents-adapter = { workspace = true }
+async-trait = { workspace = true }
+tauri-plugin-wdio-webdriver = { version = "=1.2.0", optional = true }
 
 [build-dependencies]
 tauri-build = { version = "2.5", features = [] }
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+tauri = { workspace = true, features = ["test"] }
+tempfile = "3"

@@ -1,0 +1,21 @@
+{
+  "id": "a8c3e2f1-4b5d-6e7f-8091-a2b3c4d5e6f7",
+  "name": "markdown-viewer-provider",
+  "version": "5.2.0",
+  "display_name": "Markdown Viewer (markdown-viewer-extension 5.2.0)",
+  "description": "Portico Markdown Provider powered by upstream markdown-viewer-extension v5.2.0 (GPL-3.0). Full offline engine under vendor/engine; host protocol portico.markdown-provider/v1.",
+  "skills": [],
+  "tools": [],
+  "entrypoint": "index.html",
+  "capabilities": [
+    "markdown.preview",
+    "markdown.export.html"
+  ],
+  "install_path": null,
+  "permissions": {
+    "network": [],
+    "filesystem": "none"
+  },
+  "enabled": true,
+  "installed_at": "2026-07-12T00:00:00Z"
+}

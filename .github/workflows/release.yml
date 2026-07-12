@@ -18,6 +18,16 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Install Linux desktop dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
+            librsvg2-dev libxdo-dev libssl-dev
 
       - name: Install Node
         uses: actions/setup-node@v4
@@ -27,39 +37,118 @@ jobs:
       - name: Install pnpm
         uses: pnpm/action-setup@v3
         with:
-          version: 9
+          version: 10.6.0
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Check Rust formatting
+        run: cargo fmt --all -- --check
+
+      - name: Lint Rust
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Run Rust tests
         run: cargo test --workspace
 
-      - name: Install frontend dependencies
-        run: pnpm install
+      - name: Audit Rust dependencies
+        run: |
+          cargo install cargo-audit --locked
+          # sqlx's lockfile contains its disabled MySQL driver's optional RSA
+          # dependency. Portico builds sqlx with default-features=false and
+          # SQLite only; `cargo tree --target all -i rsa@0.9.10` is empty.
+          test -z "$(cargo tree --target all -i rsa@0.9.10 2>/dev/null)"
+          cargo audit --ignore RUSTSEC-2023-0071
+
+      - name: Audit production frontend dependencies
+        run: pnpm audit --prod --audit-level high
 
       - name: Typecheck frontend
         run: pnpm typecheck
 
+      - name: Check frontend formatting
+        run: pnpm format:check
+
       - name: Test frontend
         run: pnpm test
 
+      - name: Verify frontend logic coverage
+        run: pnpm test:coverage
+
       - name: Build Tauri app
         env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: pnpm tauri build
 
+      - name: Verify Linux production binary excludes test WebDriver
+        if: runner.os == 'Linux'
+        run: |
+          binary_path="target/release/portico-tauri"
+          test -x "$binary_path"
+          if LC_ALL=C strings "$binary_path" | grep -E 'WDIO WebDriver plugin|TAURI_WEBDRIVER_PORT|WebDriver server listening' >/dev/null; then
+            echo "test-only WebDriver server found in Linux production binary"
+            exit 1
+          fi
+
+      - name: Verify Windows production binary excludes test WebDriver
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $binaryPath = "target/release/portico-tauri.exe"
+          if (-not (Test-Path $binaryPath -PathType Leaf)) { throw "production binary missing" }
+          $binaryText = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($binaryPath))
+          if ($binaryText -match 'WDIO WebDriver plugin|TAURI_WEBDRIVER_PORT|WebDriver server listening') {
+            throw "test-only WebDriver server found in Windows production binary"
+          }
+
+      - name: Verify macOS bundle integrity
+        if: runner.os == 'macOS'
+        run: |
+          test -n "$APPLE_SIGNING_IDENTITY"
+          dmg_path="$(find target/release/bundle/dmg -name '*.dmg' -print -quit)"
+          test -n "$dmg_path"
+          device=""
+          cleanup() {
+            if [ -n "$device" ]; then
+              hdiutil detach "$device" || hdiutil detach "$device" -force || true
+            fi
+          }
+          trap cleanup EXIT
+          attach_output="$(hdiutil attach -readonly -nobrowse "$dmg_path")"
+          device="$(printf '%s\n' "$attach_output" | awk '/^\/dev\// {print $1; exit}')"
+          mount_point="$(printf '%s\n' "$attach_output" | awk -F '\t' '/\/Volumes\// {print $NF; exit}')"
+          test -n "$device"
+          test -n "$mount_point"
+          app_path="$mount_point/Portico.app"
+          binary_path="$app_path/Contents/MacOS/portico-tauri"
+          test -f "$app_path/Contents/Resources/icon.icns"
+          test -x "$binary_path"
+          while IFS= read -r candidate; do
+            if file "$candidate" | grep -q 'Mach-O'; then
+              if LC_ALL=C strings "$candidate" | grep -E 'WDIO WebDriver plugin|TAURI_WEBDRIVER_PORT|WebDriver server listening' >/dev/null; then
+                echo "test-only WebDriver server found in production bundle: $candidate"
+                exit 1
+              fi
+            fi
+          done < <(find "$app_path" -type f -perm -111 -print)
+          codesign --verify --deep --strict --verbose=2 "$app_path"
+          spctl --assess --type execute --verbose=2 "$app_path"
+          xcrun stapler validate "$app_path"
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: portico-${{ matrix.os }}
           path: |
-            src-tauri/target/release/bundle/**/*.dmg
-            src-tauri/target/release/bundle/**/*.app
-            src-tauri/target/release/bundle/**/*.msi
-            src-tauri/target/release/bundle/**/*.exe
-            src-tauri/target/release/bundle/**/*.deb
-            src-tauri/target/release/bundle/**/*.rpm
-            src-tauri/target/release/bundle/**/*.AppImage
+            target/release/bundle/**/*.dmg
+            target/release/bundle/**/*.app
+            target/release/bundle/**/*.msi
+            target/release/bundle/**/*.exe
+            target/release/bundle/**/*.deb
+            target/release/bundle/**/*.rpm
+            target/release/bundle/**/*.AppImage

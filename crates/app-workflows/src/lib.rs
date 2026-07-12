@@ -1,11 +1,23 @@
 //! Workflow and orchestration abstractions for Portico.
+//!
+//! **Product note:** default UX is single-agent chat + tools
+//! (`docs/AGENT-PRODUCT-PATH.md`). Multi-agent orchestration here is a
+//! **production** path for real multi-role tasks (composer secondary action),
+//! not a peer dual-mode UI.
 
 pub mod agent_registry;
+pub mod memory_plan;
+pub mod orchestration_service;
 pub mod orchestrator;
+pub mod ports;
 pub mod scheduler;
 
 pub use agent_registry::AgentRegistry;
+pub use orchestration_service::OrchestrationService;
 pub use orchestrator::Orchestrator;
+pub use ports::{
+    NoopPatternSink, NoopPatternSource, PatternRecallQuery, PatternSink, PatternSource,
+};
 pub use scheduler::AutomationScheduler;
 
 use app_models::{AgentRunId, AppError, ThreadId, WorkspaceId};

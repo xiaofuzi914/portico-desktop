@@ -5,6 +5,7 @@ import { listWorkspaces } from "@/lib/tauri-api";
 import { useTranslation } from "@/lib/i18n-react";
 import { workspaceKeys } from "@/lib/query-keys";
 import { buildSidebarProjectItems } from "./sidebar-projects-model";
+import { projectAbbreviation } from "./project-abbreviation";
 import { useEffect, useMemo, useState } from "react";
 import type { WorkspaceId } from "@/lib/schemas";
 import {
@@ -16,9 +17,11 @@ const projectLastUsedStorageKey = "portico.sidebarProjectLastUsedAt";
 
 interface SidebarProjectsProps {
   activeWorkspaceId?: WorkspaceId;
+  /** Icon / abbreviation-only chips for the collapsed sidebar. */
+  compact?: boolean;
 }
 
-export function SidebarProjects({ activeWorkspaceId }: SidebarProjectsProps) {
+export function SidebarProjects({ activeWorkspaceId, compact = false }: SidebarProjectsProps) {
   const { t } = useTranslation();
   const [lastUsedAtById, setLastUsedAtById] = useState<Record<string, string>>(() =>
     readProjectLastUsedAt(),
@@ -51,10 +54,12 @@ export function SidebarProjects({ activeWorkspaceId }: SidebarProjectsProps) {
   );
 
   if (isLoading) {
+    if (compact) return null;
     return <p className="text-muted-foreground px-2 text-sm">{t("sidebar.loadingProjects")}</p>;
   }
 
   if (!workspaces?.length) {
+    if (compact) return null;
     return <p className="text-muted-foreground px-2 text-sm">{t("sidebar.noProjects")}</p>;
   }
 
@@ -62,6 +67,50 @@ export function SidebarProjects({ activeWorkspaceId }: SidebarProjectsProps) {
     lastUsedAtByWorkspaceId: lastUsedAtMap,
     runningWorkspaceIds,
   });
+
+  if (compact) {
+    return (
+      <ul className="flex w-full flex-col items-center gap-1">
+        {projectItems.map((item) =>
+          item.kind === "overview" ? (
+            <li key="overview">
+              <Link
+                to="/workspaces"
+                title={t("projects.allProjects")}
+                aria-label={t("projects.allProjects")}
+                className="text-muted-foreground hover:bg-sidebar-accent hover:text-foreground flex h-8 w-8 items-center justify-center rounded-md transition-colors"
+                activeProps={{
+                  className:
+                    "flex h-8 w-8 items-center justify-center rounded-md bg-sidebar-accent text-foreground",
+                }}
+              >
+                <FolderOpen className="h-3.5 w-3.5" />
+              </Link>
+            </li>
+          ) : (
+            <li key={item.workspace.id} className="relative">
+              <Link
+                to="/workspaces/$workspaceId"
+                params={{ workspaceId: item.workspace.id }}
+                title={item.workspace.name}
+                aria-label={item.workspace.name}
+                className="text-muted-foreground hover:bg-sidebar-accent hover:text-foreground flex h-8 w-8 items-center justify-center rounded-md text-[10px] font-semibold tracking-tight transition-colors"
+                activeProps={{
+                  className:
+                    "flex h-8 w-8 items-center justify-center rounded-md bg-sidebar-accent text-foreground text-[10px] font-semibold tracking-tight",
+                }}
+              >
+                {projectAbbreviation(item.workspace.name)}
+              </Link>
+              {item.isRunning && (
+                <span className="absolute top-0.5 right-0.5 h-1.5 w-1.5 rounded-full bg-emerald-500" />
+              )}
+            </li>
+          ),
+        )}
+      </ul>
+    );
+  }
 
   return (
     <ul className="space-y-0.5">
@@ -97,7 +146,7 @@ export function SidebarProjects({ activeWorkspaceId }: SidebarProjectsProps) {
               <Folder className="h-3.5 w-3.5 shrink-0" />
               <span className="min-w-0 flex-1 truncate">{item.workspace.name}</span>
               {item.isRunning && (
-                <span className="bg-emerald-500 h-1.5 w-1.5 shrink-0 rounded-full" />
+                <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-500" />
               )}
             </Link>
           </li>

@@ -510,19 +510,19 @@ impl StdioClient {
     async fn reader_loop(stdout: ChildStdout, pending: PendingMap) {
         let mut lines = BufReader::new(stdout).lines();
         while let Ok(Some(line)) = lines.next_line().await {
-            if let Ok(response) = serde_json::from_str::<JsonRpcResponse>(&line) {
-                if let Some(id) = response.id {
-                    let tx = pending.lock().await.remove(&id);
-                    if let Some(tx) = tx {
-                        let outcome = if let Some(result) = response.result {
-                            Ok(result)
-                        } else if let Some(err) = response.error {
-                            Err(err.message)
-                        } else {
-                            Ok(Value::Null)
-                        };
-                        let _ = tx.send(outcome);
-                    }
+            if let Ok(response) = serde_json::from_str::<JsonRpcResponse>(&line)
+                && let Some(id) = response.id
+            {
+                let tx = pending.lock().await.remove(&id);
+                if let Some(tx) = tx {
+                    let outcome = if let Some(result) = response.result {
+                        Ok(result)
+                    } else if let Some(err) = response.error {
+                        Err(err.message)
+                    } else {
+                        Ok(Value::Null)
+                    };
+                    let _ = tx.send(outcome);
                 }
             }
         }
@@ -664,9 +664,8 @@ impl HttpClient {
 
         let status = response.status();
         if !status.is_success() {
-            let text = response.text().await.unwrap_or_else(|_| "<unreadable>".to_owned());
             return Err(internal_error(format!(
-                "HTTP MCP request returned {status}: {text}"
+                "HTTP MCP request returned {status}"
             )));
         }
 
@@ -680,8 +679,11 @@ impl HttpClient {
             .map_err(|e| internal_error(format!("failed to parse MCP HTTP response: {e}")))?;
 
         if let Some(error) = payload.get("error") {
-            let message = error.get("message").and_then(Value::as_str).unwrap_or("MCP error");
-            return Err(internal_error(message));
+            let code = error.get("code").and_then(Value::as_i64);
+            return Err(internal_error(code.map_or_else(
+                || "MCP server returned an error".to_owned(),
+                |code| format!("MCP server returned error code {code}"),
+            )));
         }
 
         Ok(payload.get("result").cloned().unwrap_or(Value::Null))

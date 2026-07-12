@@ -4,12 +4,21 @@ use crate::{
     events::{EventBus, RuntimeEvent},
     storage::Storage,
 };
-use app_models::{AgentRunId, AppError, ThreadId, WorkspaceId};
+use app_models::{AgentRunId, AppError, RunModelSnapshot, ThreadId, WorkspaceId};
 use async_trait::async_trait;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::sleep;
 use tokio_util::sync::CancellationToken;
+
+/// Product-level outcome of one executor pass.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AgentExecutionOutcome {
+    /// The model completed the run with final assistant text.
+    Completed(String),
+    /// A durable tool invocation is waiting for human approval.
+    WaitingApproval,
+}
 
 /// Trait implemented by agent backends that execute a single run turn.
 ///
@@ -26,7 +35,7 @@ pub trait AgentExecutor: Send + Sync {
     /// - Checking `token.is_cancelled()` regularly and stopping early if cancelled.
     /// - Persisting its own events via `storage.append_event(...)` if desired.
     /// - Publishing runtime-facing events via `event_bus.publish(...)`.
-    /// - Returning `Ok(())` when the run completes naturally.
+    /// - Returning the final assistant text when the run completes naturally.
     async fn execute(
         &self,
         run_id: AgentRunId,
@@ -36,7 +45,27 @@ pub trait AgentExecutor: Send + Sync {
         storage: Arc<dyn Storage>,
         event_bus: Arc<dyn EventBus>,
         token: CancellationToken,
-    ) -> Result<(), AppError>;
+    ) -> Result<AgentExecutionOutcome, AppError>;
+}
+
+/// Resolves the executor snapshot to use for a newly-started run.
+pub struct ResolvedAgentExecutor {
+    /// Executor built from the selected immutable configuration.
+    pub executor: Arc<dyn AgentExecutor>,
+    /// Provider/model metadata that must be persisted before network execution.
+    pub snapshot: RunModelSnapshot,
+}
+
+/// Resolves the executor snapshot to use for a newly-started run.
+#[async_trait]
+pub trait AgentExecutorResolver: Send + Sync {
+    /// Build or select an executor from the latest provider configuration.
+    async fn resolve(
+        &self,
+        workspace_id: WorkspaceId,
+        thread_id: ThreadId,
+        run_id: AgentRunId,
+    ) -> Result<ResolvedAgentExecutor, AppError>;
 }
 
 /// Mock executor that simulates a streaming response.
@@ -65,7 +94,7 @@ impl AgentExecutor for MockAgentExecutor {
         storage: Arc<dyn Storage>,
         event_bus: Arc<dyn EventBus>,
         token: CancellationToken,
-    ) -> Result<(), AppError> {
+    ) -> Result<AgentExecutionOutcome, AppError> {
         const DELTAS: &[&str] = &[
             "Thinking... ",
             "analyzing ",
@@ -118,7 +147,7 @@ impl AgentExecutor for MockAgentExecutor {
         }
 
         if token.is_cancelled() {
-            return Ok(());
+            return Ok(AgentExecutionOutcome::Completed(String::new()));
         }
 
         let full_response = format!("Mock response to: {message}");
@@ -136,19 +165,12 @@ impl AgentExecutor for MockAgentExecutor {
             .publish(RuntimeEvent::MessageCompleted {
                 run_id,
                 thread_id,
-                content: full_response,
-                timestamp: chrono::Utc::now(),
-            })
-            .await?;
-        event_bus
-            .publish(RuntimeEvent::RunCompleted {
-                run_id,
-                thread_id,
+                content: full_response.clone(),
                 timestamp: chrono::Utc::now(),
             })
             .await?;
 
-        Ok(())
+        Ok(AgentExecutionOutcome::Completed(full_response))
     }
 }
 
