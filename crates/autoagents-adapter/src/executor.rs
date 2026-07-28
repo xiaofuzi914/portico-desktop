@@ -175,7 +175,7 @@ impl AgentExecutor for AutoAgentsExecutor {
                         timestamp: chrono::Utc::now(),
                     })
                     .await?;
-                let prepared = match prepared_request(&call, arguments.clone()) {
+                let prepared = match prepared_request(&call, arguments.clone(), &self.tools) {
                     Ok(prepared) => prepared,
                     Err(error) => {
                         let result = tool_error_result(error.to_string());
@@ -198,9 +198,18 @@ impl AgentExecutor for AutoAgentsExecutor {
                 };
                 match gate.prepare(run_id, prepared).await {
                     Ok(ToolGateOutcome::Ready(invocation)) => {
+                        let workspace_id = invocation.workspace_id;
                         let grant = broker.claim_ready(invocation.id).await?;
                         let tool_started = Instant::now();
-                        let result = match safe_executor.execute(&grant).await {
+                        let result = match dispatch_tool(
+                            &safe_executor,
+                            &self.tools,
+                            &grant,
+                            run_id,
+                            workspace_id,
+                        )
+                        .await
+                        {
                             Ok(result) => result,
                             Err(error) => {
                                 let duration_ms = elapsed_ms(tool_started);
@@ -307,9 +316,62 @@ impl AgentExecutor for AutoAgentsExecutor {
             }
             save_messages(storage.as_ref(), run_id, &messages, step + 1).await?;
         }
-        Err(AppError::Internal {
-            message: format!("tool loop exceeded {MAX_TOOL_STEPS} steps"),
-        })
+
+        // Hit the tool-step budget (typical for "scan the whole repo" tasks).
+        // Do one final no-tools turn so the user still gets a partial answer
+        // instead of a generic unexpected-error failure.
+        if token.is_cancelled() {
+            return Ok(AgentExecutionOutcome::Completed(String::new()));
+        }
+        messages.push(
+            ChatMessage::user()
+                .content(format!(
+                    "You have reached the maximum of {MAX_TOOL_STEPS} tool rounds. \
+Do NOT call any more tools. Summarize findings so far for the user in their language: \
+what you inspected, key structure, concrete paths, and what is still incomplete. \
+Suggest a smaller follow-up scope (one folder or subsystem)."
+                ))
+                .build(),
+        );
+        let empty_tools: [Tool; 0] = [];
+        let (text, _calls, usage) = stream_or_complete_chat(
+            self.llm.as_ref(),
+            &messages,
+            &empty_tools,
+            run_id,
+            thread_id,
+            event_bus.as_ref(),
+            &token,
+        )
+        .await?;
+        if let Some(usage) = usage {
+            let _ = storage
+                .record_run_token_usage(run_id, usage.input_tokens, usage.output_tokens)
+                .await;
+        }
+        let final_text = {
+            let trimmed = text.trim();
+            if trimmed.is_empty() {
+                format!(
+                    "Reached the tool-step limit ({MAX_TOOL_STEPS}) while exploring the project. \
+Ask for a smaller scope (one directory or one subsystem) and continue from there."
+                )
+            } else {
+                text
+            }
+        };
+        if !final_text.trim().is_empty() {
+            let _ = event_bus
+                .publish(RuntimeEvent::MessageCompleted {
+                    run_id,
+                    thread_id,
+                    content: final_text.clone(),
+                    timestamp: chrono::Utc::now(),
+                })
+                .await;
+        }
+        save_messages(storage.as_ref(), run_id, &messages, MAX_TOOL_STEPS + 1).await?;
+        Ok(AgentExecutionOutcome::Completed(final_text))
     }
 }
 
@@ -383,25 +445,44 @@ async fn hydrate_completed_invocations(
     Ok(())
 }
 
-fn prepared_request(call: &ToolCall, arguments: Value) -> Result<PreparedToolRequest, AppError> {
-    let (action, resource) = match call.function.name.as_str() {
+fn prepared_request(
+    call: &ToolCall,
+    arguments: Value,
+    tools: &PorticoToolRegistry,
+) -> Result<PreparedToolRequest, AppError> {
+    let name = call.function.name.as_str();
+    let (action, resource) = match name {
         "fs_read" | "fs_list" | "fs_search" => {
             ("filesystem.read", required_string(&arguments, "path")?)
         }
         "fs_write" | "fs_edit" => ("filesystem.write", required_string(&arguments, "path")?),
         "git" => {
             let subcommand = required_string(&arguments, "subcommand")?;
-            if !matches!(subcommand.as_str(), "status" | "diff") {
-                return Err(AppError::PermissionDenied {
-                    reason: "only git status and diff are enabled".to_owned(),
-                });
+            let repo = required_string(&arguments, "repo_path")?;
+            match subcommand.as_str() {
+                "status" | "diff" => ("git.read", repo),
+                "add" | "commit" => ("git.write", repo),
+                _ => {
+                    return Err(AppError::PermissionDenied {
+                        reason: "git subcommand must be status, diff, add, or commit".to_owned(),
+                    });
+                }
             }
-            ("git.read", required_string(&arguments, "repo_path")?)
         }
-        _ => {
-            return Err(AppError::PermissionDenied {
-                reason: "model requested a tool outside the safe allowlist".to_owned(),
-            });
+        "web_fetch" => ("network.fetch", required_string(&arguments, "url")?),
+        "web_search" => ("network.search", required_string(&arguments, "query")?),
+        "shell_exec" => ("shell.exec", required_string(&arguments, "command")?),
+        other => {
+            // Dynamic tools (MCP, plugins) registered on the shared registry.
+            let Some(tool) = tools.get(other) else {
+                return Err(AppError::PermissionDenied {
+                    reason: format!(
+                        "tool \"{other}\" is not registered; enable it under 能力中心 or use built-in tools"
+                    ),
+                });
+            };
+            let action = tool.policy_action().unwrap_or("mcp.invoke.write");
+            (action, other.to_owned())
         }
     };
     Ok(PreparedToolRequest {
@@ -413,6 +494,31 @@ fn prepared_request(call: &ToolCall, arguments: Value) -> Result<PreparedToolReq
         arguments,
         recovery: None,
     })
+}
+
+async fn dispatch_tool(
+    safe_executor: &SafeToolExecutor,
+    tools: &PorticoToolRegistry,
+    grant: &app_runtime::ExecutionGrant,
+    run_id: AgentRunId,
+    workspace_id: WorkspaceId,
+) -> Result<Value, AppError> {
+    let name = grant.invocation().tool_name.as_str();
+    if PorticoToolRegistry::is_durable_builtin(name) {
+        return safe_executor.execute(grant).await;
+    }
+    // MCP / dynamic tools: PolicyGate already decided; invoke via registry adapter.
+    let tool = tools.get(name).ok_or_else(|| AppError::PermissionDenied {
+        reason: format!("tool \"{name}\" disappeared from the registry"),
+    })?;
+    let output = tool
+        .invoke(app_tools::ToolInput {
+            workspace_id,
+            run_id,
+            arguments: grant.invocation().arguments.clone(),
+        })
+        .await?;
+    Ok(output.result)
 }
 
 fn tool_error_result(message: impl Into<String>) -> Value {
@@ -720,6 +826,23 @@ fn classify_provider_chat_error(raw: &str) -> AppError {
     {
         return AppError::Internal {
             message: format!("PROVIDER_RATE_LIMITED: {raw}"),
+        };
+    }
+    if lower.contains("context_length")
+        || lower.contains("context length")
+        || lower.contains("maximum context")
+        || lower.contains("max_tokens")
+            && (lower.contains("exceed") || lower.contains("too large") || lower.contains("limit"))
+        || lower.contains("token limit")
+        || lower.contains("too many tokens")
+        || lower.contains("prompt is too long")
+        || lower.contains("request too large")
+        || lower.contains("content_length")
+    {
+        return AppError::Internal {
+            message: format!(
+                "PROVIDER_CONTEXT_OVERFLOW: model context window exceeded ({raw})"
+            ),
         };
     }
     if lower.contains("503") || lower.contains("502") || lower.contains("overloaded") {

@@ -90,7 +90,7 @@ function ArtifactItem({ workspaceId, artifact }: { workspaceId: WorkspaceId; art
           {artifact.content_preview}
         </pre>
       )}
-      {previewError && <p className="mt-2 text-xs text-red-600">{previewError}</p>}
+      {previewError && <p className="mt-2 text-xs text-destructive">{previewError}</p>}
       {preview && (
         <div className="mt-2">
           <ArtifactPreviewComponent preview={preview} />

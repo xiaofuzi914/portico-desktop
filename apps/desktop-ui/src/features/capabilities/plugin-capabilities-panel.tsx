@@ -5,6 +5,7 @@ import { listen } from "@tauri-apps/api/event";
 import { FolderOpen, Github, HardDrive, Loader2, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import {
   enablePlugin,
   getPorticoUserDirs,
@@ -75,6 +76,7 @@ export function PluginCapabilitiesPanel() {
   );
   const [installPhase, setInstallPhase] = useState<string | null>(null);
   const [installLog, setInstallLog] = useState<InstallLogLine[]>([]);
+  const [pluginPendingUninstall, setPluginPendingUninstall] = useState<string | null>(null);
   const logEndRef = useRef<HTMLDivElement>(null);
   const logBoxRef = useRef<HTMLDivElement>(null);
 
@@ -273,9 +275,7 @@ export function PluginCapabilitiesPanel() {
   });
 
   const busy =
-    installFromGithub.isPending ||
-    installLocalCatalog.isPending ||
-    installCustom.isPending;
+    installFromGithub.isPending || installLocalCatalog.isPending || installCustom.isPending;
 
   return (
     <div className="space-y-6">
@@ -309,7 +309,9 @@ export function PluginCapabilitiesPanel() {
               <Github className="h-4 w-4" />
               {t("capabilities.installFromGithub")}
             </div>
-            <p className="text-muted-foreground text-xs">{t("capabilities.installFromGithubBody")}</p>
+            <p className="text-muted-foreground text-xs">
+              {t("capabilities.installFromGithubBody")}
+            </p>
             <div className="flex flex-col gap-2 sm:flex-row">
               <input
                 className="border-input bg-background ring-offset-background placeholder:text-muted-foreground focus-visible:ring-ring flex h-9 w-full rounded-md border px-3 text-sm focus-visible:ring-2 focus-visible:outline-none"
@@ -366,7 +368,9 @@ export function PluginCapabilitiesPanel() {
               <HardDrive className="h-4 w-4" />
               {t("capabilities.installFromLocal")}
             </div>
-            <p className="text-muted-foreground text-xs">{t("capabilities.installFromLocalBody")}</p>
+            <p className="text-muted-foreground text-xs">
+              {t("capabilities.installFromLocalBody")}
+            </p>
             <div className="flex flex-wrap gap-2">
               <Button
                 size="sm"
@@ -421,10 +425,10 @@ export function PluginCapabilitiesPanel() {
                     <div
                       key={line.id}
                       className={cn(
-                        "whitespace-pre-wrap break-all",
+                        "break-all whitespace-pre-wrap",
                         line.level === "error" && "text-destructive",
-                        line.level === "ok" && "text-green-700",
-                        line.level === "warn" && "text-amber-700",
+                        line.level === "ok" && "text-success-ink",
+                        line.level === "warn" && "text-warning-ink",
                         line.level === "info" && "text-muted-foreground",
                       )}
                     >
@@ -436,8 +440,10 @@ export function PluginCapabilitiesPanel() {
               </div>
             </div>
           )}
-          {actionError && <p className="text-destructive text-sm whitespace-pre-wrap">{actionError}</p>}
-          {actionMessage && <p className="text-sm text-green-700">{actionMessage}</p>}
+          {actionError && (
+            <p className="text-destructive text-sm whitespace-pre-wrap">{actionError}</p>
+          )}
+          {actionMessage && <p className="text-sm text-success-ink">{actionMessage}</p>}
         </CardContent>
       </Card>
 
@@ -447,7 +453,9 @@ export function PluginCapabilitiesPanel() {
           <CardTitle>{t("capabilities.installedPluginsSection")}</CardTitle>
         </CardHeader>
         <CardContent className="space-y-3">
-          <p className="text-muted-foreground text-sm">{t("capabilities.installedPluginsSectionBody")}</p>
+          <p className="text-muted-foreground text-sm">
+            {t("capabilities.installedPluginsSectionBody")}
+          </p>
           {pluginsLoading ? (
             <p className="text-muted-foreground text-sm">{t("common.loading")}</p>
           ) : plugins.length === 0 ? (
@@ -473,13 +481,13 @@ export function PluginCapabilitiesPanel() {
                         >
                           v{plugin.version}
                         </span>
-                        <span className="text-xs text-green-600">
+                        <span className="text-xs text-success">
                           {plugin.enabled
                             ? t("capabilities.catalogInstalledEnabled")
                             : t("capabilities.catalogInstalledDisabled")}
                         </span>
                       </div>
-                      <p className="text-muted-foreground text-sm line-clamp-2">
+                      <p className="text-muted-foreground line-clamp-2 text-sm">
                         {plugin.description}
                       </p>
                       {plugin.capabilities?.length > 0 && (
@@ -539,11 +547,7 @@ export function PluginCapabilitiesPanel() {
                         variant="destructive"
                         size="sm"
                         disabled={uninstall.isPending}
-                        onClick={() => {
-                          if (window.confirm(t("capabilities.confirmUninstall"))) {
-                            uninstall.mutate(plugin.id);
-                          }
-                        }}
+                        onClick={() => setPluginPendingUninstall(plugin.id)}
                       >
                         {t("capabilities.uninstall")}
                       </Button>
@@ -555,6 +559,21 @@ export function PluginCapabilitiesPanel() {
           )}
         </CardContent>
       </Card>
+
+      <ConfirmDialog
+        open={pluginPendingUninstall !== null}
+        title={t("capabilities.uninstall")}
+        description={t("capabilities.confirmUninstall")}
+        confirmLabel={t("capabilities.uninstall")}
+        destructive
+        onConfirm={() => {
+          if (pluginPendingUninstall !== null) {
+            uninstall.mutate(pluginPendingUninstall);
+          }
+          setPluginPendingUninstall(null);
+        }}
+        onCancel={() => setPluginPendingUninstall(null)}
+      />
     </div>
   );
 }

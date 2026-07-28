@@ -20,8 +20,10 @@ const fn default_model_for_kind(kind: ProviderKind) -> &'static str {
         ProviderKind::Anthropic => "claude-3-sonnet-20240229",
         // Defaults for other providers are best-effort; callers should register
         // explicit models for production use.
-        ProviderKind::Moonshot => "kimi-k2-0711-preview",
+        // Prefer a currently documented Moonshot chat model id.
+        ProviderKind::Moonshot => "kimi-k2-turbo-preview",
         ProviderKind::DeepSeek => "deepseek-v4-pro",
+        ProviderKind::Xai => "grok-3",
         ProviderKind::Google => "gemini-1.5-flash",
         ProviderKind::Groq => "llama3-70b-8192",
         ProviderKind::OpenRouter => "openai/gpt-4o-mini",
@@ -35,6 +37,7 @@ const fn default_base_url_for_kind(kind: ProviderKind) -> Option<&'static str> {
     match kind {
         ProviderKind::Moonshot => Some("https://api.moonshot.cn/v1"),
         ProviderKind::DeepSeek => Some("https://api.deepseek.com"),
+        ProviderKind::Xai => Some("https://api.x.ai/v1"),
         ProviderKind::Groq => Some("https://api.groq.com/openai/v1"),
         ProviderKind::OpenRouter => Some("https://openrouter.ai/api/v1"),
         ProviderKind::Ollama => Some("http://localhost:11434/v1"),
@@ -55,6 +58,7 @@ const fn is_openai_compatible(kind: ProviderKind) -> bool {
         ProviderKind::OpenAI
             | ProviderKind::Moonshot
             | ProviderKind::DeepSeek
+            | ProviderKind::Xai
             | ProviderKind::Groq
             | ProviderKind::OpenRouter
             | ProviderKind::Ollama
@@ -191,6 +195,7 @@ pub fn build_llm_provider(
         ProviderKind::OpenAI
         | ProviderKind::Moonshot
         | ProviderKind::DeepSeek
+        | ProviderKind::Xai
         | ProviderKind::Groq
         | ProviderKind::OpenRouter
         | ProviderKind::Ollama
@@ -224,16 +229,30 @@ fn safe_health_failure(
     model_id: ModelId,
     error: &AppError,
 ) -> ProviderHealth {
-    let lowered = error.to_string().to_ascii_lowercase();
-    let (status, error_code, message) = if lowered.contains("credential")
+    let raw = error.to_string();
+    let lowered = raw.to_ascii_lowercase();
+    let (status, error_code, message) = if lowered.contains("provider_secret_missing")
+        || lowered.contains("credential was not found")
+        || (lowered.contains("secret") && lowered.contains("missing"))
+    {
+        (
+            ProviderHealthStatus::InvalidCredentials,
+            "SECRET_MISSING",
+            "No API key in the secure store. Click “Update key”, paste a valid key, then test again.",
+        )
+    } else if lowered.contains("credential")
         || lowered.contains("unauthorized")
         || lowered.contains("401")
+        || lowered.contains("invalid_api_key")
+        || lowered.contains("incorrect api key")
         || lowered.contains("api key")
+        || lowered.contains("authentication")
+        || lowered.contains("permission denied")
     {
         (
             ProviderHealthStatus::InvalidCredentials,
             "INVALID_CREDENTIALS",
-            "Provider credentials were rejected or are missing.",
+            "API key rejected (401). Re-copy the key (no spaces), then for Moonshot/Kimi try the matching region endpoint: China https://api.moonshot.cn/v1 vs Global https://api.moonshot.ai/v1.",
         )
     } else if lowered.contains("not supported") {
         (
@@ -241,11 +260,17 @@ fn safe_health_failure(
             "UNSUPPORTED_PROVIDER",
             "This provider is not supported by the current runtime.",
         )
-    } else if lowered.contains("model_not_found") {
+    } else if lowered.contains("model_not_found")
+        || lowered.contains("model not found")
+        || lowered.contains("does not exist")
+        || lowered.contains("invalid model")
+        || lowered.contains("unknown model")
+        || (lowered.contains("404") && lowered.contains("model"))
+    {
         (
             ProviderHealthStatus::Degraded,
             "MODEL_NOT_FOUND",
-            "The selected model was not reported by the provider.",
+            "Model id not accepted by this endpoint. Check the model name against the provider console (e.g. kimi-k2-0711-preview).",
         )
     } else if lowered.contains("429") || lowered.contains("rate limit") {
         (
@@ -257,13 +282,13 @@ fn safe_health_failure(
         (
             ProviderHealthStatus::Degraded,
             "HEALTH_TIMEOUT",
-            "The provider health check timed out.",
+            "The provider health check timed out. Check network / VPN / firewall.",
         )
     } else {
         (
             ProviderHealthStatus::Degraded,
             "CONNECTION_FAILED",
-            "The provider connection check failed.",
+            "Connection check failed. Verify base URL, network, and model id.",
         )
     };
     ProviderHealth {
@@ -274,6 +299,44 @@ fn safe_health_failure(
         message: Some(message.to_owned()),
         checked_at: chrono::Utc::now(),
     }
+}
+
+/// True when a cached health row is fresh enough to skip a re-probe.
+fn health_is_fresh_ready(health: &ProviderHealth) -> bool {
+    health.status == ProviderHealthStatus::Ready
+        && chrono::Utc::now().signed_duration_since(health.checked_at)
+            <= chrono::Duration::hours(24)
+}
+
+/// Ensure the selected provider/model can run: reuse a fresh Ready check, otherwise probe now.
+///
+/// Configured credentials should be enough to start a run; a missing/stale manual
+/// "Test connection" click must not block the user.
+async fn ensure_provider_ready_for_run(
+    registry: Arc<dyn ModelProviderRegistry>,
+    secret_store: Arc<dyn SecretStore>,
+    provider_id: ProviderId,
+    model_id: ModelId,
+) -> Result<(), AppError> {
+    if let Some(health) = registry.get_provider_health(provider_id, model_id).await? {
+        if health_is_fresh_ready(&health) {
+            return Ok(());
+        }
+    }
+    let health = check_provider_health(registry, secret_store, provider_id, model_id).await?;
+    if health.status == ProviderHealthStatus::Ready {
+        return Ok(());
+    }
+    let detail = health
+        .message
+        .as_deref()
+        .or(health.error_code.as_deref())
+        .unwrap_or(health.status.as_str());
+    Err(AppError::Internal {
+        message: format!(
+            "PROVIDER_HEALTH_NOT_READY: connection check failed ({detail}). Fix provider settings or re-test the model."
+        ),
+    })
 }
 
 /// Build and probe one registered provider/model, persisting only a safe health summary.
@@ -366,23 +429,16 @@ impl AgentExecutorResolver for RegistryExecutorResolver {
         let selection = self.registry.resolve_active_model(workspace_id, thread_id).await?;
         let provider = self.registry.get_provider(selection.provider_id).await?;
         let model = self.registry.get_model(selection.model_id).await?;
-        let health =
-            self.registry.get_provider_health(provider.id, model.id).await?.ok_or_else(|| {
-                AppError::Internal {
-                message:
-                    "PROVIDER_HEALTH_REQUIRED: test the selected provider connection before running"
-                        .to_owned(),
-            }
-            })?;
-        if health.status != ProviderHealthStatus::Ready
-            || chrono::Utc::now().signed_duration_since(health.checked_at)
-                > chrono::Duration::hours(24)
-        {
-            return Err(AppError::Internal {
-                message: "PROVIDER_HEALTH_NOT_READY: re-test the selected provider connection"
-                    .to_owned(),
-            });
-        }
+        // If the user already configured credentials, do not hard-block the run only because
+        // they never clicked "Test connection" (or the cached check expired / was invalidated).
+        // Re-probe automatically and persist the result.
+        ensure_provider_ready_for_run(
+            Arc::clone(&self.registry),
+            Arc::clone(&self.secret_store),
+            provider.id,
+            model.id,
+        )
+        .await?;
         let llm = build_llm_provider(
             &provider,
             Some(model.model_name.as_str()),
@@ -479,7 +535,7 @@ mod tests {
         let config = test_config(ProviderKind::Moonshot, "moonshot-ref", None);
         let provider = build_llm_provider(&config, None, &store).unwrap();
 
-        assert_eq!(provider.model(), "kimi-k2-0711-preview");
+        assert_eq!(provider.model(), "kimi-k2-turbo-preview");
     }
 
     #[test]
@@ -585,7 +641,7 @@ mod tests {
             .create_workspace("test", "/tmp/portico-resolver-selection-test", false)
             .await
             .expect("workspace");
-        let thread = storage.create_thread(workspace.id, "thread").await.expect("thread");
+        let thread = storage.create_thread(workspace.id, "thread", None).await.expect("thread");
         let run = storage.create_run(workspace.id, thread.id).await.expect("run");
         let provider = registry
             .create_provider(ProviderKind::OpenAI, "OpenAI", None, "openai-ref")

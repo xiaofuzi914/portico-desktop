@@ -171,6 +171,8 @@ impl PolicyGate {
         let context = self.execution_context(run_id).await?;
         let resource = canonicalize_resource(&context, &request.action, &request.resource)?;
         let recovery = prepare_recovery(&request.action, &resource, &request.arguments)?;
+        // Inject workspace root so shell_exec (and similar) can chdir safely.
+        let arguments = inject_workspace_root(request.arguments, &context.canonical_workspace_root);
         let permission_request = PermissionRequest {
             workspace_id: context.workspace_id,
             thread_id: Some(context.thread_id),
@@ -191,7 +193,7 @@ impl PolicyGate {
             tool_version: request.tool_version,
             action: request.action,
             resource,
-            arguments: request.arguments,
+            arguments,
             request_hash: String::new(),
             policy_version: POLICY_VERSION.to_owned(),
             context_revision: context.trust_revision,
@@ -278,7 +280,10 @@ fn canonicalize_resource(
     action: &str,
     resource: &str,
 ) -> Result<String, AppError> {
-    if !matches!(action, "filesystem.read" | "filesystem.write" | "git.read") {
+    if !matches!(
+        action,
+        "filesystem.read" | "filesystem.write" | "git.read" | "git.write"
+    ) {
         return Ok(resource.to_owned());
     }
     let target = resolve_workspace_path(context, resource);
@@ -300,20 +305,24 @@ fn canonicalize_resource(
         })?
     };
 
-    let root = Path::new(&context.canonical_workspace_root);
-    if !canonical.starts_with(root) {
-        return Err(AppError::PermissionDenied {
-            reason: "tool resource is outside the owning workspace".to_owned(),
-        });
-    }
-    let allowed = if action == "filesystem.write" {
+    // Allow main project root and any linked project folders on the allowlist.
+    let allowed = if action == "filesystem.write" || action == "git.write" {
         &context.allowed_write_paths
     } else {
         &context.allowed_read_paths
     };
-    if !allowed.iter().map(PathBuf::from).any(|path| canonical.starts_with(path)) {
+    let root = Path::new(&context.canonical_workspace_root);
+    let permitted = if allowed.is_empty() {
+        canonical.starts_with(root)
+    } else {
+        allowed
+            .iter()
+            .map(PathBuf::from)
+            .any(|path| canonical.starts_with(&path))
+    };
+    if !permitted {
         return Err(AppError::PermissionDenied {
-            reason: "tool resource is outside the workspace allowlist".to_owned(),
+            reason: "tool resource is outside the main project and linked folders".to_owned(),
         });
     }
     Ok(canonical.to_string_lossy().into_owned())
@@ -362,6 +371,16 @@ fn invocation_hash(
 
 fn safe_summary(message: &str) -> String {
     message.chars().take(512).collect()
+}
+
+fn inject_workspace_root(mut arguments: Value, workspace_root: &str) -> Value {
+    if let Some(obj) = arguments.as_object_mut() {
+        obj.insert(
+            "_workspace_root".to_owned(),
+            Value::String(workspace_root.to_owned()),
+        );
+    }
+    arguments
 }
 
 fn prepare_recovery(

@@ -120,11 +120,11 @@ export function BackgroundTaskList() {
 
 function StatusBadge({ status }: { status: BackgroundTask["status"] }) {
   const styles: Record<BackgroundTask["status"], string> = {
-    Queued: "bg-amber-100 text-amber-800",
-    Running: "bg-blue-100 text-blue-800",
-    Completed: "bg-green-100 text-green-800",
-    Failed: "bg-red-100 text-red-800",
-    Cancelled: "bg-gray-100 text-gray-800",
+    Queued: "bg-warning-subtle text-warning-ink",
+    Running: "bg-running-soft text-running-ink",
+    Completed: "bg-success-subtle text-success-ink",
+    Failed: "bg-destructive-subtle text-destructive-ink",
+    Cancelled: "bg-muted text-muted-foreground",
   };
   return (
     <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${styles[status]}`}>

@@ -4,6 +4,7 @@ import {
   mapRunEventToBlock,
   mergeRunEvents,
   runtimeEventToRunEvent,
+  sortConversationBlocks,
 } from "./event-view-models";
 import type { AgentRunId, Message, RunEvent, RuntimeEvent } from "@/lib/schemas";
 
@@ -26,6 +27,7 @@ describe("event view models", () => {
       title: "Assistant",
       body: "Hello",
       tone: "default",
+      role: "assistant",
       createdAt: "2026-07-07T00:00:00.000Z",
       raw: baseEvent,
     });
@@ -102,6 +104,36 @@ describe("event view models", () => {
     };
 
     expect(mapMessageToBlock(message)).toMatchObject({ title, tone, body: "content" });
+  });
+
+  it("keeps user before assistant when timestamps collide (same second)", () => {
+    const thread = "thread-1" as Message["thread_id"];
+    const run = "run-1" as Message["run_id"];
+    const ts = "2026-07-20T15:31:00.000Z";
+    const user: Message = {
+      id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" as Message["id"],
+      thread_id: thread,
+      run_id: run,
+      role: "User",
+      content: "你好",
+      client_request_id: null,
+      created_at: ts,
+    };
+    const assistant: Message = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" as Message["id"],
+      thread_id: thread,
+      run_id: run,
+      role: "Assistant",
+      content: "你好！有什么可以帮你？",
+      client_request_id: null,
+      created_at: ts,
+    };
+    // Server list order: user then assistant (even if UUID would sort assistant first).
+    const blocks = [user, assistant].map((m, i) => mapMessageToBlock(m, i));
+    // Scramble then re-sort — user must stay first.
+    const ordered = sortConversationBlocks([blocks[1]!, blocks[0]!]);
+    expect(ordered.map((b) => b.role)).toEqual(["user", "assistant"]);
+    expect(ordered[0]?.body).toBe("你好");
   });
 
   it("extracts run metadata from direct and nested runtime events", () => {

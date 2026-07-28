@@ -59,7 +59,15 @@ interface MarkdownBodyProps {
    * Does not change source content — only how it is displayed.
    */
   presentationClassName?: string;
+  /**
+   * When set, inline `code` that looks like a workspace path becomes a button
+   * that opens the file preview (conversation deliverables).
+   */
+  onOpenFilePath?: (path: string) => void;
 }
+
+const INLINE_FILE_RE =
+  /^(?:[\w.-]+\/)*[\w.-]+\.(md|mdx|txt|json|ts|tsx|js|jsx|rs|py|toml|yaml|yml|css|html|sql|sh|go|c|cpp|h|xml|svg|plantuml|puml)$/i;
 
 /**
  * Highlight only when the fence declares a known language.
@@ -95,6 +103,7 @@ export function MarkdownBody({
   className,
   compact = false,
   presentationClassName,
+  onOpenFilePath,
 }: MarkdownBodyProps) {
   const components = useMemo<Components>(
     () => ({
@@ -118,6 +127,22 @@ export function MarkdownBody({
         const isBlock = Boolean(codeClassName) || text.includes("\n");
 
         if (!isBlock) {
+          if (onOpenFilePath && INLINE_FILE_RE.test(text)) {
+            return (
+              <button
+                type="button"
+                className="text-primary bg-muted/60 hover:bg-muted rounded px-1 py-0.5 font-mono text-[0.9em] underline decoration-primary/35 underline-offset-2 hover:decoration-primary"
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  onOpenFilePath(text);
+                }}
+                title={text}
+              >
+                {text}
+              </button>
+            );
+          }
           return <code className={codeClassName}>{children}</code>;
         }
 
@@ -147,7 +172,7 @@ export function MarkdownBody({
         );
       },
     }),
-    [],
+    [onOpenFilePath],
   );
 
   return (

@@ -18,6 +18,7 @@ use crate::AgentRegistry;
 const SUBAGENT_TIMEOUT: Duration = Duration::from_secs(240);
 
 /// Coordinates subagent planning, execution, and synthesis.
+#[derive(Clone)]
 pub struct Orchestrator {
     runtime: Arc<PorticoRuntimeHandle>,
     registry: AgentRegistry,
@@ -90,6 +91,9 @@ impl Orchestrator {
             subagents,
             pattern_ids: Vec::new(),
             planning_rationale: "Legacy keyword plan (no memory ports).".to_owned(),
+            stages: vec![],
+            workflow_id: None,
+            workflow_title: None,
         })
     }
 

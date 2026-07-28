@@ -29,9 +29,9 @@ export function AutomationList({
               <div className="flex items-center gap-2">
                 <span className="font-medium">{automation.name}</span>
                 {automation.enabled ? (
-                  <span className="text-xs text-green-600">{t("common.enabled")}</span>
+                  <span className="text-xs text-success">{t("common.enabled")}</span>
                 ) : (
-                  <span className="text-xs text-amber-600">{t("common.disabled")}</span>
+                  <span className="text-xs text-warning-ink">{t("common.disabled")}</span>
                 )}
               </div>
               <p className="text-muted-foreground text-sm">

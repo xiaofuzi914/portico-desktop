@@ -8,6 +8,7 @@
   --color-muted: oklch(0.967 0.001 286.375);
   --color-muted-foreground: oklch(0.552 0.016 285.938);
   --color-border: oklch(0.92 0.004 286.32);
+  --color-input: var(--color-border);
   --color-sidebar: oklch(0.982 0.002 286.32);
   --color-sidebar-foreground: oklch(0.17 0.006 285.823);
   --color-sidebar-accent: oklch(0.935 0.004 286.32);
@@ -19,16 +20,26 @@
   /* Feedback colors */
   --color-destructive: oklch(0.577 0.245 27.325);
   --color-destructive-foreground: oklch(0.985 0 0);
+  --color-destructive-subtle: oklch(0.971 0.013 17.38);
+  --color-destructive-ink: oklch(0.444 0.177 26.899);
   --color-warning: oklch(0.75 0.15 80);
   --color-warning-foreground: oklch(0.25 0.02 80);
+  --color-warning-subtle: oklch(0.987 0.022 95.277);
+  --color-warning-ink: oklch(0.473 0.137 46.201);
   --color-success: oklch(0.6 0.15 150);
   --color-success-foreground: oklch(0.985 0 0);
+  --color-success-subtle: oklch(0.982 0.018 155.826);
+  --color-success-ink: oklch(0.448 0.119 151.328);
 
   /* Live / running activity — not derived from near-black primary */
   --color-running: oklch(0.58 0.15 245);
   --color-running-soft: oklch(0.96 0.03 245);
   --color-running-mid: oklch(0.9 0.06 245);
   --color-running-ink: oklch(0.38 0.12 250);
+
+  /* Chat author distinction — soft blue-gray bubble for the user's own messages */
+  --color-user-bubble: oklch(0.935 0.025 240);
+  --color-user-bubble-border: oklch(0.872 0.03 240);
 
   /* Layout tokens */
   --sidebar-width: 264px;
@@ -369,6 +380,43 @@
       opacity: 1;
       transform: scale(1.15);
       box-shadow: 0 0 0 4px color-mix(in oklch, var(--color-running) 0%, transparent);
+    }
+  }
+
+  /**
+   * Conversation column: mobile-first full width, then expand caps with
+   * viewport (was fixed max-w-3xl ≈ 48rem → huge side gutters on desktop).
+   */
+  .conversation-column {
+    width: 100%;
+    max-width: 100%;
+  }
+
+  /* ≥640px: still nearly full on tablet */
+  @media (min-width: 640px) {
+    .conversation-column {
+      max-width: min(100%, 52rem);
+    }
+  }
+
+  /* ≥1024px: use most of the main pane */
+  @media (min-width: 1024px) {
+    .conversation-column {
+      max-width: min(100%, 68rem);
+    }
+  }
+
+  /* ≥1280px: wide assistant deliverables / tables */
+  @media (min-width: 1280px) {
+    .conversation-column {
+      max-width: min(100%, 80rem);
+    }
+  }
+
+  /* ≥1536px: soft cap so ultra-wide monitors stay readable */
+  @media (min-width: 1536px) {
+    .conversation-column {
+      max-width: min(100%, 92rem);
     }
   }
 

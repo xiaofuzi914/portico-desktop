@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { GitBranch, Loader2, SendHorizontal, Users, X } from "lucide-react";
+import { Loader2, Pencil, SendHorizontal, Sparkles, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ErrorAlert } from "@/components/ui/error-alert";
 import { Textarea } from "@/components/ui/textarea";
@@ -15,21 +15,18 @@ import {
   startOrchestration,
 } from "@/lib/tauri-api";
 import { maybeAutoTitleThread } from "@/lib/maybe-auto-title-thread";
+import { polishOrchestrationTask } from "./polish-orchestration-task";
+import { classifyTaskMode } from "./classify-task-mode";
+import { WorkflowDagEditor } from "./workflow-dag-editor";
 import {
-  polishOrchestrationTask,
-  shouldSuggestMultiRole,
-} from "./polish-orchestration-task";
+  type ComposerQueuedTask,
+  queueMultiRoleTask,
+  queueSendTask,
+  resolveQueuedOrchestrationStart,
+} from "./orchestration-queue";
 import { cn } from "@/lib/utils";
 
 const EMPTY_PATTERNS: PatternHint[] = [];
-
-type QueueMode = "send" | "multi-role";
-
-type QueuedTask = Readonly<{
-  id: string;
-  content: string;
-  mode: QueueMode;
-}>;
 
 interface ConversationComposerProps {
   /** Default path: single-agent chat. Prefer Promise so draft clears only on success. */
@@ -46,17 +43,19 @@ interface ConversationComposerProps {
   placeholder?: string;
   workspaceId?: WorkspaceId;
   threadId?: ThreadId;
-  /** Optional external draft (e.g. Retry restores the last user message). */
-  restoreDraft?: string | null;
+  /**
+   * Optional external draft (Retry / failed send recovery).
+   * Use `{ text, nonce }` so re-applying the same text still triggers a restore.
+   */
+  restoreDraft?: { text: string; nonce: number } | null;
   onRestoreDraftConsumed?: () => void;
 }
 
 /**
- * Product composer (see docs/AGENT-PRODUCT-PATH.md):
- * - **Send** → single agent + tools (default)
- * - **Multi-role** → orchestration (opt-in)
- * - While a session turn is busy, Send / Multi-role **queue** the next task
- *   instead of disabling the input (backend allows one active turn at a time).
+ * Product composer:
+ * - **One primary Send** — AI/rules auto-pick single vs multi-agent recipe
+ * - Advanced: optional “customize steps” for power users only
+ * - Busy channel → queue next message (preserves auto-chosen mode)
  */
 export function ConversationComposer({
   onSubmit,
@@ -73,22 +72,25 @@ export function ConversationComposer({
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [content, setContent] = useState("");
-  const [queue, setQueue] = useState<QueuedTask[]>([]);
-  /** Covers the gap between dispatch resolve and parent/orchestration status flip. */
+  const [queue, setQueue] = useState<ComposerQueuedTask[]>([]);
   const [dispatchHold, setDispatchHold] = useState(false);
+  const [dagEditorOpen, setDagEditorOpen] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const drainingRef = useRef(false);
 
   useEffect(() => {
-    if (restoreDraft == null || restoreDraft === "") return;
-    setContent(restoreDraft);
+    if (restoreDraft == null) return;
+    const text = restoreDraft.text;
+    if (!text) return;
+    setContent(text);
     onRestoreDraftConsumed?.();
     requestAnimationFrame(() => {
       const el = textareaRef.current;
       if (!el) return;
       el.focus();
-      const end = restoreDraft.length;
+      const end = text.length;
       el.setSelectionRange(end, end);
+      el.scrollIntoView({ block: "nearest", behavior: "smooth" });
     });
   }, [restoreDraft, onRestoreDraftConsumed]);
 
@@ -113,19 +115,35 @@ export function ConversationComposer({
   });
 
   const patterns = patternsQuery.data ?? EMPTY_PATTERNS;
-  const planHint = useMemo(() => polishOrchestrationTask(content, patterns), [content, patterns]);
-  const showMultiRoleHint =
-    multiRoleReady && content.trim().length > 2 && shouldSuggestMultiRole(planHint);
+
+  const classified = useMemo(
+    () => classifyTaskMode(content, patterns, multiRoleReady),
+    [content, patterns, multiRoleReady],
+  );
+
+  const autoModeLabel = useMemo(() => {
+    if (!content.trim()) return null;
+    if (classified.mode.kind === "single") {
+      return t(classified.mode.labelKey);
+    }
+    return t(classified.mode.labelKey);
+  }, [classified, content, t]);
 
   const orchestrate = useMutation({
-    mutationFn: async (task: string) => {
-      const result = await startOrchestration(workspaceId!, threadId!, task);
+    mutationFn: async (args: { task: string; workflowId?: string | null }) => {
+      const result = await startOrchestration(
+        workspaceId!,
+        threadId!,
+        args.task,
+        args.workflowId ?? null,
+      );
       if (workspaceId && threadId) {
-        void maybeAutoTitleThread(queryClient, workspaceId, threadId, task);
+        void maybeAutoTitleThread(queryClient, workspaceId, threadId, args.task);
       }
       return result;
     },
     onSuccess: async () => {
+      setDispatchHold(false);
       await queryClient.invalidateQueries({ queryKey: ["orchestrations", threadId] });
       await queryClient.invalidateQueries({ queryKey: ["messages", threadId] });
       await queryClient.invalidateQueries({ queryKey: ["runs", threadId] });
@@ -133,6 +151,9 @@ export function ConversationComposer({
         await queryClient.invalidateQueries({ queryKey: workspaceKeys.threads(workspaceId) });
       }
       textareaRef.current?.focus();
+    },
+    onError: () => {
+      setDispatchHold(false);
     },
   });
 
@@ -144,14 +165,10 @@ export function ConversationComposer({
   });
 
   const latest = sessionsQuery.data?.[0];
-  // Only non-terminal orchestration counts as busy (Completed/Failed must not lock the composer).
   const multiRoleBusy = latest?.status === "Running" || latest?.status === "Planning";
   const dispatchBusy = isSubmitting || orchestrate.isPending;
   const channelBusy = sessionBusy || multiRoleBusy || dispatchBusy || dispatchHold;
 
-  // Hold bridges the gap between mutate resolve and parent run status flip.
-  // Clear when real busy takes over, or quickly if the turn never became active
-  // (e.g. already Completed) so we don't show a stuck "任务运行中" banner.
   useEffect(() => {
     if (!dispatchHold) return;
     if (sessionBusy || multiRoleBusy) {
@@ -164,49 +181,41 @@ export function ConversationComposer({
     }
   }, [dispatchHold, sessionBusy, multiRoleBusy, isSubmitting, orchestrate.isPending]);
 
-  // Hard reset local busy UI when switching sessions (parent also remounts via key).
   useEffect(() => {
     setDispatchHold(false);
     setQueue([]);
     drainingRef.current = false;
   }, [threadId]);
 
-  // Input stays editable during session runs — only hard-disabled by parent policy.
   const inputDisabled = disabled;
   const hasText = content.trim().length > 0;
   const canCompose = !disabled && hasText && !dispatchBusy;
-
-  const enqueue = useCallback((mode: QueueMode, text: string) => {
-    const payload = text.trim();
-    if (!payload) return;
-    setQueue((prev) => [
-      ...prev,
-      { id: crypto.randomUUID(), content: payload, mode },
-    ]);
-    setContent("");
-    textareaRef.current?.focus();
-  }, []);
 
   const removeQueued = useCallback((id: string) => {
     setQueue((prev) => prev.filter((item) => item.id !== id));
   }, []);
 
-  const dispatchTask = useCallback(
-    async (mode: QueueMode, text: string) => {
-      const payload = text.trim();
-      if (!payload) return;
-      if (mode === "multi-role") {
+  const dispatchQueued = useCallback(
+    async (item: ComposerQueuedTask) => {
+      if (item.mode === "multi-role") {
         if (!multiRoleReady) return;
-        const task = polishOrchestrationTask(payload, patterns).polished || payload;
-        await orchestrate.mutateAsync(task.trim());
+        const start = resolveQueuedOrchestrationStart(item);
+        if (!start) return;
+        const task =
+          polishOrchestrationTask(start.task, patterns).polished || start.task;
+        await orchestrate.mutateAsync({
+          task: task.trim(),
+          workflowId: start.workflowId,
+        });
         return;
       }
+      const payload = item.content.trim();
+      if (!payload) return;
       await onSubmit(payload);
     },
     [multiRoleReady, onSubmit, orchestrate, patterns],
   );
 
-  // Drain queue when channel is free (backend allows one active turn at a time).
   useEffect(() => {
     if (channelBusy || drainingRef.current || queue.length === 0) return;
     const next = queue[0];
@@ -216,69 +225,102 @@ export function ConversationComposer({
     setQueue((prev) => prev.slice(1));
     void (async () => {
       try {
-        await dispatchTask(next.mode, next.content);
+        await dispatchQueued(next);
       } catch {
         setDispatchHold(false);
-        // Put failed item back at the front so the user can remove/retry.
         setQueue((prev) => [next, ...prev]);
       } finally {
         drainingRef.current = false;
         textareaRef.current?.focus();
       }
     })();
-  }, [channelBusy, queue, dispatchTask]);
+  }, [channelBusy, queue, dispatchQueued]);
+
+  const runClassified = useCallback(
+    async (raw: string) => {
+      const decision = classifyTaskMode(raw, patterns, multiRoleReady);
+      if (decision.mode.kind === "multi" && multiRoleReady) {
+        await orchestrate.mutateAsync({
+          task: decision.taskText.trim() || raw,
+          workflowId: decision.mode.workflowId,
+        });
+        return;
+      }
+      await onSubmit(raw);
+    },
+    [multiRoleReady, onSubmit, orchestrate, patterns],
+  );
 
   const handleSend = async () => {
     if (!canCompose) return;
     const payload = content.trim();
     if (!payload) return;
 
-    // Session already working → queue; user can keep stacking tasks.
+    const decision = classifyTaskMode(payload, patterns, multiRoleReady);
+
+    // Busy → queue with the mode that would have been used now.
     if (sessionBusy || multiRoleBusy || dispatchHold) {
-      enqueue("send", payload);
+      if (decision.mode.kind === "multi" && multiRoleReady) {
+        const wf = decision.mode.workflowId;
+        setQueue((prev) => [
+          ...prev,
+          queueMultiRoleTask(decision.taskText || payload, wf, crypto.randomUUID()),
+        ]);
+      } else {
+        setQueue((prev) => [...prev, queueSendTask(payload, crypto.randomUUID())]);
+      }
+      setContent("");
+      textareaRef.current?.focus();
       return;
     }
 
     try {
       setContent("");
       setDispatchHold(true);
-      await onSubmit(payload);
+      await runClassified(payload);
       textareaRef.current?.focus();
     } catch {
       setContent(payload);
+      setDispatchHold(false);
       textareaRef.current?.focus();
     } finally {
-      // sessionBusy covers active runs; don't leave hold stuck after terminal status.
       if (!sessionBusy && !multiRoleBusy) {
         window.setTimeout(() => setDispatchHold(false), 400);
       }
     }
   };
 
-  const handleMultiRole = () => {
+  const startWithWorkflow = (workflowId: string | null) => {
     if (!canCompose || !multiRoleReady) return;
-    const task = (planHint.polished || content).trim();
+    const task = content.trim();
     if (!task) return;
-
+    const polished = polishOrchestrationTask(task, patterns).polished || task;
     if (sessionBusy || multiRoleBusy || dispatchHold) {
-      enqueue("multi-role", task);
+      setQueue((prev) => [
+        ...prev,
+        queueMultiRoleTask(polished, workflowId, crypto.randomUUID()),
+      ]);
+      setContent("");
       return;
     }
-
     setContent("");
     setDispatchHold(true);
-    orchestrate.mutate(task, {
-      onError: () => {
-        setDispatchHold(false);
-        setContent(task);
-        textareaRef.current?.focus();
+    setDagEditorOpen(false);
+    orchestrate.mutate(
+      { task: polished, workflowId },
+      {
+        onError: () => {
+          setDispatchHold(false);
+          setContent(task);
+          textareaRef.current?.focus();
+        },
+        onSettled: () => {
+          if (!sessionBusy && !multiRoleBusy) {
+            window.setTimeout(() => setDispatchHold(false), 400);
+          }
+        },
       },
-      onSettled: () => {
-        if (!sessionBusy && !multiRoleBusy) {
-          window.setTimeout(() => setDispatchHold(false), 400);
-        }
-      },
-    });
+    );
   };
 
   const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -290,21 +332,17 @@ export function ConversationComposer({
 
   const actionError = orchestrate.error ?? cancelOrchestrationMut.error;
   const willQueue = (sessionBusy || multiRoleBusy) && hasText;
-  const sendLabel = dispatchBusy
-    ? t("agent.sending")
-    : willQueue
-      ? t("agent.queueSend")
-      : t("agent.send");
-  const multiLabel = orchestrate.isPending
-    ? t("orchestration.running")
-    : willQueue
-      ? t("orchestration.queueMultiRole")
-      : t("orchestration.multiRole");
+  const sendLabel =
+    isSubmitting || (orchestrate.isPending && !multiRoleBusy)
+      ? t("agent.sending")
+      : willQueue
+        ? t("agent.queueSend")
+        : t("agent.send");
 
   return (
     <div
       className={cn(
-        "bg-background mx-auto flex max-w-4xl flex-col gap-3 rounded-lg border p-3 shadow-xs",
+        "conversation-column bg-background mx-auto flex w-full flex-col gap-3 rounded-lg border p-3 shadow-xs",
         channelBusy && "conversation-composer-active",
       )}
     >
@@ -348,10 +386,10 @@ export function ConversationComposer({
                 <span className="text-muted-foreground mt-0.5 shrink-0 tabular-nums">
                   #{index + 1}
                 </span>
-                <span className="text-muted-foreground shrink-0 rounded border px-1 py-0.5 text-[10px] uppercase">
+                <span className="text-muted-foreground shrink-0 rounded border px-1 py-0.5 text-[10px]">
                   {item.mode === "multi-role"
-                    ? t("orchestration.multiRole")
-                    : t("agent.send")}
+                    ? t("orchestration.auto.badgeMulti")
+                    : t("orchestration.auto.badgeSingle")}
                 </span>
                 <span className="min-w-0 flex-1 truncate leading-5">{item.content}</span>
                 <button
@@ -368,17 +406,27 @@ export function ConversationComposer({
         </div>
       )}
 
-      {showMultiRoleHint && (
-        <div className="bg-muted/40 text-muted-foreground flex flex-wrap items-center gap-2 rounded-md border px-3 py-2 text-[11px] leading-5">
-          <Users className="h-3.5 w-3.5 shrink-0" />
+      {/* Light auto-mode hint — not a second primary button */}
+      {hasText && multiRoleReady && autoModeLabel ? (
+        <div className="bg-muted/30 text-muted-foreground flex flex-wrap items-center gap-2 rounded-md border px-3 py-1.5 text-[11px] leading-5">
+          <Sparkles className="h-3.5 w-3.5 shrink-0 text-violet-600" />
           <span>
-            {t("orchestration.suggestHint").replace(
-              "{roles}",
-              planHint.suggestedRoles.join(" → ") || "—",
+            {t("orchestration.auto.hintPrefix")}
+            <span className="text-foreground font-medium">{autoModeLabel}</span>
+            {classified.mode.kind === "multi" ? (
+              <span className="text-muted-foreground">
+                {" "}
+                · {t(classified.reasonKey)}
+              </span>
+            ) : (
+              <span className="text-muted-foreground">
+                {" "}
+                · {t(classified.reasonKey)}
+              </span>
             )}
           </span>
         </div>
-      )}
+      ) : null}
 
       {multiRoleReady && latest && (multiRoleBusy || latest.status === "Failed") && (
         <div
@@ -398,9 +446,13 @@ export function ConversationComposer({
             )}
             {": "}
             {latest.status}
-            {latest.plan.subagents.length > 0
-              ? ` · ${latest.plan.subagents.map((n) => `${n.agent_name}(${n.status})`).join(" · ")}`
-              : ""}
+            {latest.plan.stages && latest.plan.stages.length > 0
+              ? ` · ${latest.plan.workflow_title ?? latest.plan.workflow_id ?? "workflow"} · ${latest.plan.stages
+                  .map((s) => `${s.id}(${s.status})`)
+                  .join(" → ")}`
+              : latest.plan.subagents.length > 0
+                ? ` · ${latest.plan.subagents.map((n) => `${n.agent_name}(${n.status})`).join(" · ")}`
+                : ""}
           </span>
           {multiRoleBusy ? (
             <Button
@@ -426,28 +478,27 @@ export function ConversationComposer({
       <div className="flex items-center justify-between gap-3 border-t pt-3">
         <div className="min-w-0 flex-1">{controls}</div>
         <div className="flex shrink-0 items-center gap-2">
-          {multiRoleReady && (
-            <Button
+          {multiRoleReady ? (
+            <button
               type="button"
-              variant="outline"
-              disabled={!canCompose}
-              onClick={handleMultiRole}
-              title={t("orchestration.multiRoleHint")}
-              className="gap-1.5"
+              className="text-muted-foreground hover:text-foreground flex items-center gap-1 text-[11px] underline-offset-2 hover:underline"
+              title={t("orchestration.editDagHint")}
+              onClick={() => setDagEditorOpen(true)}
             >
-              {orchestrate.isPending ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <GitBranch className="h-4 w-4" />
-              )}
-              {multiLabel}
-            </Button>
-          )}
+              <Pencil className="h-3 w-3" />
+              {t("orchestration.advancedCustomize")}
+            </button>
+          ) : null}
           <Button
             type="button"
             disabled={!canCompose}
             onClick={() => void handleSend()}
             className="gap-1.5"
+            title={
+              autoModeLabel
+                ? `${t("orchestration.auto.hintPrefix")}${autoModeLabel}`
+                : t("agent.send")
+            }
           >
             {dispatchBusy ? (
               <Loader2 className="h-4 w-4 animate-spin" />
@@ -458,6 +509,21 @@ export function ConversationComposer({
           </Button>
         </div>
       </div>
+
+      {dagEditorOpen && multiRoleReady ? (
+        <WorkflowDagEditor
+          workspaceId={workspaceId}
+          open={dagEditorOpen}
+          onClose={() => setDagEditorOpen(false)}
+          onStart={(workflowId) => {
+            if (!content.trim()) {
+              setDagEditorOpen(false);
+              return;
+            }
+            startWithWorkflow(workflowId);
+          }}
+        />
+      ) : null}
     </div>
   );
 }

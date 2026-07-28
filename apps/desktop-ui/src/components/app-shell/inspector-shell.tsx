@@ -12,6 +12,7 @@ import {
 import { AuditPanel } from "@/features/inspector/audit-panel";
 import { FilesPanel } from "@/features/inspector/files-panel";
 import { TimelinePanel } from "@/features/inspector/timeline-panel";
+import { TabsContent } from "@/components/ui/tabs";
 import { useTranslation } from "@/lib/i18n-react";
 import { PanelResizeHandle } from "./panel-resize-handle";
 import {
@@ -126,7 +127,11 @@ export function InspectorShell() {
             </button>
           }
         />
-        <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+        <TabsContent
+          id={`inspector-panel-${activeTab}`}
+          aria-labelledby={`inspector-tab-${activeTab}`}
+          className="flex min-h-0 flex-1 flex-col overflow-hidden"
+        >
           {!workspaceId ? (
             <TabPlaceholder message={t("inspector.openWorkspace")} />
           ) : (
@@ -140,7 +145,7 @@ export function InspectorShell() {
               {activeTab === "files" && <FilesPanel key={workspaceId} workspaceId={workspaceId} />}
             </>
           )}
-        </div>
+        </TabsContent>
       </aside>
     </div>
   );

@@ -1,8 +1,10 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { ExternalLink, KeyRound, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { Modal } from "@/components/ui/modal";
 import {
   createModel,
   createProvider,
@@ -11,36 +13,63 @@ import {
   deleteProviderSecret,
   getActiveModel,
   getProviderHealth,
+  importCliAuthSource,
+  listCliAuthSources,
   listModels,
   listProviders,
   setActiveModel,
   setProviderSecret,
   testProviderConnection,
+  updateProvider,
+  type CliAuthSource,
 } from "@/lib/tauri-api";
 import {
   asModelId,
   asProviderId,
-  providerKindSchema,
   type ModelCapability,
   type ModelInfo,
+  type ProviderConfig,
   type ProviderId,
   type ProviderKind,
 } from "@/lib/schemas";
 import { useTranslation } from "@/lib/i18n-react";
 import { modelKeys, providerKeys } from "@/lib/query-keys";
 import { ErrorAlert } from "@/components/ui/error-alert";
-import { getProviderPreset, providerSetupMode } from "./model-provider-presets";
+import {
+  CURATED_PROVIDER_KINDS,
+  getProviderPreset,
+  MOONSHOT_ENDPOINTS,
+  moonshotEndpointId,
+  moonshotLoginUrl,
+  providerSetupMode,
+  supportsLoginAssist,
+} from "./model-provider-presets";
+import { cn } from "@/lib/utils";
 
-const PROVIDER_KINDS: ProviderKind[] = [...providerKindSchema.options];
+const PROVIDER_KINDS: ProviderKind[] = CURATED_PROVIDER_KINDS;
 
 function defaultKeyReference(kind: ProviderKind): string {
   return `${kind.toLowerCase()}-${crypto.randomUUID()}`;
 }
 
-function providerKindLabel(kind: ProviderKind, notRunnable: string): string {
+function providerKindLabel(kind: ProviderKind): string {
   if (kind === "Moonshot") return "Moonshot (Kimi)";
-  if (kind === "Google" || kind === "AzureOpenAI") return `${kind} (${notRunnable})`;
+  if (kind === "Xai") return "Grok (xAI)";
   return kind;
+}
+
+async function openExternalUrl(url: string): Promise<void> {
+  try {
+    const { open } = await import("@tauri-apps/plugin-shell");
+    await open(url);
+  } catch {
+    window.open(url, "_blank", "noopener,noreferrer");
+  }
+}
+
+function resolveLoginConsoleUrl(kind: ProviderKind, baseUrl: string): string | null {
+  if (kind === "Moonshot") return moonshotLoginUrl(baseUrl);
+  return getProviderPreset(kind)?.loginConsoleUrl ?? null;
 }
 
 const defaultCapabilities: ModelCapability = {
@@ -73,6 +102,12 @@ export function ModelCapabilitiesPanel() {
   const [editingKeyProviderId, setEditingKeyProviderId] = useState<ProviderId | null>(null);
   const [editingKeyValue, setEditingKeyValue] = useState("");
 
+  /** Import session credentials from local Codex / Kimi / Grok CLI installs. */
+  const [cliImportOpen, setCliImportOpen] = useState(false);
+  const [cliSources, setCliSources] = useState<CliAuthSource[]>([]);
+  const [cliSourcesLoading, setCliSourcesLoading] = useState(false);
+  const [cliSourcesError, setCliSourcesError] = useState<string | null>(null);
+
   const [modelName, setModelName] = useState("");
   const [modelDisplayName, setModelDisplayName] = useState("");
   const [capabilities, setCapabilities] = useState<ModelCapability>(defaultCapabilities);
@@ -94,16 +129,19 @@ export function ModelCapabilitiesPanel() {
   });
 
   const createProviderMutation = useMutation({
-    mutationFn: async () => {
+    mutationFn: async (opts?: { apiKey?: string }) => {
       const config = await createProvider(
         providerKind,
-        providerName,
-        providerBaseUrl || null,
+        providerName || getProviderPreset(providerKind)?.displayName || providerKind,
+        providerBaseUrl || getProviderPreset(providerKind)?.baseUrl || null,
         providerKeyRefName,
       );
       try {
-        if (providerApiKey.trim()) {
-          await setProviderSecret(providerKeyRefName, providerApiKey.trim());
+        const key = (opts?.apiKey ?? providerApiKey).trim();
+        if (key) {
+          await setProviderSecret(providerKeyRefName, key);
+        } else if (getProviderPreset(providerKind)?.apiKeyRequired) {
+          throw new Error(t("capabilities.apiKeyRequired"));
         }
         const preset = getProviderPreset(providerKind);
         if (preset) {
@@ -118,6 +156,7 @@ export function ModelCapabilitiesPanel() {
             defaultModel ??= createdModel;
           }
           if (defaultModel) {
+            // Probe after secret is stored; surface InvalidCredentials in the model list.
             await testProviderConnection(config.id, defaultModel.id);
             await setActiveModel("Global", null, null, config.id, defaultModel.id);
           }
@@ -142,12 +181,90 @@ export function ModelCapabilitiesPanel() {
   });
 
   const updateKeyMutation = useMutation({
-    mutationFn: ({ reference, key }: { reference: string; key: string }) =>
-      setProviderSecret(reference, key),
-    onSuccess: () => {
+    mutationFn: async ({
+      providerId,
+      reference,
+      key,
+    }: {
+      providerId: ProviderId;
+      reference: string;
+      key: string;
+    }) => {
+      await setProviderSecret(reference, key.trim());
+      // Re-probe first model under this provider so health updates immediately.
+      const providerModels = await listModels(providerId);
+      const first = providerModels[0];
+      if (first) {
+        return testProviderConnection(providerId, first.id);
+      }
+      return null;
+    },
+    onSuccess: (health) => {
       void queryClient.invalidateQueries({ queryKey: providerKeys.list() });
+      void queryClient.invalidateQueries({ queryKey: ["provider-health"] });
+      if (health) {
+        void queryClient.invalidateQueries({
+          queryKey: ["provider-health", health.provider_id, health.model_id],
+        });
+      }
       setEditingKeyProviderId(null);
       setEditingKeyValue("");
+    },
+  });
+
+  const importCliMutation = useMutation({
+    mutationFn: (sourceId: string) => importCliAuthSource(sourceId),
+    onSuccess: (config) => {
+      void queryClient.invalidateQueries({ queryKey: providerKeys.list() });
+      void queryClient.invalidateQueries({ queryKey: modelKeys.list() });
+      void queryClient.invalidateQueries({ queryKey: ["active-model"] });
+      void queryClient.invalidateQueries({ queryKey: ["provider-health"] });
+      setSelectedProviderId(config.id);
+      setCliImportOpen(false);
+    },
+  });
+
+  async function openCliImportDialog() {
+    setCliImportOpen(true);
+    setCliSourcesError(null);
+    setCliSourcesLoading(true);
+    try {
+      const sources = await listCliAuthSources();
+      // Prefer sources matching the currently selected provider kind when possible.
+      const sorted = [...sources].sort((a, b) => {
+        const aMatch = a.kind === providerKind ? 0 : 1;
+        const bMatch = b.kind === providerKind ? 0 : 1;
+        if (aMatch !== bMatch) return aMatch - bMatch;
+        return Number(b.available) - Number(a.available);
+      });
+      setCliSources(sorted);
+    } catch (err) {
+      setCliSources([]);
+      setCliSourcesError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setCliSourcesLoading(false);
+    }
+  }
+
+  const switchMoonshotEndpointMutation = useMutation({
+    mutationFn: async ({
+      provider,
+      baseUrl,
+    }: {
+      provider: ProviderConfig;
+      baseUrl: string;
+    }) => {
+      await updateProvider({ ...provider, base_url: baseUrl });
+      const providerModels = await listModels(asProviderId(provider.id));
+      const first = providerModels[0];
+      if (first) {
+        return testProviderConnection(asProviderId(provider.id), first.id);
+      }
+      return null;
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: providerKeys.list() });
+      void queryClient.invalidateQueries({ queryKey: ["provider-health"] });
     },
   });
 
@@ -182,11 +299,13 @@ export function ModelCapabilitiesPanel() {
     },
   });
 
-  const setActiveModelMutation = useMutation({
+  /** Persist the global default used when a session has no thread-level model. */
+  const setDefaultModelMutation = useMutation({
     mutationFn: ({ providerId, modelId }: { providerId: ProviderId; modelId: ModelInfo["id"] }) =>
       setActiveModel("Global", null, null, providerId, modelId),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["active-model"] });
+      void queryClient.invalidateQueries({ queryKey: ["active-model", "Global"] });
     },
   });
 
@@ -203,11 +322,15 @@ export function ModelCapabilitiesPanel() {
   const selectedProvider = providers?.find((p) => p.id === selectedProviderId);
 
   const providerMutationError =
-    createProviderMutation.error ?? deleteProviderMutation.error ?? updateKeyMutation.error;
+    createProviderMutation.error ??
+    deleteProviderMutation.error ??
+    updateKeyMutation.error ??
+    switchMoonshotEndpointMutation.error ??
+    importCliMutation.error;
   const modelMutationError =
     createModelMutation.error ??
     deleteModelMutation.error ??
-    setActiveModelMutation.error ??
+    setDefaultModelMutation.error ??
     testConnectionMutation.error;
 
   const updateCapability = <K extends keyof ModelCapability>(key: K, value: ModelCapability[K]) => {
@@ -226,7 +349,7 @@ export function ModelCapabilitiesPanel() {
             className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3"
             onSubmit={(e) => {
               e.preventDefault();
-              createProviderMutation.mutate();
+              createProviderMutation.mutate({});
             }}
           >
             <select
@@ -241,26 +364,24 @@ export function ModelCapabilitiesPanel() {
                 setProviderBaseUrl(preset?.baseUrl ?? "");
                 setProviderKeyRefName(defaultKeyReference(kind));
                 setShowAdvancedProvider(providerSetupMode(kind) === "custom");
+                setProviderApiKey("");
               }}
               required
             >
               {PROVIDER_KINDS.map((kind) => (
                 <option key={kind} value={kind}>
-                  {providerKindLabel(kind, t("capabilities.notRunnable"))}
+                  {providerKindLabel(kind)}
                 </option>
               ))}
             </select>
             <Input
               data-testid="provider-api-key"
               type="password"
-              placeholder={
-                providerKind === "Ollama"
-                  ? t("capabilities.apiKeyOptionalOllama")
-                  : t("capabilities.apiKey")
-              }
+              placeholder={t("capabilities.apiKey")}
               value={providerApiKey}
               onChange={(e) => setProviderApiKey(e.target.value)}
               required={getProviderPreset(providerKind)?.apiKeyRequired ?? true}
+              autoComplete="off"
             />
             <Button
               type="submit"
@@ -269,6 +390,50 @@ export function ModelCapabilitiesPanel() {
             >
               {t("capabilities.addAndConfigure")}
             </Button>
+
+            {supportsLoginAssist(providerKind) ? (
+              <div className="bg-muted/40 col-span-full flex flex-col gap-2 rounded-lg border px-3 py-3 sm:flex-row sm:items-center sm:justify-between">
+                <div className="min-w-0 space-y-0.5">
+                  <p className="text-sm font-medium">{t("capabilities.cliAuth.title")}</p>
+                  <p className="text-muted-foreground text-xs leading-snug">
+                    {t("capabilities.cliAuth.body")}
+                  </p>
+                </div>
+                <Button
+                  type="button"
+                  variant="default"
+                  size="sm"
+                  className="shrink-0 gap-1.5"
+                  disabled={importCliMutation.isPending}
+                  onClick={() => void openCliImportDialog()}
+                >
+                  <KeyRound className="h-3.5 w-3.5" />
+                  {t("capabilities.cliAuth.button")}
+                </Button>
+              </div>
+            ) : null}
+
+            {providerKind === "Moonshot" && (
+              <div className="col-span-full flex flex-wrap items-center gap-2">
+                <span className="text-muted-foreground text-xs">
+                  {t("capabilities.moonshotRegion")}
+                </span>
+                {MOONSHOT_ENDPOINTS.map((ep) => (
+                  <Button
+                    key={ep.id}
+                    type="button"
+                    size="sm"
+                    variant={providerBaseUrl === ep.baseUrl ? "default" : "outline"}
+                    onClick={() => setProviderBaseUrl(ep.baseUrl)}
+                  >
+                    {t(ep.labelKey)}
+                  </Button>
+                ))}
+                <span className="text-muted-foreground w-full text-[11px] leading-4">
+                  {t("capabilities.moonshotRegionHint")}
+                </span>
+              </div>
+            )}
             <div className="col-span-full">
               <Button
                 type="button"
@@ -310,12 +475,123 @@ export function ModelCapabilitiesPanel() {
                 {t("capabilities.presetHint")}
               </p>
             )}
-            {providerKind === "Ollama" && (
-              <p className="text-muted-foreground col-span-full text-xs">
-                {t("capabilities.ollamaKeyHint")}
-              </p>
-            )}
           </form>
+
+          <Modal
+            open={cliImportOpen}
+            onClose={() => {
+              if (importCliMutation.isPending) return;
+              setCliImportOpen(false);
+            }}
+            labelledBy="cli-auth-import-title"
+            className="max-w-lg p-5"
+          >
+            <h2 id="cli-auth-import-title" className="text-base font-semibold">
+              {t("capabilities.cliAuth.dialogTitle")}
+            </h2>
+            <p className="text-muted-foreground mt-2 text-sm leading-relaxed">
+              {t("capabilities.cliAuth.dialogBody")}
+            </p>
+            <ol className="text-muted-foreground mt-3 list-decimal space-y-1.5 pl-5 text-xs leading-relaxed">
+              <li>{t("capabilities.cliAuth.stepCodex")}</li>
+              <li>{t("capabilities.cliAuth.stepKimi")}</li>
+              <li>{t("capabilities.cliAuth.stepGrok")}</li>
+            </ol>
+
+            <div className="mt-4 max-h-64 space-y-2 overflow-y-auto">
+              {cliSourcesLoading ? (
+                <p className="text-muted-foreground flex items-center gap-2 text-sm">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  {t("capabilities.cliAuth.scanning")}
+                </p>
+              ) : cliSourcesError ? (
+                <ErrorAlert
+                  title={t("capabilities.cliAuth.scanFailed")}
+                  message={cliSourcesError}
+                />
+              ) : (
+                cliSources.map((src) => (
+                  <div
+                    key={src.id}
+                    className={cn(
+                      "flex items-start justify-between gap-3 rounded-lg border px-3 py-2.5",
+                      src.available ? "bg-background" : "bg-muted/30 opacity-80",
+                    )}
+                  >
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium">{src.label}</p>
+                      <p className="text-muted-foreground mt-0.5 truncate font-mono text-[11px]">
+                        {src.path}
+                      </p>
+                      {src.available ? (
+                        <p className="text-muted-foreground mt-1 text-[11px]">
+                          {t("capabilities.cliAuth.preview")}:{" "}
+                          <span className="font-mono">{src.preview}</span>
+                          {" · "}
+                          {src.auth_mode}
+                        </p>
+                      ) : (
+                        <p className="text-muted-foreground mt-1 text-[11px] leading-snug">
+                          {src.hint ?? t("capabilities.cliAuth.unavailable")}
+                        </p>
+                      )}
+                    </div>
+                    <Button
+                      type="button"
+                      size="sm"
+                      className="shrink-0"
+                      disabled={!src.available || importCliMutation.isPending}
+                      onClick={() => importCliMutation.mutate(src.id)}
+                    >
+                      {importCliMutation.isPending ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        t("capabilities.cliAuth.import")
+                      )}
+                    </Button>
+                  </div>
+                ))
+              )}
+            </div>
+
+            <div className="mt-4 flex flex-wrap items-center justify-between gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="gap-1.5"
+                disabled={cliSourcesLoading}
+                onClick={() => void openCliImportDialog()}
+              >
+                {t("common.refresh")}
+              </Button>
+              <div className="flex gap-2">
+                {resolveLoginConsoleUrl(providerKind, providerBaseUrl) ? (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="gap-1.5"
+                    onClick={() => {
+                      const url = resolveLoginConsoleUrl(providerKind, providerBaseUrl);
+                      if (url) void openExternalUrl(url);
+                    }}
+                  >
+                    <ExternalLink className="h-3.5 w-3.5" />
+                    {t("capabilities.cliAuth.openCliDocs")}
+                  </Button>
+                ) : null}
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setCliImportOpen(false)}
+                  disabled={importCliMutation.isPending}
+                >
+                  {t("common.close")}
+                </Button>
+              </div>
+            </div>
+          </Modal>
 
           {providerMutationError && (
             <ErrorAlert
@@ -352,10 +628,37 @@ export function ModelCapabilitiesPanel() {
                     </span>
                     <span className="text-muted-foreground text-xs">
                       {provider.base_url ?? t("capabilities.defaultEndpoint")} ·{" "}
-                      <span className={provider.enabled ? "text-green-600" : "text-amber-600"}>
+                      <span className={provider.enabled ? "text-success" : "text-warning-ink"}>
                         {provider.enabled ? t("common.enabled") : t("common.disabled")}
                       </span>
                     </span>
+                    {provider.kind === "Moonshot" ? (
+                      <span className="mt-1 flex flex-wrap gap-1">
+                        {MOONSHOT_ENDPOINTS.map((ep) => (
+                          <Button
+                            key={ep.id}
+                            type="button"
+                            size="sm"
+                            variant={
+                              moonshotEndpointId(provider.base_url) === ep.id
+                                ? "default"
+                                : "outline"
+                            }
+                            className="h-6 px-2 text-[10px]"
+                            disabled={switchMoonshotEndpointMutation.isPending}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              switchMoonshotEndpointMutation.mutate({
+                                provider,
+                                baseUrl: ep.baseUrl,
+                              });
+                            }}
+                          >
+                            {t(ep.labelKey)}
+                          </Button>
+                        ))}
+                      </span>
+                    ) : null}
                   </button>
                   <div className="flex items-center gap-2">
                     {editingKeyProviderId === asProviderId(provider.id) ? (
@@ -366,11 +669,13 @@ export function ModelCapabilitiesPanel() {
                           placeholder={t("capabilities.newApiKey")}
                           value={editingKeyValue}
                           onChange={(e) => setEditingKeyValue(e.target.value)}
+                          autoComplete="off"
                         />
                         <Button
                           size="sm"
                           onClick={() =>
                             updateKeyMutation.mutate({
+                              providerId: asProviderId(provider.id),
                               reference: provider.api_key_reference,
                               key: editingKeyValue,
                             })
@@ -534,8 +839,8 @@ export function ModelCapabilitiesPanel() {
                     key={model.id}
                     model={model}
                     active={activeModel?.model_id === model.id}
-                    onSetActive={() =>
-                      setActiveModelMutation.mutate({
+                    onSetDefault={() =>
+                      setDefaultModelMutation.mutate({
                         providerId: model.provider_id,
                         modelId: model.id,
                       })
@@ -549,7 +854,7 @@ export function ModelCapabilitiesPanel() {
                     onDelete={() => deleteModelMutation.mutate(model.id)}
                     busy={
                       deleteModelMutation.isPending ||
-                      setActiveModelMutation.isPending ||
+                      setDefaultModelMutation.isPending ||
                       testConnectionMutation.isPending
                     }
                   />
@@ -568,14 +873,15 @@ export function ModelCapabilitiesPanel() {
 function ModelListItem({
   model,
   active,
-  onSetActive,
+  onSetDefault,
   onTest,
   onDelete,
   busy,
 }: {
   model: ModelInfo;
+  /** Global default model for sessions that have no thread/workspace override. */
   active: boolean;
-  onSetActive: () => void;
+  onSetDefault: () => void;
   onTest: () => void;
   onDelete: () => void;
   busy: boolean;
@@ -592,8 +898,8 @@ function ModelListItem({
         <span className="font-medium">{model.display_name}</span>
         <span className="text-muted-foreground ml-2 text-sm">{model.model_name}</span>
         {active && (
-          <span className="bg-success/15 text-success ml-2 rounded px-1.5 py-0.5 text-xs">
-            {t("capabilities.activeModel")}
+          <span className="bg-primary/15 text-primary ml-2 rounded px-1.5 py-0.5 text-xs font-medium">
+            {t("capabilities.defaultModelBadge")}
           </span>
         )}
         <div className="text-muted-foreground mt-1 flex flex-wrap gap-2 text-xs">
@@ -606,8 +912,15 @@ function ModelListItem({
             <span>{model.capabilities.max_context_tokens.toLocaleString()} tokens</span>
           )}
           {health && (
-            <span className={health.status === "Ready" ? "text-success" : "text-warning"}>
+            <span
+              className={cn(
+                "max-w-xl",
+                health.status === "Ready" ? "text-success" : "text-warning",
+              )}
+              title={health.message ?? health.status}
+            >
               {t("capabilities.health")}: {health.status}
+              {health.message ? ` — ${health.message}` : null}
             </span>
           )}
         </div>
@@ -618,10 +931,14 @@ function ModelListItem({
         </Button>
         <Button
           size="sm"
-          onClick={onSetActive}
-          disabled={busy || active || health?.status !== "Ready"}
+          variant={active ? "outline" : "default"}
+          onClick={onSetDefault}
+          disabled={busy || active}
+          title={t("capabilities.setDefaultModelHint")}
         >
-          {t("capabilities.useModel")}
+          {active
+            ? t("capabilities.defaultModelBadge")
+            : t("capabilities.setDefaultModel")}
         </Button>
         <Button variant="destructive" size="sm" onClick={onDelete} disabled={busy || active}>
           {t("operations.delete")}

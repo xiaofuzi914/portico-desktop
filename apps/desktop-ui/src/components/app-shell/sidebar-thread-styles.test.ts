@@ -5,7 +5,9 @@ describe("sidebar thread density", () => {
   it("keeps thread actions and rows more compact than project rows", () => {
     expect(SIDEBAR_THREAD_ACTION_CLASS).toContain("h-7");
     expect(SIDEBAR_THREAD_ACTION_CLASS).toContain("text-xs");
+    expect(SIDEBAR_THREAD_ACTION_CLASS).toContain("items-center");
     expect(SIDEBAR_THREAD_LINK_CLASS).toContain("h-7");
     expect(SIDEBAR_THREAD_LINK_CLASS).toContain("text-xs");
+    expect(SIDEBAR_THREAD_LINK_CLASS).toContain("flex");
   });
 });

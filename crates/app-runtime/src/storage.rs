@@ -3,11 +3,13 @@
 use app_models::{
     AgentRun, AgentRunId, AgentRunStatus, AppError, ApprovalRequest, ApprovalRequestId,
     ApprovalRequestStatus, Automation, AutomationId, AutomationTrigger, BackgroundTask,
-    BackgroundTaskId, BackgroundTaskStatus, Message, MessageId, MessageRole, Notification,
-    NotificationCategory, NotificationId, Orchestration, OrchestrationId, OrchestrationPlan,
-    OrchestrationStatus, RunEvent, SubagentRun, TaskKind, Thread, ThreadId, ToolInvocation,
-    ToolInvocationId, ToolInvocationStatus, WorkflowPatternId, Workspace, WorkspaceId, Worktree,
-    WorktreeId,
+    BackgroundTaskId, BackgroundTaskStatus, Canvas, CanvasEdge, CanvasEdgeId, CanvasEdgeKind,
+    CanvasId, CanvasKind, CanvasLink, CanvasLinkId, CanvasLinkRefType, CanvasNode, CanvasNodeId,
+    CanvasNodeKind, CanvasNodeSource, CanvasNodeStatus, CanvasSnapshot, Message, MessageId,
+    MessageRole, Notification, NotificationCategory, NotificationId, Orchestration,
+    OrchestrationId, OrchestrationPlan, OrchestrationStatus, RunEvent, SubagentRun, TaskKind,
+    Thread, ThreadId, ToolInvocation, ToolInvocationId, ToolInvocationStatus, WorkflowPatternId,
+    Workspace, WorkspaceId, Worktree, WorktreeId,
 };
 use async_trait::async_trait;
 use chrono::Utc;
@@ -92,20 +94,52 @@ pub trait Storage: Send + Sync {
     /// Fetch a workspace by id.
     async fn get_workspace(&self, id: WorkspaceId) -> Result<Workspace, AppError>;
 
+    /// Remove a workspace and its Portico-owned data (sessions, runs, canvas, …).
+    /// Does **not** delete files on disk under the project root.
+    async fn delete_workspace(&self, id: WorkspaceId) -> Result<(), AppError>;
+
     /// Create a new thread inside a workspace.
+    ///
+    /// When `parent_thread_id` is set, the new session is a branch of that parent
+    /// (used by the project mind map for conversation relationships).
     async fn create_thread(
         &self,
         workspace_id: WorkspaceId,
         title: &str,
+        parent_thread_id: Option<ThreadId>,
     ) -> Result<Thread, AppError>;
 
-    /// List threads in a workspace ordered by creation time.
+    /// List **active** (non-archived) threads in a workspace ordered by creation time.
     async fn list_threads(&self, workspace_id: WorkspaceId) -> Result<Vec<Thread>, AppError>;
 
-    /// Delete a thread and its cascade-owned conversation data.
+    /// List archived threads in a workspace (newest archive first).
+    async fn list_archived_threads(
+        &self,
+        workspace_id: WorkspaceId,
+    ) -> Result<Vec<Thread>, AppError>;
+
+    /// Soft-delete: move a thread into the archive.
+    async fn archive_thread(
+        &self,
+        workspace_id: WorkspaceId,
+        id: ThreadId,
+    ) -> Result<Thread, AppError>;
+
+    /// Restore an archived thread to the active list.
+    async fn restore_thread(
+        &self,
+        workspace_id: WorkspaceId,
+        id: ThreadId,
+    ) -> Result<Thread, AppError>;
+
+    /// Permanently delete a thread and its cascade-owned conversation data.
     async fn delete_thread(&self, workspace_id: WorkspaceId, id: ThreadId) -> Result<(), AppError>;
 
-    /// Fetch a thread by id.
+    /// Hard-delete archived threads older than `max_age_days` (default product: 30).
+    /// Returns how many threads were purged.
+    async fn purge_expired_archived_threads(&self, max_age_days: i64) -> Result<u64, AppError>;
+
+    /// Fetch a thread by id (active or archived).
     async fn get_thread(&self, id: ThreadId) -> Result<Thread, AppError>;
 
     /// Update a thread's display title (topic label for the session list).
@@ -122,6 +156,22 @@ pub trait Storage: Send + Sync {
 
     /// List durable messages for a thread in chronological order.
     async fn list_messages(&self, thread_id: ThreadId) -> Result<Vec<Message>, AppError>;
+
+    /// Newest `limit` messages for a thread, returned in chronological order.
+    /// Used by canvas extract so long chats do not load every historical row.
+    async fn list_recent_messages(
+        &self,
+        thread_id: ThreadId,
+        limit: usize,
+    ) -> Result<Vec<Message>, AppError>;
+
+    /// Persist a standalone message (no run), e.g. branch context seed.
+    async fn create_standalone_message(
+        &self,
+        thread_id: ThreadId,
+        role: MessageRole,
+        content: &str,
+    ) -> Result<Message, AppError>;
 
     /// Persist one message generated during a run. Repeating the assistant
     /// completion for the same run returns the original durable message.
@@ -461,6 +511,113 @@ pub trait Storage: Send + Sync {
         thread_id: ThreadId,
     ) -> Result<Vec<Orchestration>, AppError>;
 
+    /// Upsert an editable multi-stage workflow template.
+    async fn upsert_workflow_template(
+        &self,
+        template: &app_models::WorkflowTemplate,
+    ) -> Result<(), AppError>;
+
+    /// Fetch a workflow template by id.
+    async fn get_workflow_template(
+        &self,
+        id: app_models::WorkflowTemplateId,
+    ) -> Result<app_models::WorkflowTemplate, AppError>;
+
+    /// Fetch a bundled template by catalog key.
+    async fn get_workflow_template_by_catalog_key(
+        &self,
+        catalog_key: &str,
+    ) -> Result<Option<app_models::WorkflowTemplate>, AppError>;
+
+    /// List templates visible globally and optionally for a workspace.
+    async fn list_workflow_templates(
+        &self,
+        workspace_id: Option<WorkspaceId>,
+    ) -> Result<Vec<app_models::WorkflowTemplate>, AppError>;
+
+    /// Delete a non-builtin workflow template.
+    async fn delete_workflow_template(
+        &self,
+        id: app_models::WorkflowTemplateId,
+    ) -> Result<(), AppError>;
+
+    /// Get or create the default project canvas for a workspace.
+    async fn get_or_create_project_canvas(
+        &self,
+        workspace_id: WorkspaceId,
+    ) -> Result<Canvas, AppError>;
+
+    /// Get or create the canvas for a thread.
+    async fn get_or_create_thread_canvas(
+        &self,
+        workspace_id: WorkspaceId,
+        thread_id: ThreadId,
+    ) -> Result<Canvas, AppError>;
+
+    /// Fetch a canvas by id.
+    async fn get_canvas(&self, id: CanvasId) -> Result<Canvas, AppError>;
+
+    /// Load canvas + nodes + edges + links.
+    async fn get_canvas_snapshot(&self, id: CanvasId) -> Result<CanvasSnapshot, AppError>;
+
+    /// Persist pan/zoom JSON for a canvas.
+    async fn update_canvas_viewport(
+        &self,
+        id: CanvasId,
+        viewport_json: &str,
+    ) -> Result<Canvas, AppError>;
+
+    /// Increment canvas revision + touch updated_at.
+    async fn bump_canvas_revision(&self, id: CanvasId) -> Result<(), AppError>;
+
+    /// Insert or update a canvas node.
+    async fn upsert_canvas_node(&self, node: &CanvasNode) -> Result<(), AppError>;
+
+    /// Delete a canvas node (edges/links cascade in SQL).
+    async fn delete_canvas_node(&self, id: CanvasNodeId) -> Result<(), AppError>;
+
+    /// Insert or update a canvas edge.
+    async fn upsert_canvas_edge(&self, edge: &CanvasEdge) -> Result<(), AppError>;
+
+    /// Delete a canvas edge.
+    async fn delete_canvas_edge(&self, id: CanvasEdgeId) -> Result<(), AppError>;
+
+    /// Insert or update a canvas entity link.
+    async fn upsert_canvas_link(&self, link: &CanvasLink) -> Result<(), AppError>;
+
+    /// Delete a canvas entity link.
+    async fn delete_canvas_link(&self, id: CanvasLinkId) -> Result<(), AppError>;
+
+    /// List links for one node.
+    async fn list_canvas_links_for_node(
+        &self,
+        node_id: CanvasNodeId,
+    ) -> Result<Vec<CanvasLink>, AppError>;
+
+    /// Fetch a single canvas node by id.
+    async fn get_canvas_node(&self, id: CanvasNodeId) -> Result<CanvasNode, AppError>;
+
+    /// Find stage/goal nodes whose payload contains a string value (e.g. last_run_id).
+    async fn find_canvas_nodes_by_payload_needle(
+        &self,
+        workspace_id: WorkspaceId,
+        needle: &str,
+    ) -> Result<Vec<CanvasNode>, AppError>;
+
+    /// List all canvas ids for a workspace (project + thread canvases).
+    async fn list_canvas_ids_for_workspace(
+        &self,
+        workspace_id: WorkspaceId,
+    ) -> Result<Vec<CanvasId>, AppError>;
+
+    /// Delete all ThreadCluster + Insight nodes on a canvas so extract can
+    /// rebuild the conversation layer cleanly (any source). Goal / Stage / Note
+    /// nodes are preserved. Edges/links cascade. Returns deleted row count.
+    async fn clear_auto_insight_nodes(&self, canvas_id: CanvasId) -> Result<u64, AppError>;
+
+    /// Set `last_extracted_at` to now and bump the canvas revision.
+    async fn mark_canvas_extracted(&self, canvas_id: CanvasId) -> Result<(), AppError>;
+
     /// Atomically approve or deny the linked invocation. Repeating the same
     /// decision is idempotent; a conflicting decision is rejected.
     async fn resolve_tool_approval(
@@ -713,23 +870,100 @@ impl Storage for SqliteStorage {
         }
     }
 
+    async fn delete_workspace(&self, id: WorkspaceId) -> Result<(), AppError> {
+        // Ensure it exists first for a clear NotFound.
+        let _ = self.get_workspace(id).await?;
+
+        let mut tx = self.pool.begin().await.map_err(|e| AppError::Internal {
+            message: format!("begin delete_workspace failed: {e}"),
+        })?;
+
+        // Tables that reference workspace_id without (or with incomplete) CASCADE.
+        // Order: dependents first, then the workspace row (cascades the rest).
+        for (sql, label) in [
+            (
+                "DELETE FROM orchestrations WHERE workspace_id = ?",
+                "orchestrations",
+            ),
+            ("DELETE FROM rag_chunks WHERE workspace_id = ?", "rag_chunks"),
+            (
+                "DELETE FROM memories WHERE workspace_id = ?",
+                "memories",
+            ),
+            (
+                "DELETE FROM notifications WHERE workspace_id = ?",
+                "notifications",
+            ),
+            (
+                "DELETE FROM background_tasks WHERE workspace_id = ?",
+                "background_tasks",
+            ),
+            (
+                "DELETE FROM audit_log WHERE workspace_id = ?",
+                "audit_log",
+            ),
+            (
+                "DELETE FROM approval_requests WHERE workspace_id = ?",
+                "approval_requests",
+            ),
+        ] {
+            sqlx::query(sql)
+                .bind(id.0)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| AppError::Internal {
+                    message: format!("delete_workspace {label} failed: {e}"),
+                })?;
+        }
+
+        let result = sqlx::query("DELETE FROM workspaces WHERE id = ?")
+            .bind(id.0)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| AppError::Internal {
+                message: format!("delete_workspace failed: {e}"),
+            })?;
+
+        if result.rows_affected() == 0 {
+            return Err(AppError::NotFound {
+                resource: format!("workspace {id:?}"),
+            });
+        }
+
+        tx.commit().await.map_err(|e| AppError::Internal {
+            message: format!("commit delete_workspace failed: {e}"),
+        })?;
+        Ok(())
+    }
+
     async fn create_thread(
         &self,
         workspace_id: WorkspaceId,
         title: &str,
+        parent_thread_id: Option<ThreadId>,
     ) -> Result<Thread, AppError> {
         // Verify workspace exists.
         let _ = self.get_workspace(workspace_id).await?;
+
+        if let Some(parent_id) = parent_thread_id {
+            let parent = self.get_thread(parent_id).await?;
+            if parent.workspace_id != workspace_id {
+                return Err(AppError::PermissionDenied {
+                    reason: "parent thread belongs to a different workspace".to_owned(),
+                });
+            }
+        }
 
         let id = ThreadId::new();
         let now = Utc::now();
 
         sqlx::query(
-            "INSERT INTO threads (id, workspace_id, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO threads (id, workspace_id, title, parent_thread_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
         )
         .bind(id.0)
         .bind(workspace_id.0)
         .bind(title)
+        .bind(parent_thread_id.map(|p| p.0))
         .bind(now)
         .bind(now)
         .execute(&self.pool)
@@ -740,14 +974,23 @@ impl Storage for SqliteStorage {
             id,
             workspace_id,
             title: title.to_owned(),
+            parent_thread_id,
+            archived_at: None,
             created_at: now,
             updated_at: now,
         })
     }
 
     async fn list_threads(&self, workspace_id: WorkspaceId) -> Result<Vec<Thread>, AppError> {
+        // Opportunistically purge archives older than 30 days so the product
+        // retention policy is applied without a separate scheduler.
+        let _ = self.purge_expired_archived_threads(30).await;
+
         let rows = sqlx::query_as::<_, ThreadRow>(
-            "SELECT id, workspace_id, title, created_at, updated_at FROM threads WHERE workspace_id = ? ORDER BY created_at ASC",
+            "SELECT id, workspace_id, title, parent_thread_id, archived_at, created_at, updated_at
+             FROM threads
+             WHERE workspace_id = ? AND archived_at IS NULL
+             ORDER BY created_at ASC",
         )
         .bind(workspace_id.0)
         .fetch_all(&self.pool)
@@ -757,9 +1000,100 @@ impl Storage for SqliteStorage {
         Ok(rows.into_iter().map(ThreadRow::into).collect())
     }
 
+    async fn list_archived_threads(
+        &self,
+        workspace_id: WorkspaceId,
+    ) -> Result<Vec<Thread>, AppError> {
+        let _ = self.purge_expired_archived_threads(30).await;
+
+        let rows = sqlx::query_as::<_, ThreadRow>(
+            "SELECT id, workspace_id, title, parent_thread_id, archived_at, created_at, updated_at
+             FROM threads
+             WHERE workspace_id = ? AND archived_at IS NOT NULL
+             ORDER BY archived_at DESC",
+        )
+        .bind(workspace_id.0)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| AppError::Internal {
+            message: format!("list_archived_threads failed: {e}"),
+        })?;
+
+        Ok(rows.into_iter().map(ThreadRow::into).collect())
+    }
+
+    async fn archive_thread(
+        &self,
+        workspace_id: WorkspaceId,
+        id: ThreadId,
+    ) -> Result<Thread, AppError> {
+        let thread = self.get_thread(id).await?;
+        if thread.workspace_id != workspace_id {
+            return Err(AppError::NotFound {
+                resource: format!("thread {id:?}"),
+            });
+        }
+        if thread.archived_at.is_some() {
+            return Ok(thread);
+        }
+        let now = Utc::now();
+        let result = sqlx::query(
+            "UPDATE threads SET archived_at = ?, updated_at = ? WHERE id = ? AND workspace_id = ?",
+        )
+        .bind(now)
+        .bind(now)
+        .bind(id.0)
+        .bind(workspace_id.0)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| AppError::Internal {
+            message: format!("archive_thread failed: {e}"),
+        })?;
+        if result.rows_affected() == 0 {
+            return Err(AppError::NotFound {
+                resource: format!("thread {id:?}"),
+            });
+        }
+        self.get_thread(id).await
+    }
+
+    async fn restore_thread(
+        &self,
+        workspace_id: WorkspaceId,
+        id: ThreadId,
+    ) -> Result<Thread, AppError> {
+        let thread = self.get_thread(id).await?;
+        if thread.workspace_id != workspace_id {
+            return Err(AppError::NotFound {
+                resource: format!("thread {id:?}"),
+            });
+        }
+        if thread.archived_at.is_none() {
+            return Ok(thread);
+        }
+        let now = Utc::now();
+        let result = sqlx::query(
+            "UPDATE threads SET archived_at = NULL, updated_at = ? WHERE id = ? AND workspace_id = ?",
+        )
+        .bind(now)
+        .bind(id.0)
+        .bind(workspace_id.0)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| AppError::Internal {
+            message: format!("restore_thread failed: {e}"),
+        })?;
+        if result.rows_affected() == 0 {
+            return Err(AppError::NotFound {
+                resource: format!("thread {id:?}"),
+            });
+        }
+        self.get_thread(id).await
+    }
+
     async fn get_thread(&self, id: ThreadId) -> Result<Thread, AppError> {
         let row = sqlx::query_as::<_, ThreadRow>(
-            "SELECT id, workspace_id, title, created_at, updated_at FROM threads WHERE id = ?",
+            "SELECT id, workspace_id, title, parent_thread_id, archived_at, created_at, updated_at FROM threads WHERE id = ?",
         )
         .bind(id.0)
         .fetch_optional(&self.pool)
@@ -771,6 +1105,64 @@ impl Storage for SqliteStorage {
         row.map(ThreadRow::into).ok_or_else(|| AppError::NotFound {
             resource: format!("thread {id:?}"),
         })
+    }
+
+    async fn purge_expired_archived_threads(&self, max_age_days: i64) -> Result<u64, AppError> {
+        let days = max_age_days.max(1);
+        let cutoff = Utc::now() - chrono::Duration::days(days);
+        // Collect ids first so we can reuse the full cascade delete path
+        // (active-run / worktree guards still apply per thread).
+        let ids: Vec<uuid::Uuid> = sqlx::query_scalar(
+            "SELECT id FROM threads WHERE archived_at IS NOT NULL AND archived_at < ?",
+        )
+        .bind(cutoff)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| AppError::Internal {
+            message: format!("list expired archives failed: {e}"),
+        })?;
+
+        let mut purged = 0u64;
+        for id in ids {
+            let thread_id = ThreadId(id);
+            // Look up workspace for the delete helper.
+            let Ok(thread) = self.get_thread(thread_id).await else {
+                continue;
+            };
+            // Force-cancel blockers so retention cleanup is not stuck forever.
+            let _ = sqlx::query(
+                "UPDATE agent_runs SET status = 'Cancelled', completed_at = COALESCE(completed_at, ?)
+                 WHERE thread_id = ? AND status NOT IN ('Cancelled', 'Failed', 'Interrupted', 'Completed')",
+            )
+            .bind(Utc::now())
+            .bind(id)
+            .execute(&self.pool)
+            .await;
+            let _ = sqlx::query(
+                "UPDATE background_tasks SET status = 'Cancelled', updated_at = ?
+                 WHERE thread_id = ? AND status NOT IN ('Completed', 'Failed', 'Cancelled')",
+            )
+            .bind(Utc::now())
+            .bind(id)
+            .execute(&self.pool)
+            .await;
+            // Drop worktrees rows so hard delete can proceed (session is already archived).
+            let _ = sqlx::query("DELETE FROM worktrees WHERE thread_id = ?")
+                .bind(id)
+                .execute(&self.pool)
+                .await;
+            match self.delete_thread(thread.workspace_id, thread_id).await {
+                Ok(()) => purged += 1,
+                Err(err) => {
+                    tracing::warn!(
+                        thread_id = %id,
+                        error = %err,
+                        "failed to purge expired archived thread"
+                    );
+                }
+            }
+        }
+        Ok(purged)
     }
 
     async fn update_thread_title(&self, id: ThreadId, title: &str) -> Result<Thread, AppError> {
@@ -997,6 +1389,72 @@ impl Storage for SqliteStorage {
         ).bind(thread_id.0).fetch_all(&self.pool).await
             .map_err(|e| AppError::Internal { message: format!("list messages failed: {e}") })?;
         Ok(rows.into_iter().map(MessageRow::into).collect())
+    }
+
+    async fn list_recent_messages(
+        &self,
+        thread_id: ThreadId,
+        limit: usize,
+    ) -> Result<Vec<Message>, AppError> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        // Newest-first in SQL, then reverse for chronological order (summarizer expects that).
+        let rows = sqlx::query_as::<_, MessageRow>(
+            "SELECT id, thread_id, run_id, role, content, client_request_id, created_at
+             FROM messages
+             WHERE thread_id = ?
+             ORDER BY created_at DESC, id DESC
+             LIMIT ?",
+        )
+        .bind(thread_id.0)
+        .bind(limit as i64)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| AppError::Internal {
+            message: format!("list recent messages failed: {e}"),
+        })?;
+        let mut messages: Vec<Message> = rows.into_iter().map(MessageRow::into).collect();
+        messages.reverse();
+        Ok(messages)
+    }
+
+    async fn create_standalone_message(
+        &self,
+        thread_id: ThreadId,
+        role: MessageRole,
+        content: &str,
+    ) -> Result<Message, AppError> {
+        let content = content.trim();
+        if content.is_empty() {
+            return Err(AppError::Internal {
+                message: "message content must not be empty".to_owned(),
+            });
+        }
+        let _ = self.get_thread(thread_id).await?;
+        let message = Message {
+            id: MessageId::new(),
+            thread_id,
+            run_id: None,
+            role,
+            content: content.to_owned(),
+            client_request_id: None,
+            created_at: Utc::now(),
+        };
+        sqlx::query(
+            "INSERT INTO messages (id, thread_id, run_id, role, content, client_request_id, created_at) VALUES (?, ?, NULL, ?, ?, NULL, ?)",
+        )
+        .bind(message.id.0)
+        .bind(thread_id.0)
+        .bind(role.as_str())
+        .bind(&message.content)
+        .bind(message.created_at)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| AppError::Internal {
+            message: format!("create standalone message failed: {e}"),
+        })?;
+        Ok(message)
     }
 
     async fn create_run_message(
@@ -2844,12 +3302,21 @@ impl Storage for SqliteStorage {
                 workspace_id = excluded.workspace_id,
                 thread_id = excluded.thread_id,
                 task = excluded.task,
-                status = excluded.status,
+                -- Never revive Running/Completed over a durable Cancelled mid-graph.
+                status = CASE
+                    WHEN orchestrations.status = 'Cancelled' OR excluded.status = 'Cancelled'
+                        THEN 'Cancelled'
+                    ELSE excluded.status
+                END,
                 plan_json = excluded.plan_json,
                 pattern_ids_json = excluded.pattern_ids_json,
                 result_summary = excluded.result_summary,
                 updated_at = excluded.updated_at,
-                completed_at = excluded.completed_at",
+                completed_at = CASE
+                    WHEN orchestrations.status = 'Cancelled' OR excluded.status = 'Cancelled'
+                        THEN COALESCE(orchestrations.completed_at, excluded.completed_at)
+                    ELSE excluded.completed_at
+                END",
         )
         .bind(session.id.0)
         .bind(session.parent_run_id.0)
@@ -2908,7 +3375,780 @@ impl Storage for SqliteStorage {
         })?;
         rows.into_iter().map(orchestration_from_row).collect()
     }
+
+    async fn upsert_workflow_template(
+        &self,
+        template: &app_models::WorkflowTemplate,
+    ) -> Result<(), AppError> {
+        let stages_json =
+            serde_json::to_string(&template.stages).map_err(|e| AppError::Internal {
+                message: format!("serialize workflow template stages failed: {e}"),
+            })?;
+        sqlx::query(
+            "INSERT INTO workflow_templates (
+                id, catalog_key, title, summary, stages_json, builtin, workspace_id, created_at, updated_at
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(id) DO UPDATE SET
+                catalog_key = excluded.catalog_key,
+                title = excluded.title,
+                summary = excluded.summary,
+                stages_json = excluded.stages_json,
+                builtin = excluded.builtin,
+                workspace_id = excluded.workspace_id,
+                updated_at = excluded.updated_at",
+        )
+        .bind(template.id.0)
+        .bind(&template.catalog_key)
+        .bind(&template.title)
+        .bind(&template.summary)
+        .bind(stages_json)
+        .bind(i64::from(template.builtin))
+        .bind(template.workspace_id.map(|w| w.0))
+        .bind(template.created_at)
+        .bind(template.updated_at)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| AppError::Internal {
+            message: format!("upsert_workflow_template failed: {e}"),
+        })?;
+        Ok(())
+    }
+
+    async fn get_workflow_template(
+        &self,
+        id: app_models::WorkflowTemplateId,
+    ) -> Result<app_models::WorkflowTemplate, AppError> {
+        let row = sqlx::query_as::<_, WorkflowTemplateRow>(
+            "SELECT id, catalog_key, title, summary, stages_json, builtin, workspace_id, created_at, updated_at
+             FROM workflow_templates WHERE id = ?",
+        )
+        .bind(id.0)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| AppError::Internal {
+            message: format!("get_workflow_template failed: {e}"),
+        })?
+        .ok_or_else(|| AppError::NotFound {
+            resource: format!("workflow_template:{}", id.0),
+        })?;
+        workflow_template_from_row(row)
+    }
+
+    async fn get_workflow_template_by_catalog_key(
+        &self,
+        catalog_key: &str,
+    ) -> Result<Option<app_models::WorkflowTemplate>, AppError> {
+        let row = sqlx::query_as::<_, WorkflowTemplateRow>(
+            "SELECT id, catalog_key, title, summary, stages_json, builtin, workspace_id, created_at, updated_at
+             FROM workflow_templates WHERE catalog_key = ? LIMIT 1",
+        )
+        .bind(catalog_key)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| AppError::Internal {
+            message: format!("get_workflow_template_by_catalog_key failed: {e}"),
+        })?;
+        row.map(workflow_template_from_row).transpose()
+    }
+
+    async fn list_workflow_templates(
+        &self,
+        workspace_id: Option<WorkspaceId>,
+    ) -> Result<Vec<app_models::WorkflowTemplate>, AppError> {
+        let rows = if let Some(ws) = workspace_id {
+            sqlx::query_as::<_, WorkflowTemplateRow>(
+                "SELECT id, catalog_key, title, summary, stages_json, builtin, workspace_id, created_at, updated_at
+                 FROM workflow_templates
+                 WHERE workspace_id IS NULL OR workspace_id = ?
+                 ORDER BY builtin DESC, title ASC",
+            )
+            .bind(ws.0)
+            .fetch_all(&self.pool)
+            .await
+        } else {
+            sqlx::query_as::<_, WorkflowTemplateRow>(
+                "SELECT id, catalog_key, title, summary, stages_json, builtin, workspace_id, created_at, updated_at
+                 FROM workflow_templates
+                 WHERE workspace_id IS NULL
+                 ORDER BY builtin DESC, title ASC",
+            )
+            .fetch_all(&self.pool)
+            .await
+        }
+        .map_err(|e| AppError::Internal {
+            message: format!("list_workflow_templates failed: {e}"),
+        })?;
+        rows.into_iter().map(workflow_template_from_row).collect()
+    }
+
+    async fn delete_workflow_template(
+        &self,
+        id: app_models::WorkflowTemplateId,
+    ) -> Result<(), AppError> {
+        let result = sqlx::query(
+            "DELETE FROM workflow_templates WHERE id = ? AND builtin = 0",
+        )
+        .bind(id.0)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| AppError::Internal {
+            message: format!("delete_workflow_template failed: {e}"),
+        })?;
+        if result.rows_affected() == 0 {
+            return Err(AppError::PermissionDenied {
+                reason: "cannot delete missing or builtin workflow template".to_owned(),
+            });
+        }
+        Ok(())
+    }
+
+    async fn get_or_create_project_canvas(
+        &self,
+        workspace_id: WorkspaceId,
+    ) -> Result<Canvas, AppError> {
+        if let Some(row) = sqlx::query_as::<_, CanvasRow>(
+            "SELECT id, workspace_id, thread_id, title, kind, viewport_json, revision,
+                    last_extracted_at, created_at, updated_at
+             FROM canvases
+             WHERE workspace_id = ? AND thread_id IS NULL AND kind = 'project'
+             LIMIT 1",
+        )
+        .bind(workspace_id.0)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| AppError::Internal {
+            message: format!("get_or_create_project_canvas query failed: {e}"),
+        })? {
+            return canvas_from_row(row);
+        }
+
+        let now = Utc::now();
+        let canvas = Canvas {
+            id: CanvasId::new(),
+            workspace_id,
+            thread_id: None,
+            title: "Project canvas".to_owned(),
+            kind: CanvasKind::Project,
+            viewport_json: r#"{"x":0,"y":0,"zoom":1}"#.to_owned(),
+            revision: 0,
+            last_extracted_at: None,
+            created_at: now,
+            updated_at: now,
+        };
+        self.insert_canvas(&canvas).await?;
+        Ok(canvas)
+    }
+
+    async fn get_or_create_thread_canvas(
+        &self,
+        workspace_id: WorkspaceId,
+        thread_id: ThreadId,
+    ) -> Result<Canvas, AppError> {
+        if let Some(row) = sqlx::query_as::<_, CanvasRow>(
+            "SELECT id, workspace_id, thread_id, title, kind, viewport_json, revision,
+                    last_extracted_at, created_at, updated_at
+             FROM canvases
+             WHERE thread_id = ?
+             LIMIT 1",
+        )
+        .bind(thread_id.0)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| AppError::Internal {
+            message: format!("get_or_create_thread_canvas query failed: {e}"),
+        })? {
+            return canvas_from_row(row);
+        }
+
+        let now = Utc::now();
+        let canvas = Canvas {
+            id: CanvasId::new(),
+            workspace_id,
+            thread_id: Some(thread_id),
+            title: "Thread canvas".to_owned(),
+            kind: CanvasKind::Thread,
+            viewport_json: r#"{"x":0,"y":0,"zoom":1}"#.to_owned(),
+            revision: 0,
+            last_extracted_at: None,
+            created_at: now,
+            updated_at: now,
+        };
+        self.insert_canvas(&canvas).await?;
+        Ok(canvas)
+    }
+
+    async fn get_canvas(&self, id: CanvasId) -> Result<Canvas, AppError> {
+        let row = sqlx::query_as::<_, CanvasRow>(
+            "SELECT id, workspace_id, thread_id, title, kind, viewport_json, revision,
+                    last_extracted_at, created_at, updated_at
+             FROM canvases WHERE id = ?",
+        )
+        .bind(id.0)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| AppError::Internal {
+            message: format!("get_canvas failed: {e}"),
+        })?
+        .ok_or_else(|| AppError::NotFound {
+            resource: format!("canvas:{}", id.0),
+        })?;
+        canvas_from_row(row)
+    }
+
+    async fn get_canvas_snapshot(&self, id: CanvasId) -> Result<CanvasSnapshot, AppError> {
+        let canvas = self.get_canvas(id).await?;
+        let node_rows = sqlx::query_as::<_, CanvasNodeRow>(
+            "SELECT id, canvas_id, kind, title, summary, status, parent_id,
+                    position_x, position_y, layout_rank, source, payload_json,
+                    created_at, updated_at
+             FROM canvas_nodes WHERE canvas_id = ?
+             ORDER BY layout_rank ASC, created_at ASC",
+        )
+        .bind(id.0)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| AppError::Internal {
+            message: format!("list canvas_nodes failed: {e}"),
+        })?;
+        let nodes: Result<Vec<_>, _> = node_rows.into_iter().map(canvas_node_from_row).collect();
+        let nodes = nodes?;
+
+        let edge_rows = sqlx::query_as::<_, CanvasEdgeRow>(
+            "SELECT id, canvas_id, from_id, to_id, kind, label, created_at
+             FROM canvas_edges WHERE canvas_id = ?
+             ORDER BY created_at ASC",
+        )
+        .bind(id.0)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| AppError::Internal {
+            message: format!("list canvas_edges failed: {e}"),
+        })?;
+        let edges: Result<Vec<_>, _> = edge_rows.into_iter().map(canvas_edge_from_row).collect();
+        let edges = edges?;
+
+        let node_ids: Vec<uuid::Uuid> = nodes.iter().map(|n| n.id.0).collect();
+        let mut links = Vec::new();
+        if !node_ids.is_empty() {
+            // Fetch links for all nodes on this canvas.
+            let placeholders = node_ids.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+            let sql = format!(
+                "SELECT id, node_id, ref_type, ref_id, snippet, created_at
+                 FROM canvas_links WHERE node_id IN ({placeholders})
+                 ORDER BY created_at ASC"
+            );
+            let mut query = sqlx::query_as::<_, CanvasLinkRow>(&sql);
+            for nid in &node_ids {
+                query = query.bind(nid);
+            }
+            let link_rows = query.fetch_all(&self.pool).await.map_err(|e| AppError::Internal {
+                message: format!("list canvas_links failed: {e}"),
+            })?;
+            links = link_rows
+                .into_iter()
+                .map(canvas_link_from_row)
+                .collect::<Result<Vec<_>, _>>()?;
+        }
+
+        Ok(CanvasSnapshot {
+            canvas,
+            nodes,
+            edges,
+            links,
+        })
+    }
+
+    async fn update_canvas_viewport(
+        &self,
+        id: CanvasId,
+        viewport_json: &str,
+    ) -> Result<Canvas, AppError> {
+        let now = Utc::now();
+        let result = sqlx::query(
+            "UPDATE canvases SET viewport_json = ?, updated_at = ? WHERE id = ?",
+        )
+        .bind(viewport_json)
+        .bind(now)
+        .bind(id.0)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| AppError::Internal {
+            message: format!("update_canvas_viewport failed: {e}"),
+        })?;
+        if result.rows_affected() == 0 {
+            return Err(AppError::NotFound {
+                resource: format!("canvas:{}", id.0),
+            });
+        }
+        self.get_canvas(id).await
+    }
+
+    async fn bump_canvas_revision(&self, id: CanvasId) -> Result<(), AppError> {
+        let now = Utc::now();
+        let result = sqlx::query(
+            "UPDATE canvases SET revision = revision + 1, updated_at = ? WHERE id = ?",
+        )
+        .bind(now)
+        .bind(id.0)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| AppError::Internal {
+            message: format!("bump_canvas_revision failed: {e}"),
+        })?;
+        if result.rows_affected() == 0 {
+            return Err(AppError::NotFound {
+                resource: format!("canvas:{}", id.0),
+            });
+        }
+        Ok(())
+    }
+
+    async fn upsert_canvas_node(&self, node: &CanvasNode) -> Result<(), AppError> {
+        sqlx::query(
+            "INSERT INTO canvas_nodes (
+                id, canvas_id, kind, title, summary, status, parent_id,
+                position_x, position_y, layout_rank, source, payload_json,
+                created_at, updated_at
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(id) DO UPDATE SET
+                canvas_id = excluded.canvas_id,
+                kind = excluded.kind,
+                title = excluded.title,
+                summary = excluded.summary,
+                status = excluded.status,
+                parent_id = excluded.parent_id,
+                position_x = excluded.position_x,
+                position_y = excluded.position_y,
+                layout_rank = excluded.layout_rank,
+                source = excluded.source,
+                payload_json = excluded.payload_json,
+                updated_at = excluded.updated_at",
+        )
+        .bind(node.id.0)
+        .bind(node.canvas_id.0)
+        .bind(node.kind.as_str())
+        .bind(&node.title)
+        .bind(&node.summary)
+        .bind(node.status.as_str())
+        .bind(node.parent_id.map(|p| p.0))
+        .bind(node.position_x)
+        .bind(node.position_y)
+        .bind(node.layout_rank)
+        .bind(node.source.as_str())
+        .bind(&node.payload_json)
+        .bind(node.created_at)
+        .bind(node.updated_at)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| AppError::Internal {
+            message: format!("upsert_canvas_node failed: {e}"),
+        })?;
+        self.bump_canvas_revision(node.canvas_id).await
+    }
+
+    async fn delete_canvas_node(&self, id: CanvasNodeId) -> Result<(), AppError> {
+        let canvas_id = sqlx::query_scalar::<_, uuid::Uuid>(
+            "SELECT canvas_id FROM canvas_nodes WHERE id = ?",
+        )
+        .bind(id.0)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| AppError::Internal {
+            message: format!("delete_canvas_node lookup failed: {e}"),
+        })?;
+        let Some(canvas_id) = canvas_id else {
+            return Err(AppError::NotFound {
+                resource: format!("canvas_node:{}", id.0),
+            });
+        };
+        sqlx::query("DELETE FROM canvas_nodes WHERE id = ?")
+            .bind(id.0)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| AppError::Internal {
+                message: format!("delete_canvas_node failed: {e}"),
+            })?;
+        self.bump_canvas_revision(CanvasId(canvas_id)).await
+    }
+
+    async fn upsert_canvas_edge(&self, edge: &CanvasEdge) -> Result<(), AppError> {
+        sqlx::query(
+            "INSERT INTO canvas_edges (
+                id, canvas_id, from_id, to_id, kind, label, created_at
+             ) VALUES (?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(id) DO UPDATE SET
+                canvas_id = excluded.canvas_id,
+                from_id = excluded.from_id,
+                to_id = excluded.to_id,
+                kind = excluded.kind,
+                label = excluded.label",
+        )
+        .bind(edge.id.0)
+        .bind(edge.canvas_id.0)
+        .bind(edge.from_id.0)
+        .bind(edge.to_id.0)
+        .bind(edge.kind.as_str())
+        .bind(&edge.label)
+        .bind(edge.created_at)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| AppError::Internal {
+            message: format!("upsert_canvas_edge failed: {e}"),
+        })?;
+        self.bump_canvas_revision(edge.canvas_id).await
+    }
+
+    async fn delete_canvas_edge(&self, id: CanvasEdgeId) -> Result<(), AppError> {
+        let canvas_id = sqlx::query_scalar::<_, uuid::Uuid>(
+            "SELECT canvas_id FROM canvas_edges WHERE id = ?",
+        )
+        .bind(id.0)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| AppError::Internal {
+            message: format!("delete_canvas_edge lookup failed: {e}"),
+        })?;
+        let Some(canvas_id) = canvas_id else {
+            return Err(AppError::NotFound {
+                resource: format!("canvas_edge:{}", id.0),
+            });
+        };
+        sqlx::query("DELETE FROM canvas_edges WHERE id = ?")
+            .bind(id.0)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| AppError::Internal {
+                message: format!("delete_canvas_edge failed: {e}"),
+            })?;
+        self.bump_canvas_revision(CanvasId(canvas_id)).await
+    }
+
+    async fn upsert_canvas_link(&self, link: &CanvasLink) -> Result<(), AppError> {
+        let canvas_id = sqlx::query_scalar::<_, uuid::Uuid>(
+            "SELECT canvas_id FROM canvas_nodes WHERE id = ?",
+        )
+        .bind(link.node_id.0)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| AppError::Internal {
+            message: format!("upsert_canvas_link node lookup failed: {e}"),
+        })?
+        .ok_or_else(|| AppError::NotFound {
+            resource: format!("canvas_node:{}", link.node_id.0),
+        })?;
+
+        sqlx::query(
+            "INSERT INTO canvas_links (
+                id, node_id, ref_type, ref_id, snippet, created_at
+             ) VALUES (?, ?, ?, ?, ?, ?)
+             ON CONFLICT(id) DO UPDATE SET
+                node_id = excluded.node_id,
+                ref_type = excluded.ref_type,
+                ref_id = excluded.ref_id,
+                snippet = excluded.snippet",
+        )
+        .bind(link.id.0)
+        .bind(link.node_id.0)
+        .bind(link.ref_type.as_str())
+        .bind(&link.ref_id)
+        .bind(&link.snippet)
+        .bind(link.created_at)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| AppError::Internal {
+            message: format!("upsert_canvas_link failed: {e}"),
+        })?;
+        self.bump_canvas_revision(CanvasId(canvas_id)).await
+    }
+
+    async fn delete_canvas_link(&self, id: CanvasLinkId) -> Result<(), AppError> {
+        let canvas_id = sqlx::query_scalar::<_, uuid::Uuid>(
+            "SELECT n.canvas_id FROM canvas_links l
+             JOIN canvas_nodes n ON n.id = l.node_id
+             WHERE l.id = ?",
+        )
+        .bind(id.0)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| AppError::Internal {
+            message: format!("delete_canvas_link lookup failed: {e}"),
+        })?;
+        let Some(canvas_id) = canvas_id else {
+            return Err(AppError::NotFound {
+                resource: format!("canvas_link:{}", id.0),
+            });
+        };
+        sqlx::query("DELETE FROM canvas_links WHERE id = ?")
+            .bind(id.0)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| AppError::Internal {
+                message: format!("delete_canvas_link failed: {e}"),
+            })?;
+        self.bump_canvas_revision(CanvasId(canvas_id)).await
+    }
+
+    async fn list_canvas_links_for_node(
+        &self,
+        node_id: CanvasNodeId,
+    ) -> Result<Vec<CanvasLink>, AppError> {
+        let rows = sqlx::query_as::<_, CanvasLinkRow>(
+            "SELECT id, node_id, ref_type, ref_id, snippet, created_at
+             FROM canvas_links WHERE node_id = ?
+             ORDER BY created_at ASC",
+        )
+        .bind(node_id.0)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| AppError::Internal {
+            message: format!("list_canvas_links_for_node failed: {e}"),
+        })?;
+        rows.into_iter().map(canvas_link_from_row).collect()
+    }
+
+    async fn get_canvas_node(&self, id: CanvasNodeId) -> Result<CanvasNode, AppError> {
+        let row = sqlx::query_as::<_, CanvasNodeRow>(
+            "SELECT id, canvas_id, kind, title, summary, status, parent_id,
+                    position_x, position_y, layout_rank, source, payload_json,
+                    created_at, updated_at
+             FROM canvas_nodes WHERE id = ?",
+        )
+        .bind(id.0)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| AppError::Internal {
+            message: format!("get_canvas_node failed: {e}"),
+        })?
+        .ok_or_else(|| AppError::NotFound {
+            resource: format!("canvas_node:{}", id.0),
+        })?;
+        canvas_node_from_row(row)
+    }
+
+    async fn find_canvas_nodes_by_payload_needle(
+        &self,
+        workspace_id: WorkspaceId,
+        needle: &str,
+    ) -> Result<Vec<CanvasNode>, AppError> {
+        if needle.is_empty() {
+            return Ok(Vec::new());
+        }
+        let pattern = format!("%{needle}%");
+        let rows = sqlx::query_as::<_, CanvasNodeRow>(
+            "SELECT n.id, n.canvas_id, n.kind, n.title, n.summary, n.status, n.parent_id,
+                    n.position_x, n.position_y, n.layout_rank, n.source, n.payload_json,
+                    n.created_at, n.updated_at
+             FROM canvas_nodes n
+             INNER JOIN canvases c ON c.id = n.canvas_id
+             WHERE c.workspace_id = ?
+               AND n.payload_json LIKE ?
+               AND n.kind IN ('stage', 'goal')
+             ORDER BY n.updated_at DESC",
+        )
+        .bind(workspace_id.0)
+        .bind(pattern)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| AppError::Internal {
+            message: format!("find_canvas_nodes_by_payload_needle failed: {e}"),
+        })?;
+        rows.into_iter().map(canvas_node_from_row).collect()
+    }
+
+    async fn list_canvas_ids_for_workspace(
+        &self,
+        workspace_id: WorkspaceId,
+    ) -> Result<Vec<CanvasId>, AppError> {
+        let ids = sqlx::query_scalar::<_, uuid::Uuid>(
+            "SELECT id FROM canvases WHERE workspace_id = ? ORDER BY updated_at DESC",
+        )
+        .bind(workspace_id.0)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| AppError::Internal {
+            message: format!("list_canvas_ids_for_workspace failed: {e}"),
+        })?;
+        Ok(ids.into_iter().map(CanvasId).collect())
+    }
+
+    async fn clear_auto_insight_nodes(&self, canvas_id: CanvasId) -> Result<u64, AppError> {
+        // Wipe the whole conversation layer (not only source=auto). Stale trees from
+        // raced extracts / mixed sources left "从对话同步" looking like a no-op.
+        let result = sqlx::query(
+            "DELETE FROM canvas_nodes
+             WHERE canvas_id = ? AND kind IN ('thread_cluster', 'insight')",
+        )
+        .bind(canvas_id.0)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| AppError::Internal {
+            message: format!("clear_auto_insight_nodes failed: {e}"),
+        })?;
+        self.bump_canvas_revision(canvas_id).await?;
+        Ok(result.rows_affected())
+    }
+
+    async fn mark_canvas_extracted(&self, canvas_id: CanvasId) -> Result<(), AppError> {
+        let now = chrono::Utc::now();
+        let result = sqlx::query(
+            "UPDATE canvases
+             SET last_extracted_at = ?, revision = revision + 1, updated_at = ?
+             WHERE id = ?",
+        )
+        .bind(now)
+        .bind(now)
+        .bind(canvas_id.0)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| AppError::Internal {
+            message: format!("mark_canvas_extracted failed: {e}"),
+        })?;
+        if result.rows_affected() == 0 {
+            return Err(AppError::NotFound {
+                resource: format!("canvas:{}", canvas_id.0),
+            });
+        }
+        Ok(())
+    }
 }
+
+impl SqliteStorage {
+    async fn insert_canvas(&self, canvas: &Canvas) -> Result<(), AppError> {
+        sqlx::query(
+            "INSERT INTO canvases (
+                id, workspace_id, thread_id, title, kind, viewport_json, revision,
+                last_extracted_at, created_at, updated_at
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(canvas.id.0)
+        .bind(canvas.workspace_id.0)
+        .bind(canvas.thread_id.map(|t| t.0))
+        .bind(&canvas.title)
+        .bind(canvas.kind.as_str())
+        .bind(&canvas.viewport_json)
+        .bind(canvas.revision)
+        .bind(canvas.last_extracted_at)
+        .bind(canvas.created_at)
+        .bind(canvas.updated_at)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| AppError::Internal {
+            message: format!("insert_canvas failed: {e}"),
+        })?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct CanvasRow {
+    id: uuid::Uuid,
+    workspace_id: uuid::Uuid,
+    thread_id: Option<uuid::Uuid>,
+    title: String,
+    kind: String,
+    viewport_json: String,
+    revision: i64,
+    last_extracted_at: Option<chrono::DateTime<chrono::Utc>>,
+    created_at: chrono::DateTime<chrono::Utc>,
+    updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+fn canvas_from_row(row: CanvasRow) -> Result<Canvas, AppError> {
+    Ok(Canvas {
+        id: CanvasId(row.id),
+        workspace_id: WorkspaceId(row.workspace_id),
+        thread_id: row.thread_id.map(ThreadId),
+        title: row.title,
+        kind: CanvasKind::try_from(row.kind.as_str())?,
+        viewport_json: row.viewport_json,
+        revision: row.revision,
+        last_extracted_at: row.last_extracted_at,
+        created_at: row.created_at,
+        updated_at: row.updated_at,
+    })
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct CanvasNodeRow {
+    id: uuid::Uuid,
+    canvas_id: uuid::Uuid,
+    kind: String,
+    title: String,
+    summary: String,
+    status: String,
+    parent_id: Option<uuid::Uuid>,
+    position_x: f64,
+    position_y: f64,
+    layout_rank: i64,
+    source: String,
+    payload_json: String,
+    created_at: chrono::DateTime<chrono::Utc>,
+    updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+fn canvas_node_from_row(row: CanvasNodeRow) -> Result<CanvasNode, AppError> {
+    Ok(CanvasNode {
+        id: CanvasNodeId(row.id),
+        canvas_id: CanvasId(row.canvas_id),
+        kind: CanvasNodeKind::try_from(row.kind.as_str())?,
+        title: row.title,
+        summary: row.summary,
+        status: CanvasNodeStatus::try_from(row.status.as_str())?,
+        parent_id: row.parent_id.map(CanvasNodeId),
+        position_x: row.position_x,
+        position_y: row.position_y,
+        layout_rank: row.layout_rank,
+        source: CanvasNodeSource::try_from(row.source.as_str())?,
+        payload_json: row.payload_json,
+        created_at: row.created_at,
+        updated_at: row.updated_at,
+    })
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct CanvasEdgeRow {
+    id: uuid::Uuid,
+    canvas_id: uuid::Uuid,
+    from_id: uuid::Uuid,
+    to_id: uuid::Uuid,
+    kind: String,
+    label: Option<String>,
+    created_at: chrono::DateTime<chrono::Utc>,
+}
+
+fn canvas_edge_from_row(row: CanvasEdgeRow) -> Result<CanvasEdge, AppError> {
+    Ok(CanvasEdge {
+        id: CanvasEdgeId(row.id),
+        canvas_id: CanvasId(row.canvas_id),
+        from_id: CanvasNodeId(row.from_id),
+        to_id: CanvasNodeId(row.to_id),
+        kind: CanvasEdgeKind::try_from(row.kind.as_str())?,
+        label: row.label,
+        created_at: row.created_at,
+    })
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct CanvasLinkRow {
+    id: uuid::Uuid,
+    node_id: uuid::Uuid,
+    ref_type: String,
+    ref_id: String,
+    snippet: Option<String>,
+    created_at: chrono::DateTime<chrono::Utc>,
+}
+
+fn canvas_link_from_row(row: CanvasLinkRow) -> Result<CanvasLink, AppError> {
+    Ok(CanvasLink {
+        id: CanvasLinkId(row.id),
+        node_id: CanvasNodeId(row.node_id),
+        ref_type: CanvasLinkRefType::try_from(row.ref_type.as_str())?,
+        ref_id: row.ref_id,
+        snippet: row.snippet,
+        created_at: row.created_at,
+    })
+}
+
 
 #[derive(Debug, sqlx::FromRow)]
 struct OrchestrationRow {
@@ -2949,6 +4189,39 @@ fn orchestration_from_row(row: OrchestrationRow) -> Result<Orchestration, AppErr
         created_at: row.created_at,
         updated_at: row.updated_at,
         completed_at: row.completed_at,
+    })
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct WorkflowTemplateRow {
+    id: uuid::Uuid,
+    catalog_key: Option<String>,
+    title: String,
+    summary: String,
+    stages_json: String,
+    builtin: i64,
+    workspace_id: Option<uuid::Uuid>,
+    created_at: chrono::DateTime<chrono::Utc>,
+    updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+fn workflow_template_from_row(
+    row: WorkflowTemplateRow,
+) -> Result<app_models::WorkflowTemplate, AppError> {
+    let stages: Vec<app_models::OrchestrationStage> = serde_json::from_str(&row.stages_json)
+        .map_err(|e| AppError::Internal {
+            message: format!("deserialize workflow template stages failed: {e}"),
+        })?;
+    Ok(app_models::WorkflowTemplate {
+        id: app_models::WorkflowTemplateId(row.id),
+        catalog_key: row.catalog_key,
+        title: row.title,
+        summary: row.summary,
+        stages,
+        builtin: row.builtin != 0,
+        workspace_id: row.workspace_id.map(WorkspaceId),
+        created_at: row.created_at,
+        updated_at: row.updated_at,
     })
 }
 
@@ -3176,6 +4449,8 @@ struct ThreadRow {
     id: uuid::Uuid,
     workspace_id: uuid::Uuid,
     title: String,
+    parent_thread_id: Option<uuid::Uuid>,
+    archived_at: Option<chrono::DateTime<chrono::Utc>>,
     created_at: chrono::DateTime<chrono::Utc>,
     updated_at: chrono::DateTime<chrono::Utc>,
 }
@@ -3186,6 +4461,8 @@ impl From<ThreadRow> for Thread {
             id: ThreadId(row.id),
             workspace_id: WorkspaceId(row.workspace_id),
             title: row.title,
+            parent_thread_id: row.parent_thread_id.map(ThreadId),
+            archived_at: row.archived_at,
             created_at: row.created_at,
             updated_at: row.updated_at,
         }

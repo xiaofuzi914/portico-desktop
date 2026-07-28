@@ -19,6 +19,15 @@ workspace_id: WorkspaceId,
  */
 title: string, 
 /**
+ * When set, this session was branched from another session (mind-map edge).
+ */
+parent_thread_id: ThreadId | null, 
+/**
+ * When set, the session is in the archive (hidden from the active list).
+ * Rows older than 30 days are permanently purged.
+ */
+archived_at: string | null, 
+/**
  * Creation timestamp.
  */
 created_at: string, 

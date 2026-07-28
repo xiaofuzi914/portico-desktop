@@ -30,7 +30,7 @@ test -n "$device"
 test -n "$mount_point"
 
 app="$mount_point/Portico.app"
-binary="$app/Contents/MacOS/portico-tauri"
+binary="$app/Contents/MacOS/Portico"
 test -x "$binary"
 test -f "$app/Contents/Resources/icon.icns"
 codesign --verify --deep --strict --verbose=2 "$app"

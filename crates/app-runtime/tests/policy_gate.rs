@@ -77,7 +77,7 @@ async fn policy_gate_uses_authoritative_workspace_and_persists_allow_ask_deny() 
         )
         .await
         .expect("paths b");
-    let thread_a = storage.create_thread(workspace_a.id, "a").await.expect("thread a");
+    let thread_a = storage.create_thread(workspace_a.id, "a", None).await.expect("thread a");
     let run_a = storage.create_run(workspace_a.id, thread_a.id).await.expect("run a");
     storage
         .update_run_status(run_a.id, AgentRunStatus::Running)
@@ -153,7 +153,7 @@ async fn relative_paths_resolve_against_workspace_root() {
         )
         .await
         .expect("paths");
-    let thread = storage.create_thread(workspace.id, "t").await.expect("thread");
+    let thread = storage.create_thread(workspace.id, "t", None).await.expect("thread");
     let run = storage.create_run(workspace.id, thread.id).await.expect("run");
     storage
         .update_run_status(run.id, AgentRunStatus::Running)
@@ -218,7 +218,7 @@ async fn untrusted_read_is_durably_denied_without_approval() {
         )
         .await
         .expect("paths");
-    let thread = storage.create_thread(workspace.id, "thread").await.expect("thread");
+    let thread = storage.create_thread(workspace.id, "thread", None).await.expect("thread");
     let run = storage.create_run(workspace.id, thread.id).await.expect("run");
     storage
         .update_run_status(run.id, AgentRunStatus::Running)

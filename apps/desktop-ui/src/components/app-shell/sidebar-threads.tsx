@@ -1,13 +1,26 @@
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { MessageSquare, Pencil, Plus, Trash2 } from "lucide-react";
+import {
+  Archive,
+  ChevronDown,
+  ChevronRight,
+  MessageSquare,
+  Pencil,
+  Plus,
+  RotateCcw,
+  Trash2,
+} from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Button } from "@/components/ui/button";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import {
+  archiveThread,
   createThread,
   deleteThread,
+  listArchivedThreads,
   listThreads,
+  restoreThread,
   updateThreadTitle,
 } from "@/lib/tauri-api";
 import type { ThreadId, WorkspaceId } from "@/lib/schemas";
@@ -29,6 +42,7 @@ type ContextMenuState = Readonly<{
   title: string;
   x: number;
   y: number;
+  archived: boolean;
 }>;
 
 export function SidebarThreads({ workspaceId }: SidebarThreadsProps) {
@@ -43,10 +57,24 @@ export function SidebarThreads({ workspaceId }: SidebarThreadsProps) {
   const [editingId, setEditingId] = useState<ThreadId | null>(null);
   const [draft, setDraft] = useState("");
   const [menu, setMenu] = useState<ContextMenuState | null>(null);
+  const [archiveOpen, setArchiveOpen] = useState(false);
+  const [pendingArchive, setPendingArchive] = useState<Readonly<{
+    threadId: ThreadId;
+    title: string;
+  }> | null>(null);
+  const [pendingPurge, setPendingPurge] = useState<Readonly<{
+    threadId: ThreadId;
+    title: string;
+  }> | null>(null);
 
   const { data: threads, isLoading } = useQuery({
     queryKey: workspaceKeys.threads(workspaceId),
     queryFn: () => listThreads(workspaceId),
+  });
+
+  const archivedQuery = useQuery({
+    queryKey: workspaceKeys.archivedThreads(workspaceId),
+    queryFn: () => listArchivedThreads(workspaceId),
   });
 
   const create = useMutation({
@@ -64,20 +92,27 @@ export function SidebarThreads({ workspaceId }: SidebarThreadsProps) {
     mutationFn: ({ id, title }: { id: ThreadId; title: string }) => updateThreadTitle(id, title),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: workspaceKeys.threads(workspaceId) });
+      await queryClient.invalidateQueries({
+        queryKey: workspaceKeys.archivedThreads(workspaceId),
+      });
       setEditingId(null);
       setDraft("");
     },
   });
 
-  const remove = useMutation({
-    mutationFn: (id: ThreadId) => deleteThread(workspaceId, id),
-    onSuccess: async (_data, deletedId) => {
-      queryClient.removeQueries({ queryKey: ["messages", deletedId] });
-      queryClient.removeQueries({ queryKey: ["runs", deletedId] });
+  const archive = useMutation({
+    mutationFn: (id: ThreadId) => archiveThread(workspaceId, id),
+    onSuccess: async (_data, archivedId) => {
+      queryClient.removeQueries({ queryKey: ["messages", archivedId] });
+      queryClient.removeQueries({ queryKey: ["runs", archivedId] });
       await queryClient.invalidateQueries({ queryKey: workspaceKeys.threads(workspaceId) });
+      await queryClient.invalidateQueries({
+        queryKey: workspaceKeys.archivedThreads(workspaceId),
+      });
+      await queryClient.invalidateQueries({ queryKey: ["project-canvas", workspaceId] });
       setMenu(null);
-      if (activeThreadId === deletedId) {
-        const remaining = (threads ?? []).filter((thread) => thread.id !== deletedId);
+      if (activeThreadId === archivedId) {
+        const remaining = (threads ?? []).filter((thread) => thread.id !== archivedId);
         if (remaining[0]) {
           void navigate({
             to: "/workspaces/$workspaceId/threads/$threadId",
@@ -90,6 +125,34 @@ export function SidebarThreads({ workspaceId }: SidebarThreadsProps) {
           });
         }
       }
+    },
+  });
+
+  const restore = useMutation({
+    mutationFn: (id: ThreadId) => restoreThread(workspaceId, id),
+    onSuccess: async (thread) => {
+      await queryClient.invalidateQueries({ queryKey: workspaceKeys.threads(workspaceId) });
+      await queryClient.invalidateQueries({
+        queryKey: workspaceKeys.archivedThreads(workspaceId),
+      });
+      setMenu(null);
+      void navigate({
+        to: "/workspaces/$workspaceId/threads/$threadId",
+        params: { workspaceId, threadId: thread.id },
+      });
+    },
+  });
+
+  const purge = useMutation({
+    mutationFn: (id: ThreadId) => deleteThread(workspaceId, id),
+    onSuccess: async (_data, deletedId) => {
+      queryClient.removeQueries({ queryKey: ["messages", deletedId] });
+      queryClient.removeQueries({ queryKey: ["runs", deletedId] });
+      await queryClient.invalidateQueries({
+        queryKey: workspaceKeys.archivedThreads(workspaceId),
+      });
+      await queryClient.invalidateQueries({ queryKey: workspaceKeys.threads(workspaceId) });
+      setMenu(null);
     },
   });
 
@@ -146,32 +209,34 @@ export function SidebarThreads({ workspaceId }: SidebarThreadsProps) {
     event: React.MouseEvent,
     threadId: ThreadId,
     title: string,
+    archived: boolean,
   ) {
     event.preventDefault();
     event.stopPropagation();
-    // Keep menu inside viewport
     const pad = 8;
-    const menuW = 160;
-    const menuH = 88;
+    const menuW = 180;
+    const menuH = archived ? 96 : 88;
     const x = Math.min(event.clientX, window.innerWidth - menuW - pad);
     const y = Math.min(event.clientY, window.innerHeight - menuH - pad);
-    setMenu({ threadId, title, x: Math.max(pad, x), y: Math.max(pad, y) });
+    setMenu({
+      threadId,
+      title,
+      x: Math.max(pad, x),
+      y: Math.max(pad, y),
+      archived,
+    });
   }
 
-  function confirmDelete(threadId: ThreadId, title: string) {
-    const ok = window.confirm(
-      t("thread.deleteConfirmNamed").replace("{title}", title) ||
-        t("thread.deleteConfirm"),
-    );
-    if (!ok) {
-      setMenu(null);
-      return;
-    }
-    remove.mutate(threadId);
-  }
+  const actionError =
+    archive.error ?? restore.error ?? purge.error ?? create.error ?? rename.error;
+  const archived = archivedQuery.data ?? [];
+  const busy = archive.isPending || restore.isPending || purge.isPending;
 
   return (
-    <div className="space-y-1" onContextMenu={(event) => event.preventDefault()}>
+    <div
+      className="flex flex-col gap-0.5"
+      onContextMenu={(event) => event.preventDefault()}
+    >
       <Button
         variant="ghost"
         size="sm"
@@ -179,18 +244,18 @@ export function SidebarThreads({ workspaceId }: SidebarThreadsProps) {
         onClick={() => create.mutate()}
         disabled={create.isPending}
       >
-        <Plus className="mr-1.5 h-3.5 w-3.5" />
+        <Plus className="h-3.5 w-3.5" />
         {t("sidebar.newThread")}
       </Button>
 
       {isLoading ? (
-        <p className="text-muted-foreground px-2 text-xs">{t("sidebar.loadingThreads")}</p>
+        <p className="text-muted-foreground px-2 py-0.5 text-xs">{t("sidebar.loadingThreads")}</p>
       ) : threads?.length ? (
-        <ul className="space-y-0.5">
+        <ul className="flex flex-col gap-0.5">
           {threads.map((thread) => (
-            <li key={thread.id}>
+            <li key={thread.id} className="min-w-0">
               {editingId === thread.id ? (
-                <div className={cn(SIDEBAR_THREAD_LINK_CLASS, "cursor-text gap-1.5")}>
+                <div className={cn(SIDEBAR_THREAD_LINK_CLASS, "cursor-text")}>
                   <MessageSquare className="h-3.5 w-3.5 shrink-0" />
                   <input
                     ref={editInputRef}
@@ -198,7 +263,7 @@ export function SidebarThreads({ workspaceId }: SidebarThreadsProps) {
                     maxLength={80}
                     disabled={rename.isPending}
                     aria-label={t("thread.editTitle")}
-                    className="border-input bg-background text-foreground h-6 min-w-0 flex-1 rounded border px-1 text-xs outline-none focus-visible:ring-ring focus-visible:ring-1"
+                    className="border-input bg-background text-foreground focus-visible:ring-ring h-6 min-w-0 flex-1 rounded border px-1 text-xs outline-none focus-visible:ring-1"
                     onChange={(event) => setDraft(event.target.value)}
                     onKeyDown={(event) => {
                       if (event.key === "Enter") {
@@ -224,7 +289,9 @@ export function SidebarThreads({ workspaceId }: SidebarThreadsProps) {
                     className: SIDEBAR_THREAD_ACTIVE_CLASS,
                   }}
                   title={t("thread.editTitleHint")}
-                  onContextMenu={(event) => openContextMenu(event, thread.id, thread.title)}
+                  onContextMenu={(event) =>
+                    openContextMenu(event, thread.id, thread.title, false)
+                  }
                   onDoubleClick={(event) => {
                     event.preventDefault();
                     event.stopPropagation();
@@ -239,8 +306,86 @@ export function SidebarThreads({ workspaceId }: SidebarThreadsProps) {
           ))}
         </ul>
       ) : (
-        <p className="text-muted-foreground px-2 text-xs">{t("sidebar.noThreads")}</p>
+        <p className="text-muted-foreground px-2 py-0.5 text-xs">{t("sidebar.noThreads")}</p>
       )}
+
+      {/* Compact archive: one-line toggle, list only when expanded */}
+      <div className="border-border/50 mt-1.5 shrink-0 border-t pt-1.5">
+        <button
+          type="button"
+          className={cn(
+            "text-muted-foreground hover:bg-sidebar-accent hover:text-foreground",
+            "flex h-7 w-full items-center gap-1.5 rounded-md px-2 text-xs transition-colors",
+          )}
+          onClick={() => setArchiveOpen((v) => !v)}
+          aria-expanded={archiveOpen}
+          title={t("thread.archiveRetentionHint")}
+        >
+          {archiveOpen ? (
+            <ChevronDown className="h-3.5 w-3.5 shrink-0 opacity-70" />
+          ) : (
+            <ChevronRight className="h-3.5 w-3.5 shrink-0 opacity-70" />
+          )}
+          <Archive className="h-3.5 w-3.5 shrink-0 opacity-70" />
+          <span className="min-w-0 flex-1 truncate text-left font-medium">
+            {t("thread.archive")}
+          </span>
+          <span
+            className={cn(
+              "tabular-nums shrink-0 rounded px-1.5 py-0.5 text-[10px] leading-none",
+              archived.length > 0
+                ? "bg-muted text-muted-foreground"
+                : "text-muted-foreground/60",
+            )}
+          >
+            {archived.length}
+          </span>
+        </button>
+
+        {archiveOpen ? (
+          <div className="mt-0.5 min-w-0">
+            {archivedQuery.isLoading ? (
+              <p className="text-muted-foreground px-2 py-1 text-[11px]">
+                {t("common.loading")}
+              </p>
+            ) : archived.length === 0 ? (
+              <p className="text-muted-foreground px-2 py-1 text-[11px] leading-snug">
+                {t("thread.archiveEmpty")}
+              </p>
+            ) : (
+              <ul className="flex max-h-40 flex-col gap-0.5 overflow-y-auto">
+                {archived.map((thread) => (
+                  <li key={thread.id} className="min-w-0">
+                    <button
+                      type="button"
+                      className={cn(
+                        SIDEBAR_THREAD_LINK_CLASS,
+                        "text-muted-foreground w-full opacity-80",
+                      )}
+                      title={t("thread.archiveItemHint")}
+                      onContextMenu={(event) =>
+                        openContextMenu(event, thread.id, thread.title, true)
+                      }
+                      onClick={() => restore.mutate(thread.id)}
+                    >
+                      <Archive className="h-3.5 w-3.5 shrink-0 opacity-60" />
+                      <span className="min-w-0 flex-1 truncate text-left">
+                        {thread.title}
+                      </span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        ) : null}
+      </div>
+
+      {actionError ? (
+        <p className="text-destructive px-2 py-1 text-[11px] leading-snug">
+          {actionError instanceof Error ? actionError.message : String(actionError)}
+        </p>
+      ) : null}
 
       {menu
         ? createPortal(
@@ -248,32 +393,103 @@ export function SidebarThreads({ workspaceId }: SidebarThreadsProps) {
               ref={menuRef}
               role="menu"
               aria-label={t("thread.contextMenu")}
-              className="bg-background text-foreground border-border fixed z-[100] min-w-[10rem] rounded-md border py-1 shadow-lg"
+              className="bg-background text-foreground border-border fixed z-[100] min-w-[11rem] rounded-md border py-1 shadow-lg"
               style={{ left: menu.x, top: menu.y }}
             >
-              <button
-                type="button"
-                role="menuitem"
-                className="hover:bg-muted flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs"
-                onClick={() => beginEdit(menu.threadId, menu.title)}
-              >
-                <Pencil className="h-3.5 w-3.5" />
-                {t("thread.rename")}
-              </button>
-              <button
-                type="button"
-                role="menuitem"
-                className="text-destructive hover:bg-destructive/10 flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs"
-                disabled={remove.isPending}
-                onClick={() => confirmDelete(menu.threadId, menu.title)}
-              >
-                <Trash2 className="h-3.5 w-3.5" />
-                {t("thread.delete")}
-              </button>
+              {!menu.archived ? (
+                <>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="hover:bg-muted flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs"
+                    onClick={() => beginEdit(menu.threadId, menu.title)}
+                  >
+                    <Pencil className="h-3.5 w-3.5" />
+                    {t("thread.rename")}
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="text-destructive hover:bg-destructive/10 flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs"
+                    disabled={busy}
+                    onClick={() => {
+                      setMenu(null);
+                      setPendingArchive({ threadId: menu.threadId, title: menu.title });
+                    }}
+                  >
+                    <Archive className="h-3.5 w-3.5" />
+                    {t("thread.moveToArchive")}
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="hover:bg-muted flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs"
+                    disabled={busy}
+                    onClick={() => restore.mutate(menu.threadId)}
+                  >
+                    <RotateCcw className="h-3.5 w-3.5" />
+                    {t("thread.restore")}
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="text-destructive hover:bg-destructive/10 flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs"
+                    disabled={busy}
+                    onClick={() => {
+                      setMenu(null);
+                      setPendingPurge({ threadId: menu.threadId, title: menu.title });
+                    }}
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                    {t("thread.purgeForever")}
+                  </button>
+                </>
+              )}
             </div>,
             document.body,
           )
         : null}
+
+      <ConfirmDialog
+        open={pendingArchive !== null}
+        title={t("thread.moveToArchive")}
+        description={
+          pendingArchive
+            ? t("thread.archiveConfirmNamed").replace("{title}", pendingArchive.title)
+            : undefined
+        }
+        confirmLabel={t("thread.moveToArchive")}
+        destructive
+        onConfirm={() => {
+          if (pendingArchive) {
+            archive.mutate(pendingArchive.threadId);
+          }
+          setPendingArchive(null);
+        }}
+        onCancel={() => setPendingArchive(null)}
+      />
+
+      <ConfirmDialog
+        open={pendingPurge !== null}
+        title={t("thread.purgeForever")}
+        description={
+          pendingPurge
+            ? t("thread.purgeConfirmNamed").replace("{title}", pendingPurge.title)
+            : undefined
+        }
+        confirmLabel={t("thread.purgeForever")}
+        destructive
+        onConfirm={() => {
+          if (pendingPurge) {
+            purge.mutate(pendingPurge.threadId);
+          }
+          setPendingPurge(null);
+        }}
+        onCancel={() => setPendingPurge(null)}
+      />
     </div>
   );
 }

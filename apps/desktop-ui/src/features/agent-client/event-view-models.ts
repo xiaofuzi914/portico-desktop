@@ -12,31 +12,60 @@ export interface ConversationBlock {
   title: string;
   body: string;
   tone: ConversationBlockTone;
+  /** Chat author — set only for kind "message"; drives the user-bubble layout. */
+  role?: "user" | "assistant";
   createdAt: string;
   raw: RunEvent;
 }
 
-export function mapMessageToBlock(message: Message): ConversationBlock {
+/** Role rank when timestamps collide: user first, then assistant, then system. */
+function messageRoleRank(role: Message["role"] | undefined): number {
+  if (role === "User") return 0;
+  if (role === "Assistant") return 1;
+  return 2;
+}
+
+/**
+ * Map a durable message into a timeline block.
+ * @param index 0-based index in the server-ordered list (created_at ASC, id ASC).
+ *               Used as a stable sequence so same-second User/Assistant never swap.
+ */
+export function mapMessageToBlock(message: Message, index = 0): ConversationBlock {
   const isUser = message.role === "User";
   const isSystem = message.role === "System";
+  // Prefer list order over Date.parse alone — SQLite timestamps often share the
+  // same second for user+assistant of one turn, which used to invert the chat.
+  const sequence = index * 10 + messageRoleRank(message.role);
   return {
     id: `message-${message.id}`,
-    sequence: Date.parse(message.created_at),
+    sequence,
     kind: isSystem ? "error" : "message",
     title: isUser ? "You" : message.role === "Assistant" ? "Assistant" : "Run failed",
     body: message.content,
     tone: isSystem ? "danger" : isUser ? "default" : "muted",
+    role: isSystem ? undefined : isUser ? "user" : "assistant",
     createdAt: message.created_at,
     raw: {
-      id: -Date.parse(message.created_at),
+      id: -sequence,
       run_id: message.run_id ?? ("unknown" as AgentRunId),
       thread_id: message.thread_id,
-      sequence: Date.parse(message.created_at),
+      sequence,
       event_type: "Message",
       payload: { role: message.role, content: message.content },
       created_at: message.created_at,
     },
   };
+}
+
+/**
+ * Sort conversation blocks for display. Durable messages keep server order via
+ * sequence; streaming blocks always sort after their run's durable messages.
+ */
+export function sortConversationBlocks(blocks: ConversationBlock[]): ConversationBlock[] {
+  return [...blocks].sort((a, b) => {
+    if (a.sequence !== b.sequence) return a.sequence - b.sequence;
+    return a.id.localeCompare(b.id);
+  });
 }
 
 interface MessagePayload {
@@ -158,6 +187,7 @@ export function mapRunEventToBlock(event: RunEvent): ConversationBlock {
       title: titleCase(role),
       body: payloadText(event.payload),
       tone: "default",
+      role: role.toLowerCase() === "user" ? "user" : "assistant",
       createdAt: event.created_at,
       raw: event,
     };

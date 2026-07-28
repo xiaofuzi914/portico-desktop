@@ -25,6 +25,8 @@ const olderThread = {
   id: asThreadId("thread-old"),
   workspace_id: asWorkspaceId("workspace-1"),
   title: "Older thread",
+  parent_thread_id: null,
+  archived_at: null,
   created_at: "2026-07-07T00:00:00.000Z",
   updated_at: "2026-07-07T01:00:00.000Z",
 } satisfies Thread;
@@ -40,6 +42,8 @@ const otherProjectThread = {
   id: asThreadId("thread-other"),
   workspace_id: asWorkspaceId("workspace-2"),
   title: "Other project session",
+  parent_thread_id: null,
+  archived_at: null,
   created_at: "2026-07-07T00:00:00.000Z",
   updated_at: "2026-07-07T03:00:00.000Z",
 } satisfies Thread;

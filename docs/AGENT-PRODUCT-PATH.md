@@ -60,7 +60,13 @@ Orchestration is a **first-class execution path for hard tasks**, not a lab feat
   (AGENTS.md, non-sensitive memories, RAG excerpts).
 - `rebuild_rag_index` scans the workspace tree from disk (not re-embed of empty store).
 - Memory UI copy: habits support real agent work (single + multi-role), not “experiments only”.
-- Safe tools: `fs_list`, `fs_read`, `fs_search`, `fs_edit`, `fs_write`, `git` (status/diff).
+- Safe / product tools (model-callable):
+  - `fs_list`, `fs_read`, `fs_search`, `fs_edit`, `fs_write`
+  - `git` — `status`/`diff` free; `add`/`commit` **Ask** approval
+  - `shell_exec` — project shell after **Ask** approval (command denylist still applies)
+  - `web_search`, `web_fetch` — public HTTP(S); localhost/private blocked
+  - **MCP** — tools from 能力中心 after refresh; write tools **Ask**
+- Still not agent tools: interactive Browser Use page, Skills invoke, Automations scheduler, native desktop automation.
 - Multi-agent sessions are **durable** in SQLite `orchestrations`.
 
 ## Do not
@@ -69,10 +75,36 @@ Orchestration is a **first-class execution path for hard tasks**, not a lab feat
 - Call multi-agent “experimental” in product UI.
 - Make “对话 | 多 Agent” equal dual modes as the primary IA.
 
+## Canvas view (project work map)
+
+**Not a second chat mode.** Canvas is a spatial view over project work:
+
+| Surface | Path | Purpose |
+|---------|------|---------|
+| Project canvas | `/workspaces/$id/canvas` | Organize chats (heuristic insights), decompose goals into stages, launch stages |
+| Session mind map | Thread `?view=mindmap` | Thread-scoped canvas over the same graph engine |
+
+- **Organize chats** → `extract_canvas_insights` (heuristic, conclusion-first; max 5 insights/thread; hierarchical layout without overlap; incremental column reuse)
+- **Break down goal** → template stages (调研 → 方案 → 实现 → 验证), prompts include related canvas insights; related edges link insights → stages
+- **Layers** → All / Chats / Goals filters on the same graph
+- **Launch stage** → creates a session + `send_message` or `start_orchestration`, marks stage `InProgress`, navigates into chat
+
+Default product path remains single-agent chat. Canvas launches re-enter that path.
+
+**Closed loop (product):**
+1. Organize chats → conclusion insights + layout  
+2. Decompose goal → stages linked to insights  
+3. Launch stage → new session + run; node `InProgress`  
+4. Run completes/fails → stage auto `Done`/`Blocked` (and goal Done when all stages Done)  
+5. Insight → open session + scroll/highlight source message  
+6. Re-open canvas → reconcile any still-InProgress stages against latest run status
+
 ## Related code
 
 - UI: `apps/desktop-ui/src/features/agent-client/conversation-composer.tsx`
+- Canvas UI: `apps/desktop-ui/src/features/canvas/`
 - Flag: `apps/desktop-ui/src/lib/feature-readiness.ts`
 - Single path: `crates/app-runtime/src/runner.rs`
 - Multi path: `crates/app-workflows/`
+- Extract / goal: `crates/app-workflows/src/canvas_extract.rs`, `canvas_goal.rs`
 - Tool loop: `crates/autoagents-adapter/src/executor.rs`

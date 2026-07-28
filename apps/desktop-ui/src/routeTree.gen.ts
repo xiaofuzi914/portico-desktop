@@ -11,7 +11,6 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as WorkspacesIndexRouteImport } from './routes/workspaces/index'
-import { Route as SkillsIndexRouteImport } from './routes/skills/index'
 import { Route as SettingsIndexRouteImport } from './routes/settings/index'
 import { Route as PluginsIndexRouteImport } from './routes/plugins/index'
 import { Route as ModelsIndexRouteImport } from './routes/models/index'
@@ -24,6 +23,7 @@ import { Route as AuditIndexRouteImport } from './routes/audit/index'
 import { Route as WorkspacesWorkspaceIdIndexRouteImport } from './routes/workspaces/$workspaceId/index'
 import { Route as WorkspacesWorkspaceIdMemoryIndexRouteImport } from './routes/workspaces/$workspaceId/memory/index'
 import { Route as WorkspacesWorkspaceIdGitIndexRouteImport } from './routes/workspaces/$workspaceId/git/index'
+import { Route as WorkspacesWorkspaceIdCanvasIndexRouteImport } from './routes/workspaces/$workspaceId/canvas/index'
 import { Route as WorkspacesWorkspaceIdThreadsThreadIdIndexRouteImport } from './routes/workspaces/$workspaceId/threads/$threadId/index'
 
 const IndexRoute = IndexRouteImport.update({
@@ -34,11 +34,6 @@ const IndexRoute = IndexRouteImport.update({
 const WorkspacesIndexRoute = WorkspacesIndexRouteImport.update({
   id: '/workspaces/',
   path: '/workspaces/',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const SkillsIndexRoute = SkillsIndexRouteImport.update({
-  id: '/skills/',
-  path: '/skills/',
   getParentRoute: () => rootRouteImport,
 } as any)
 const SettingsIndexRoute = SettingsIndexRouteImport.update({
@@ -104,6 +99,12 @@ const WorkspacesWorkspaceIdGitIndexRoute =
     path: '/workspaces/$workspaceId/git/',
     getParentRoute: () => rootRouteImport,
   } as any)
+const WorkspacesWorkspaceIdCanvasIndexRoute =
+  WorkspacesWorkspaceIdCanvasIndexRouteImport.update({
+    id: '/workspaces/$workspaceId/canvas/',
+    path: '/workspaces/$workspaceId/canvas/',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 const WorkspacesWorkspaceIdThreadsThreadIdIndexRoute =
   WorkspacesWorkspaceIdThreadsThreadIdIndexRouteImport.update({
     id: '/workspaces/$workspaceId/threads/$threadId/',
@@ -122,9 +123,9 @@ export interface FileRoutesByFullPath {
   '/models/': typeof ModelsIndexRoute
   '/plugins/': typeof PluginsIndexRoute
   '/settings/': typeof SettingsIndexRoute
-  '/skills/': typeof SkillsIndexRoute
   '/workspaces/': typeof WorkspacesIndexRoute
   '/workspaces/$workspaceId/': typeof WorkspacesWorkspaceIdIndexRoute
+  '/workspaces/$workspaceId/canvas/': typeof WorkspacesWorkspaceIdCanvasIndexRoute
   '/workspaces/$workspaceId/git/': typeof WorkspacesWorkspaceIdGitIndexRoute
   '/workspaces/$workspaceId/memory/': typeof WorkspacesWorkspaceIdMemoryIndexRoute
   '/workspaces/$workspaceId/threads/$threadId/': typeof WorkspacesWorkspaceIdThreadsThreadIdIndexRoute
@@ -140,9 +141,9 @@ export interface FileRoutesByTo {
   '/models': typeof ModelsIndexRoute
   '/plugins': typeof PluginsIndexRoute
   '/settings': typeof SettingsIndexRoute
-  '/skills': typeof SkillsIndexRoute
   '/workspaces': typeof WorkspacesIndexRoute
   '/workspaces/$workspaceId': typeof WorkspacesWorkspaceIdIndexRoute
+  '/workspaces/$workspaceId/canvas': typeof WorkspacesWorkspaceIdCanvasIndexRoute
   '/workspaces/$workspaceId/git': typeof WorkspacesWorkspaceIdGitIndexRoute
   '/workspaces/$workspaceId/memory': typeof WorkspacesWorkspaceIdMemoryIndexRoute
   '/workspaces/$workspaceId/threads/$threadId': typeof WorkspacesWorkspaceIdThreadsThreadIdIndexRoute
@@ -159,9 +160,9 @@ export interface FileRoutesById {
   '/models/': typeof ModelsIndexRoute
   '/plugins/': typeof PluginsIndexRoute
   '/settings/': typeof SettingsIndexRoute
-  '/skills/': typeof SkillsIndexRoute
   '/workspaces/': typeof WorkspacesIndexRoute
   '/workspaces/$workspaceId/': typeof WorkspacesWorkspaceIdIndexRoute
+  '/workspaces/$workspaceId/canvas/': typeof WorkspacesWorkspaceIdCanvasIndexRoute
   '/workspaces/$workspaceId/git/': typeof WorkspacesWorkspaceIdGitIndexRoute
   '/workspaces/$workspaceId/memory/': typeof WorkspacesWorkspaceIdMemoryIndexRoute
   '/workspaces/$workspaceId/threads/$threadId/': typeof WorkspacesWorkspaceIdThreadsThreadIdIndexRoute
@@ -179,9 +180,9 @@ export interface FileRouteTypes {
     | '/models/'
     | '/plugins/'
     | '/settings/'
-    | '/skills/'
     | '/workspaces/'
     | '/workspaces/$workspaceId/'
+    | '/workspaces/$workspaceId/canvas/'
     | '/workspaces/$workspaceId/git/'
     | '/workspaces/$workspaceId/memory/'
     | '/workspaces/$workspaceId/threads/$threadId/'
@@ -197,9 +198,9 @@ export interface FileRouteTypes {
     | '/models'
     | '/plugins'
     | '/settings'
-    | '/skills'
     | '/workspaces'
     | '/workspaces/$workspaceId'
+    | '/workspaces/$workspaceId/canvas'
     | '/workspaces/$workspaceId/git'
     | '/workspaces/$workspaceId/memory'
     | '/workspaces/$workspaceId/threads/$threadId'
@@ -215,9 +216,9 @@ export interface FileRouteTypes {
     | '/models/'
     | '/plugins/'
     | '/settings/'
-    | '/skills/'
     | '/workspaces/'
     | '/workspaces/$workspaceId/'
+    | '/workspaces/$workspaceId/canvas/'
     | '/workspaces/$workspaceId/git/'
     | '/workspaces/$workspaceId/memory/'
     | '/workspaces/$workspaceId/threads/$threadId/'
@@ -234,9 +235,9 @@ export interface RootRouteChildren {
   ModelsIndexRoute: typeof ModelsIndexRoute
   PluginsIndexRoute: typeof PluginsIndexRoute
   SettingsIndexRoute: typeof SettingsIndexRoute
-  SkillsIndexRoute: typeof SkillsIndexRoute
   WorkspacesIndexRoute: typeof WorkspacesIndexRoute
   WorkspacesWorkspaceIdIndexRoute: typeof WorkspacesWorkspaceIdIndexRoute
+  WorkspacesWorkspaceIdCanvasIndexRoute: typeof WorkspacesWorkspaceIdCanvasIndexRoute
   WorkspacesWorkspaceIdGitIndexRoute: typeof WorkspacesWorkspaceIdGitIndexRoute
   WorkspacesWorkspaceIdMemoryIndexRoute: typeof WorkspacesWorkspaceIdMemoryIndexRoute
   WorkspacesWorkspaceIdThreadsThreadIdIndexRoute: typeof WorkspacesWorkspaceIdThreadsThreadIdIndexRoute
@@ -256,13 +257,6 @@ declare module '@tanstack/react-router' {
       path: '/workspaces'
       fullPath: '/workspaces/'
       preLoaderRoute: typeof WorkspacesIndexRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/skills/': {
-      id: '/skills/'
-      path: '/skills'
-      fullPath: '/skills/'
-      preLoaderRoute: typeof SkillsIndexRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/settings/': {
@@ -349,6 +343,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof WorkspacesWorkspaceIdGitIndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/workspaces/$workspaceId/canvas/': {
+      id: '/workspaces/$workspaceId/canvas/'
+      path: '/workspaces/$workspaceId/canvas'
+      fullPath: '/workspaces/$workspaceId/canvas/'
+      preLoaderRoute: typeof WorkspacesWorkspaceIdCanvasIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/workspaces/$workspaceId/threads/$threadId/': {
       id: '/workspaces/$workspaceId/threads/$threadId/'
       path: '/workspaces/$workspaceId/threads/$threadId'
@@ -370,9 +371,9 @@ const rootRouteChildren: RootRouteChildren = {
   ModelsIndexRoute: ModelsIndexRoute,
   PluginsIndexRoute: PluginsIndexRoute,
   SettingsIndexRoute: SettingsIndexRoute,
-  SkillsIndexRoute: SkillsIndexRoute,
   WorkspacesIndexRoute: WorkspacesIndexRoute,
   WorkspacesWorkspaceIdIndexRoute: WorkspacesWorkspaceIdIndexRoute,
+  WorkspacesWorkspaceIdCanvasIndexRoute: WorkspacesWorkspaceIdCanvasIndexRoute,
   WorkspacesWorkspaceIdGitIndexRoute: WorkspacesWorkspaceIdGitIndexRoute,
   WorkspacesWorkspaceIdMemoryIndexRoute: WorkspacesWorkspaceIdMemoryIndexRoute,
   WorkspacesWorkspaceIdThreadsThreadIdIndexRoute:

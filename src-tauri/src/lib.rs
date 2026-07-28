@@ -50,12 +50,15 @@ fn select_e2e_app_data_dir(
     Ok(override_path)
 }
 
+pub mod cli_auth_import;
 pub mod commands;
 pub mod embedding_setup;
 pub mod error;
 mod pattern_ports;
 mod plugin_github;
 mod plugin_package;
+#[cfg(target_os = "macos")]
+mod macos_menu;
 pub mod portico_paths;
 
 /// Shared application state managed by Tauri.
@@ -146,6 +149,9 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_log::Builder::default().level(log::LevelFilter::Info).build());
 
+    #[cfg(target_os = "macos")]
+    let builder = builder.menu(macos_menu::build);
+
     #[cfg(feature = "desktop-e2e")]
     let builder = builder.plugin(tauri_plugin_wdio_webdriver::init());
 
@@ -214,10 +220,9 @@ pub fn run() {
                     Arc::new(app_runtime::SqliteAuditLogger::new(storage.clone())),
                 ));
 
-                // Restore only the product-owned safe golden path. Definitions
-                // cannot invoke legacy tools directly: every call is checkpointed,
-                // gated, leased, and dispatched by the durable runtime.
-                // Terminal, Git mutations, MCP, browser, and desktop stay disabled.
+                // Product tool registry: built-ins always on; MCP tools attach via
+                // refresh_mcp_tools. Every agent call is still checkpointed, gated,
+                // leased, and (for shell/git write/MCP write) approval-backed.
                 let tools = Arc::new(PorticoToolRegistry::new());
                 tools.register_safe_builtin_definitions();
 
@@ -399,13 +404,20 @@ pub fn run() {
             commands::workspace::create_workspace,
             commands::workspace::list_workspaces,
             commands::workspace::get_workspace,
+            commands::workspace::delete_workspace,
             commands::workspace::trust_workspace,
             commands::workspace::set_workspace_paths,
+            commands::workspace::add_linked_project_folder,
+            commands::workspace::remove_linked_project_folder,
             commands::workspace::list_workspace_files,
             commands::workspace::open_workspace_folder,
             commands::workspace::preview_workspace_markdown,
             commands::thread::create_thread,
+            commands::thread::branch_thread_from_context,
             commands::thread::list_threads,
+            commands::thread::list_archived_threads,
+            commands::thread::archive_thread,
+            commands::thread::restore_thread,
             commands::thread::update_thread_title,
             commands::thread::get_thread,
             commands::thread::delete_thread,
@@ -434,6 +446,8 @@ pub fn run() {
             commands::model::get_active_model,
             commands::model::resolve_active_model,
             commands::model::test_provider_connection,
+            commands::model::list_cli_auth_sources_cmd,
+            commands::model::import_cli_auth_source_cmd,
             commands::model::get_provider_health,
             commands::model::get_run_model_snapshot,
             commands::secrets::set_provider_secret,
@@ -456,10 +470,31 @@ pub fn run() {
             commands::orchestrator::list_workflow_patterns,
             commands::orchestrator::preview_orchestration_plan,
             commands::orchestrator::start_orchestration,
+            commands::orchestrator::list_bundled_workflows,
+            commands::orchestrator::list_workflow_templates,
+            commands::orchestrator::save_workflow_template,
+            commands::orchestrator::get_workflow_template,
+            commands::orchestrator::delete_workflow_template,
             commands::orchestrator::get_orchestration,
             commands::orchestrator::list_thread_orchestrations,
             commands::orchestrator::cancel_orchestration,
             commands::orchestrator::mute_workflow_pattern,
+            commands::canvas::get_or_create_project_canvas,
+            commands::canvas::get_or_create_thread_canvas,
+            commands::canvas::get_canvas_snapshot,
+            commands::canvas::update_canvas_viewport,
+            commands::canvas::upsert_canvas_node,
+            commands::canvas::delete_canvas_node,
+            commands::canvas::upsert_canvas_edge,
+            commands::canvas::delete_canvas_edge,
+            commands::canvas::upsert_canvas_link,
+            commands::canvas::delete_canvas_link,
+            commands::canvas::extract_canvas_insights,
+            commands::canvas::decompose_canvas_goal,
+            commands::canvas::mark_canvas_stage_launched,
+            commands::canvas::set_canvas_node_status,
+            commands::canvas::reconcile_canvas_stages_from_run,
+            commands::canvas::refresh_canvas_goal_links,
             commands::plugins::install_plugin,
             commands::plugins::install_plugin_package,
             commands::plugins::install_available_plugin_package,

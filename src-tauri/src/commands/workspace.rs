@@ -35,6 +35,50 @@ fn validate_relative_path(relative_path: &str) -> Result<&Path, app_models::AppE
     Ok(relative)
 }
 
+/// Resolve which absolute directory is the browse root (main or linked folder).
+fn resolve_browse_root(
+    workspace: &Workspace,
+    base_path: Option<&str>,
+) -> Result<PathBuf, app_models::AppError> {
+    let main = PathBuf::from(&workspace.root_path)
+        .canonicalize()
+        .map_err(|error| app_models::AppError::PermissionDenied {
+            reason: format!("workspace root is unavailable: {error}"),
+        })?;
+    let Some(base) = base_path.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok(main);
+    };
+    let candidate = PathBuf::from(base)
+        .canonicalize()
+        .map_err(|error| app_models::AppError::PermissionDenied {
+            reason: format!("folder is unavailable: {error}"),
+        })?;
+    if candidate == main {
+        return Ok(main);
+    }
+    let allowed = workspace.allowed_read_paths.iter().any(|p| {
+        let allowed = PathBuf::from(p)
+            .canonicalize()
+            .unwrap_or_else(|_| PathBuf::from(p));
+        candidate == allowed || candidate.starts_with(&allowed)
+    });
+    if !allowed {
+        return Err(app_models::AppError::PermissionDenied {
+            reason: "folder is not the main project or a linked project folder".to_owned(),
+        });
+    }
+    Ok(candidate)
+}
+
+fn path_under_read_allowlist(workspace: &Workspace, target: &Path) -> bool {
+    workspace.allowed_read_paths.iter().any(|p| {
+        let allowed = PathBuf::from(p)
+            .canonicalize()
+            .unwrap_or_else(|_| PathBuf::from(p));
+        target == allowed || target.starts_with(&allowed)
+    })
+}
+
 /// Open a directory in the OS file manager (Finder / Explorer / xdg-open).
 fn open_directory_in_os(path: &Path) -> Result<(), app_models::AppError> {
     let status = {
@@ -93,6 +137,19 @@ pub async fn list_workspaces(
 ) -> Result<ApiResponse<Vec<Workspace>>, String> {
     Ok(match state.runtime.list_workspaces().await {
         Ok(workspaces) => ApiResponse::ok(workspaces),
+        Err(err) => ApiResponse::err(err.to_string()),
+    })
+}
+
+/// Remove a project from Portico (sessions, runs, canvas metadata).
+/// Does **not** delete the project folder on disk.
+#[tauri::command]
+pub async fn delete_workspace(
+    state: State<'_, AppState>,
+    id: WorkspaceId,
+) -> Result<ApiResponse<()>, String> {
+    Ok(match state.runtime.delete_workspace(id).await {
+        Ok(()) => ApiResponse::ok(()),
         Err(err) => ApiResponse::err(err.to_string()),
     })
 }
@@ -157,6 +214,46 @@ pub async fn set_workspace_paths(
     )
 }
 
+/// Attach an additional project folder (read+write) next to the main root.
+#[tauri::command]
+pub async fn add_linked_project_folder(
+    state: State<'_, AppState>,
+    id: WorkspaceId,
+    path: String,
+) -> Result<ApiResponse<Workspace>, String> {
+    Ok(
+        match state
+            .runtime
+            .workspace_manager()
+            .add_linked_project_folder(id, &path)
+            .await
+        {
+            Ok(workspace) => ApiResponse::ok(workspace),
+            Err(err) => ApiResponse::err(err.to_string()),
+        },
+    )
+}
+
+/// Detach a linked project folder (main root cannot be removed).
+#[tauri::command]
+pub async fn remove_linked_project_folder(
+    state: State<'_, AppState>,
+    id: WorkspaceId,
+    path: String,
+) -> Result<ApiResponse<Workspace>, String> {
+    Ok(
+        match state
+            .runtime
+            .workspace_manager()
+            .remove_linked_project_folder(id, &path)
+            .await
+        {
+            Ok(workspace) => ApiResponse::ok(workspace),
+            Err(err) => ApiResponse::err(err.to_string()),
+        },
+    )
+}
+
 /// List one directory inside a trusted workspace.
 ///
 /// # Errors
@@ -167,6 +264,8 @@ pub async fn list_workspace_files(
     state: State<'_, AppState>,
     id: WorkspaceId,
     relative_path: String,
+    // Absolute path of main root or a linked folder; defaults to main `root_path`.
+    base_path: Option<String>,
 ) -> Result<ApiResponse<Vec<WorkspaceFileEntry>>, String> {
     let result = async {
         let mut workspace = state.runtime.get_workspace(id).await?;
@@ -181,19 +280,13 @@ pub async fn list_workspace_files(
 
         let relative = validate_relative_path(&relative_path)?;
 
-        let root = PathBuf::from(&workspace.root_path);
+        let root = resolve_browse_root(&workspace, base_path.as_deref())?;
         let target = root.join(relative).canonicalize().map_err(|error| {
             app_models::AppError::PermissionDenied {
                 reason: format!("workspace directory is unavailable: {error}"),
             }
         })?;
-        if !target.starts_with(&root)
-            || !workspace
-                .allowed_read_paths
-                .iter()
-                .map(PathBuf::from)
-                .any(|allowed| target.starts_with(allowed))
-        {
+        if !target.starts_with(&root) || !path_under_read_allowlist(&workspace, &target) {
             return Err(app_models::AppError::PermissionDenied {
                 reason: "workspace directory is outside the allowed read paths".to_owned(),
             });
@@ -249,6 +342,7 @@ pub async fn open_workspace_folder(
     state: State<'_, AppState>,
     id: WorkspaceId,
     relative_path: String,
+    base_path: Option<String>,
 ) -> Result<ApiResponse<()>, String> {
     let result = async {
         let mut workspace = state.runtime.get_workspace(id).await?;
@@ -262,11 +356,7 @@ pub async fn open_workspace_folder(
         }
 
         let relative = validate_relative_path(&relative_path)?;
-        let root = PathBuf::from(&workspace.root_path)
-            .canonicalize()
-            .map_err(|error| app_models::AppError::PermissionDenied {
-                reason: format!("workspace root is unavailable: {error}"),
-            })?;
+        let root = resolve_browse_root(&workspace, base_path.as_deref())?;
         let target = if relative_path.is_empty() {
             root.clone()
         } else {
@@ -281,16 +371,7 @@ pub async fn open_workspace_folder(
                 reason: "path is not a directory".to_owned(),
             });
         }
-        if !target.starts_with(&root)
-            || !workspace
-                .allowed_read_paths
-                .iter()
-                .map(PathBuf::from)
-                .any(|allowed| {
-                    let allowed = allowed.canonicalize().unwrap_or(allowed);
-                    target.starts_with(allowed)
-                })
-        {
+        if !target.starts_with(&root) || !path_under_read_allowlist(&workspace, &target) {
             return Err(app_models::AppError::PermissionDenied {
                 reason: "workspace directory is outside the allowed read paths".to_owned(),
             });
@@ -317,6 +398,7 @@ pub async fn preview_workspace_markdown(
     state: State<'_, AppState>,
     id: WorkspaceId,
     relative_path: String,
+    base_path: Option<String>,
 ) -> Result<ApiResponse<ArtifactPreview>, String> {
     let result = async {
         let mut workspace = state.runtime.get_workspace(id).await?;
@@ -330,26 +412,37 @@ pub async fn preview_workspace_markdown(
         }
 
         let relative = validate_relative_path(&relative_path)?;
-        let extension = relative.extension().and_then(std::ffi::OsStr::to_str);
-        if !extension.is_some_and(|value| value.eq_ignore_ascii_case("md")) {
+        let extension = relative
+            .extension()
+            .and_then(std::ffi::OsStr::to_str)
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        // Conversation "open file" previews: md + common text/source deliverables.
+        const PREVIEWABLE: &[&str] = &[
+            "md", "mdx", "txt", "json", "ts", "tsx", "js", "jsx", "rs", "py", "toml", "yaml",
+            "yml", "css", "html", "htm", "sql", "sh", "go", "c", "cpp", "h", "hpp", "xml",
+            "svg", "plantuml", "puml", "gitignore",
+        ];
+        if !PREVIEWABLE.iter().any(|ext| *ext == extension)
+            && !relative
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.eq_ignore_ascii_case("Dockerfile") || n.starts_with('.'))
+        {
             return Err(app_models::AppError::PermissionDenied {
-                reason: "only Markdown files can be previewed".to_owned(),
+                reason: format!(
+                    "file type \".{extension}\" cannot be previewed from the conversation"
+                ),
             });
         }
 
-        let root = PathBuf::from(&workspace.root_path);
+        let root = resolve_browse_root(&workspace, base_path.as_deref())?;
         let target = root.join(relative).canonicalize().map_err(|error| {
             app_models::AppError::PermissionDenied {
                 reason: format!("workspace file is unavailable: {error}"),
             }
         })?;
-        if !target.starts_with(&root)
-            || !workspace
-                .allowed_read_paths
-                .iter()
-                .map(PathBuf::from)
-                .any(|allowed| target.starts_with(allowed))
-        {
+        if !target.starts_with(&root) || !path_under_read_allowlist(&workspace, &target) {
             return Err(app_models::AppError::PermissionDenied {
                 reason: "workspace file is outside the allowed read paths".to_owned(),
             });
@@ -376,9 +469,23 @@ pub async fn preview_workspace_markdown(
             });
         }
         let size_bytes = u64::try_from(contents.len()).unwrap_or(u64::MAX);
+        let mime_type = match extension.as_str() {
+            "md" | "mdx" => "text/markdown",
+            "json" => "application/json",
+            "ts" | "tsx" => "application/typescript",
+            "js" | "jsx" | "mjs" => "text/javascript",
+            "rs" => "text/x-rust",
+            "py" => "text/x-python",
+            "css" => "text/css",
+            "html" | "htm" => "text/html",
+            "svg" => "image/svg+xml",
+            "xml" => "application/xml",
+            _ => "text/plain",
+        }
+        .to_owned();
         Ok(ArtifactPreview {
             path: target.to_string_lossy().into_owned(),
-            mime_type: "text/markdown".to_owned(),
+            mime_type,
             content_base64: STANDARD.encode(contents),
             size_bytes,
         })

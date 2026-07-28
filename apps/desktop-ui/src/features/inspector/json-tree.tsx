@@ -66,11 +66,11 @@ function summaryLabel(value: unknown): string {
 function typeClass(kind: JsonKind): string {
   switch (kind) {
     case "string":
-      return "text-emerald-700 dark:text-emerald-400";
+      return "text-success-ink";
     case "number":
-      return "text-sky-700 dark:text-sky-400";
+      return "text-running-ink";
     case "boolean":
-      return "text-amber-700 dark:text-amber-400";
+      return "text-warning-ink";
     case "null":
     case "undefined":
       return "text-muted-foreground italic";
@@ -162,7 +162,7 @@ function JsonNode({
 
   const keyEl =
     name !== undefined ? (
-      <span className="text-violet-800 dark:text-violet-300">
+      <span className="text-primary">
         {name}
         <span className="text-muted-foreground">: </span>
       </span>

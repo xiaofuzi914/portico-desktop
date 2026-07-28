@@ -1,5 +1,6 @@
 //! Tauri command handlers exposed to the Portico frontend.
 
+pub mod canvas;
 pub mod diagnostics;
 pub mod memory;
 pub mod migration;

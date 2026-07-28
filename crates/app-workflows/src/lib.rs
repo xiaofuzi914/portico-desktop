@@ -6,19 +6,45 @@
 //! not a peer dual-mode UI.
 
 pub mod agent_registry;
+pub mod canvas_extract;
+pub mod canvas_goal;
+pub mod canvas_layout;
 pub mod memory_plan;
 pub mod orchestration_service;
 pub mod orchestrator;
 pub mod ports;
 pub mod scheduler;
+pub mod stage_graph;
 
 pub use agent_registry::AgentRegistry;
+pub use canvas_extract::{
+    ExtractedInsight, ExtractedThreadCluster, SessionCard, branch_title_from_focus,
+    build_branch_context_seed_with_focus, extract_session_cards,
+    extract_thread_clusters, summarize_session_messages,
+};
+pub use canvas_goal::{
+    DecomposedStage, StageLaunchMode, compose_stage_launch_prompt, decompose_goal_template,
+};
+pub use canvas_layout::{
+    LayoutPos, column_pitch, goal_column_x, goal_column_x_after_conversation,
+    goal_column_x_for_session, layout_cluster_forest, layout_goal_spine, layout_project_forest,
+    layout_session_narrative, layout_session_tree, next_cluster_column, project_forest_right_x,
+    row_pitch, session_narrative_right_x, session_tree_right_x,
+};
 pub use orchestration_service::OrchestrationService;
 pub use orchestrator::Orchestrator;
 pub use ports::{
     NoopPatternSink, NoopPatternSource, PatternRecallQuery, PatternSink, PatternSource,
 };
 pub use scheduler::AutomationScheduler;
+pub use stage_graph::{
+    BundledWorkflowMeta, apply_stage_edit, assemble_reduce_upstream, clamp_loop_max_iterations,
+    coalesce_orchestration_status, collect_upstream_payloads, expand_foreach_tasks,
+    extract_foreach_items, list_bundled_workflows, loop_should_stop, merge_foreach_outputs,
+    merge_status_for_store, plan_adaptive_stage_graph, plan_bundled_workflow, plan_from_stages,
+    plan_has_stages, primary_upstream_control_payload, render_stage_prompt, topological_stage_order,
+    validate_stage_dag,
+};
 
 use app_models::{AgentRunId, AppError, ThreadId, WorkspaceId};
 use app_runtime::PorticoRuntime;

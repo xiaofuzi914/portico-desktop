@@ -9,6 +9,10 @@ rust-version.workspace = true
 description = "Tauri 2 backend for Portico"
 build = "build.rs"
 
+[[bin]]
+name = "Portico"
+path = "src/main.rs"
+
 [features]
 default = []
 # Test-only WebDriver server. Normal development and release builds do not

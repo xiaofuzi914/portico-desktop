@@ -16,7 +16,7 @@ export const featureReadiness = {
   coreAgentWorkflow: {
     ready: true,
     reason:
-      "Primary path: durable conversation, model tool loop (list/read/search/edit/write, git read), approvals, context injection, and recovery.",
+      "Primary path: durable conversation, model tool loop (fs_*, git, shell_exec, web_*, MCP when connected), approvals, context injection, and recovery.",
   },
   contextInjection: {
     ready: true,
@@ -40,20 +40,27 @@ export const featureReadiness = {
     reason:
       "Production multi-role collaboration with durable orchestration sessions (composer secondary action; default send is single-agent).",
   },
+  projectCanvas: {
+    ready: true,
+    reason:
+      "Session relationship mind map: one card per session with ≤300-char summary, parent→branch edges, click to open chat, branch-from-context.",
+  },
   terminal: {
-    ready: false,
-    reason: "Terminal remains closed until PTY isolation and reconciliation land.",
+    ready: true,
+    reason:
+      "shell_exec is available to the agent after user approval; full interactive PTY UI remains optional.",
   },
   gitMutation: {
-    ready: false,
-    reason: "Git write operations remain closed; only status/diff are enabled.",
+    ready: true,
+    reason: "git add/commit available via the git tool with user approval; force-push stays blocked.",
   },
   automations: {
     ready: false,
     reason: "Automations are not productized; scheduler ticker is stopped.",
   },
   mcpAgentTools: {
-    ready: false,
-    reason: "MCP servers can be listed; tools are not attached to the agent loop yet.",
+    ready: true,
+    reason:
+      "After connecting MCP servers and refreshing tools in 能力中心, tools are registered into the agent loop (writes require approval).",
   },
 } as const;

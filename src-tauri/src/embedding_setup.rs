@@ -69,6 +69,7 @@ pub async fn build_embedding_provider(
         ProviderKind::OpenAI,
         ProviderKind::Moonshot,
         ProviderKind::DeepSeek,
+        ProviderKind::Xai,
         ProviderKind::Groq,
         ProviderKind::OpenRouter,
         ProviderKind::AzureOpenAI,
@@ -156,6 +157,7 @@ fn default_openai_base_url(kind: ProviderKind) -> String {
     match kind {
         ProviderKind::Moonshot => "https://api.moonshot.cn/v1".to_owned(),
         ProviderKind::DeepSeek => "https://api.deepseek.com/v1".to_owned(),
+        ProviderKind::Xai => "https://api.x.ai/v1".to_owned(),
         ProviderKind::Groq => "https://api.groq.com/openai/v1".to_owned(),
         ProviderKind::OpenRouter => "https://openrouter.ai/api/v1".to_owned(),
         _ => "https://api.openai.com/v1".to_owned(),

@@ -97,7 +97,11 @@ impl WorkspaceManager {
 
     /// Replace the allowed read and write paths for a workspace.
     ///
-    /// Paths must be absolute and reside inside the workspace root.
+    /// Each path must be an absolute directory. Paths may be:
+    /// - under the **main** project root (`root_path`), or
+    /// - additional **linked project folders** the user explicitly attached.
+    ///
+    /// The main project root is always kept on both allowlists.
     ///
     /// # Errors
     ///
@@ -111,20 +115,25 @@ impl WorkspaceManager {
     ) -> Result<(), AppError> {
         let workspace = self.storage.get_workspace(id).await?;
         let root = Path::new(&workspace.root_path);
-        let read_paths = read_paths
+        let mut read_paths = read_paths
             .iter()
             .map(|path| Self::canonical_allowed_path(root, path))
-            .collect::<Result<BTreeSet<_>, _>>()?
-            .into_iter()
-            .collect();
-        let write_paths = write_paths
+            .collect::<Result<BTreeSet<_>, _>>()?;
+        let mut write_paths = write_paths
             .iter()
             .map(|path| Self::canonical_allowed_path(root, path))
-            .collect::<Result<BTreeSet<_>, _>>()?
-            .into_iter()
-            .collect();
+            .collect::<Result<BTreeSet<_>, _>>()?;
+        // Main engineering folder is always present.
+        read_paths.insert(workspace.root_path.clone());
+        write_paths.insert(workspace.root_path.clone());
 
-        self.storage.set_workspace_allowed_paths(id, read_paths, write_paths).await?;
+        self.storage
+            .set_workspace_allowed_paths(
+                id,
+                read_paths.into_iter().collect(),
+                write_paths.into_iter().collect(),
+            )
+            .await?;
 
         let _ = self.security.audit.log(AuditEvent {
             workspace_id: id,
@@ -136,6 +145,80 @@ impl WorkspaceManager {
         });
 
         Ok(())
+    }
+
+    /// Add one linked project folder (read+write) alongside the main root.
+    ///
+    /// # Errors
+    ///
+    /// Invalid or dangerous paths, or persistence failures.
+    pub async fn add_linked_project_folder(
+        &self,
+        id: WorkspaceId,
+        path: &str,
+    ) -> Result<Workspace, AppError> {
+        let workspace = self.storage.get_workspace(id).await?;
+        let root = Path::new(&workspace.root_path);
+        let linked = Self::canonical_allowed_path(root, path)?;
+        if Path::new(&linked) == root {
+            return Ok(workspace);
+        }
+        let mut read = workspace.allowed_read_paths.clone();
+        let mut write = workspace.allowed_write_paths.clone();
+        if !read.iter().any(|p| p == &linked) {
+            read.push(linked.clone());
+        }
+        if !write.iter().any(|p| p == &linked) {
+            write.push(linked);
+        }
+        self.set_allowed_paths(id, read, write).await?;
+        self.storage.get_workspace(id).await
+    }
+
+    /// Remove a linked project folder (cannot remove the main root).
+    ///
+    /// # Errors
+    ///
+    /// Persistence failures, or attempting to remove the main root.
+    pub async fn remove_linked_project_folder(
+        &self,
+        id: WorkspaceId,
+        path: &str,
+    ) -> Result<Workspace, AppError> {
+        let workspace = self.storage.get_workspace(id).await?;
+        let root_can = Path::new(&workspace.root_path)
+            .canonicalize()
+            .unwrap_or_else(|_| PathBuf::from(&workspace.root_path));
+        let target = Path::new(path)
+            .canonicalize()
+            .unwrap_or_else(|_| PathBuf::from(path));
+        if target == root_can {
+            return Err(AppError::PermissionDenied {
+                reason: "cannot remove the main project folder".to_owned(),
+            });
+        }
+        let read: Vec<String> = workspace
+            .allowed_read_paths
+            .into_iter()
+            .filter(|p| {
+                let p_can = Path::new(p)
+                    .canonicalize()
+                    .unwrap_or_else(|_| PathBuf::from(p));
+                p_can != target
+            })
+            .collect();
+        let write: Vec<String> = workspace
+            .allowed_write_paths
+            .into_iter()
+            .filter(|p| {
+                let p_can = Path::new(p)
+                    .canonicalize()
+                    .unwrap_or_else(|_| PathBuf::from(p));
+                p_can != target
+            })
+            .collect();
+        self.set_allowed_paths(id, read, write).await?;
+        self.storage.get_workspace(id).await
     }
 
     /// Check whether `path` may be read inside the workspace.
@@ -292,19 +375,45 @@ impl WorkspaceManager {
                 reason: format!("allowed path must be absolute: {path}"),
             });
         }
+        let root_can = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
         let canonical = p.canonicalize().map_err(|_| AppError::PermissionDenied {
             reason: format!("allowed path does not exist or cannot be resolved: {path}"),
         })?;
-        if !canonical.starts_with(root) {
-            return Err(AppError::PermissionDenied {
-                reason: format!("allowed path must be inside workspace root: {path}"),
-            });
-        }
         if !canonical.is_dir() {
             return Err(AppError::PermissionDenied {
                 reason: format!("allowed path must be a directory: {path}"),
             });
         }
+
+        // Symlink escape: if the path's parent resolves under the main root,
+        // the final target must also stay under the main root.
+        // Using the parent (not lexical starts_with) handles macOS /var vs /private/var.
+        if let Some(parent) = p.parent() {
+            if let Ok(parent_can) = parent.canonicalize() {
+                let parent_under_root =
+                    parent_can == root_can || parent_can.starts_with(&root_can);
+                if parent_under_root && !canonical.starts_with(&root_can) {
+                    return Err(AppError::PermissionDenied {
+                        reason: format!(
+                            "allowed path escapes workspace root via symlink: {path}"
+                        ),
+                    });
+                }
+            }
+        }
+
+        // Outside main root: linked project folder (same safety as a new workspace root).
+        if !canonical.starts_with(&root_can) {
+            Self::reject_dangerous_root(&canonical)?;
+            if root_can.starts_with(&canonical) {
+                return Err(AppError::PermissionDenied {
+                    reason: format!(
+                        "linked folder must not be a parent of the main project root: {path}"
+                    ),
+                });
+            }
+        }
+
         canonical
             .to_str()
             .map(ToOwned::to_owned)
@@ -450,12 +559,54 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn allowed_paths_must_be_inside_root() {
+    async fn allowed_paths_reject_missing_or_dangerous_outside() {
         let (manager, workspace, _root) = setup().await;
         let result = manager
             .set_allowed_paths(workspace.id, vec!["/outside".to_owned()], vec![])
             .await;
         assert!(matches!(result, Err(AppError::PermissionDenied { .. })));
+    }
+
+    #[tokio::test]
+    async fn linked_project_folder_can_be_added_and_removed() {
+        let (manager, workspace, root) = setup().await;
+        let linked = tempfile::tempdir().expect("linked project");
+        std::fs::create_dir(linked.path().join("pkg")).expect("pkg dir");
+
+        let updated = manager
+            .add_linked_project_folder(workspace.id, linked.path().to_str().expect("utf8"))
+            .await
+            .expect("add linked");
+        let linked_can = linked.path().canonicalize().unwrap().to_string_lossy().into_owned();
+        let root_can = root.path().canonicalize().unwrap().to_string_lossy().into_owned();
+        assert!(updated.allowed_read_paths.contains(&root_can));
+        assert!(updated.allowed_read_paths.contains(&linked_can));
+        assert!(updated.allowed_write_paths.contains(&linked_can));
+
+        manager.trust_workspace(workspace.id, true).await.expect("trust");
+        let file_in_linked = linked.path().join("pkg/a.txt");
+        std::fs::write(&file_in_linked, "hi").expect("write");
+        assert!(matches!(
+            manager
+                .can_read(workspace.id, &file_in_linked.to_string_lossy())
+                .await,
+            PermissionResult::Allowed
+        ));
+
+        let after_remove = manager
+            .remove_linked_project_folder(workspace.id, &linked_can)
+            .await
+            .expect("remove linked");
+        assert!(!after_remove.allowed_read_paths.contains(&linked_can));
+        assert!(after_remove.allowed_read_paths.contains(&root_can));
+
+        let remove_main = manager
+            .remove_linked_project_folder(workspace.id, &root_can)
+            .await;
+        assert!(matches!(
+            remove_main,
+            Err(AppError::PermissionDenied { .. })
+        ));
     }
 
     #[tokio::test]

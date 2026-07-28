@@ -10,6 +10,8 @@ import type { AgentRunId, ProviderId, TerminalId, ThreadId, WorkspaceId } from "
 export const workspaceKeys = {
   list: () => ["workspaces"] as const,
   threads: (workspaceId: WorkspaceId) => ["workspaces", workspaceId, "threads"] as const,
+  archivedThreads: (workspaceId: WorkspaceId) =>
+    ["workspaces", workspaceId, "threads", "archived"] as const,
   worktrees: (workspaceId: WorkspaceId) => ["workspaces", workspaceId, "worktrees"] as const,
   memories: (workspaceId: WorkspaceId) => ["workspaces", workspaceId, "memories"] as const,
   /** Prefix for all directory listings of a workspace (any relative path). */

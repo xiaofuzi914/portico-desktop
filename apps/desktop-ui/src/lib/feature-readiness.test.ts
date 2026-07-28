@@ -27,6 +27,6 @@ describe("feature readiness", () => {
     expect(featureReadiness.workspaceIndexer.ready).toBe(true);
     expect(featureReadiness.advancedFileTools.ready).toBe(true);
     expect(featureReadiness.automations.ready).toBe(false);
-    expect(featureReadiness.terminal.ready).toBe(false);
+    expect(featureReadiness.terminal.ready).toBe(true);
   });
 });

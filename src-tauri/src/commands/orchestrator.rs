@@ -2,7 +2,7 @@
 
 use app_models::{
     AgentDefinition, AgentRunId, Orchestration, OrchestrationId, OrchestrationPlan, PatternHint,
-    ThreadId, WorkspaceId,
+    ThreadId, WorkflowTemplate, WorkflowTemplateId, WorkspaceId,
 };
 use tauri::State;
 
@@ -60,7 +60,7 @@ pub async fn preview_orchestration_plan(
     )
 }
 
-/// Start a full multi-agent orchestration closed loop.
+/// Start a full multi-agent orchestration closed loop (adaptive multi-stage graph).
 ///
 /// # Errors
 ///
@@ -71,13 +71,49 @@ pub async fn start_orchestration(
     workspace_id: WorkspaceId,
     thread_id: ThreadId,
     task: String,
+    // Optional bundled workflow id (e.g. multi-lens-review). None = adaptive graph.
+    workflow_id: Option<String>,
 ) -> Result<ApiResponse<Orchestration>, String> {
     Ok(
-        match state.orchestration.start_orchestration(workspace_id, thread_id, &task).await {
+        match state
+            .orchestration
+            .start_orchestration_with_workflow(
+                workspace_id,
+                thread_id,
+                &task,
+                workflow_id.as_deref(),
+            )
+            .await
+        {
             Ok(session) => ApiResponse::ok(session),
             Err(err) => ApiResponse::err(err.to_string()),
         },
     )
+}
+
+/// List named bundled multi-stage workflows for the product UI.
+#[tauri::command]
+pub fn list_bundled_workflows(
+    state: State<'_, AppState>,
+) -> Result<ApiResponse<Vec<BundledWorkflowDto>>, String> {
+    let list = state
+        .orchestration
+        .list_bundled_workflows()
+        .into_iter()
+        .map(|w| BundledWorkflowDto {
+            id: w.id.to_owned(),
+            title: w.title.to_owned(),
+            summary: w.summary.to_owned(),
+        })
+        .collect();
+    Ok(ApiResponse::ok(list))
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct BundledWorkflowDto {
+    pub id: String,
+    pub title: String,
+    pub summary: String,
 }
 
 /// Get an orchestration session by id.
@@ -170,4 +206,68 @@ pub async fn mute_workflow_pattern(
         Ok(()) => ApiResponse::ok(()),
         Err(err) => ApiResponse::err(err.to_string()),
     })
+}
+
+/// List editable workflow templates (seeds bundled catalog on first call).
+#[tauri::command]
+pub async fn list_workflow_templates(
+    state: State<'_, AppState>,
+    workspace_id: Option<WorkspaceId>,
+) -> Result<ApiResponse<Vec<WorkflowTemplate>>, String> {
+    Ok(
+        match state
+            .orchestration
+            .list_workflow_templates(workspace_id)
+            .await
+        {
+            Ok(list) => ApiResponse::ok(list),
+            Err(err) => ApiResponse::err(err.to_string()),
+        },
+    )
+}
+
+/// Save (create/update) a workflow template after DAG validation.
+#[tauri::command]
+pub async fn save_workflow_template(
+    state: State<'_, AppState>,
+    template: WorkflowTemplate,
+) -> Result<ApiResponse<WorkflowTemplate>, String> {
+    Ok(
+        match state.orchestration.save_workflow_template(template).await {
+            Ok(saved) => ApiResponse::ok(saved),
+            Err(err) => ApiResponse::err(err.to_string()),
+        },
+    )
+}
+
+/// Load one workflow template by id.
+#[tauri::command]
+pub async fn get_workflow_template(
+    state: State<'_, AppState>,
+    template_id: WorkflowTemplateId,
+) -> Result<ApiResponse<WorkflowTemplate>, String> {
+    Ok(
+        match state.orchestration.get_workflow_template(template_id).await {
+            Ok(t) => ApiResponse::ok(t),
+            Err(err) => ApiResponse::err(err.to_string()),
+        },
+    )
+}
+
+/// Delete a non-builtin workflow template.
+#[tauri::command]
+pub async fn delete_workflow_template(
+    state: State<'_, AppState>,
+    template_id: WorkflowTemplateId,
+) -> Result<ApiResponse<()>, String> {
+    Ok(
+        match state
+            .orchestration
+            .delete_workflow_template(template_id)
+            .await
+        {
+            Ok(()) => ApiResponse::ok(()),
+            Err(err) => ApiResponse::err(err.to_string()),
+        },
+    )
 }

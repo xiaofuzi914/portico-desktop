@@ -99,7 +99,7 @@ mod tests {
             .create_workspace("test", "/tmp/portico-wt-test", false)
             .await
             .expect("create workspace");
-        let thread = storage.create_thread(workspace.id, "thread").await.expect("create thread");
+        let thread = storage.create_thread(workspace.id, "thread", None).await.expect("create thread");
         (WorktreeManager::new(storage), workspace.id, thread.id)
     }
 

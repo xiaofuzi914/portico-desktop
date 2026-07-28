@@ -1221,7 +1221,7 @@ mod tests {
             .create_workspace("test", "/tmp/portico-selection-test", false)
             .await
             .expect("workspace");
-        let thread = storage.create_thread(workspace.id, "thread").await.expect("thread");
+        let thread = storage.create_thread(workspace.id, "thread", None).await.expect("thread");
         let first_provider = registry
             .create_provider(ProviderKind::OpenAI, "one", None, "one-ref")
             .await
@@ -1336,7 +1336,7 @@ mod tests {
             .create_workspace("test", "/tmp/portico-snapshot-test", false)
             .await
             .expect("workspace");
-        let thread = storage.create_thread(workspace.id, "thread").await.expect("thread");
+        let thread = storage.create_thread(workspace.id, "thread", None).await.expect("thread");
         let run = storage.create_run(workspace.id, thread.id).await.expect("run");
         let provider = registry
             .create_provider(ProviderKind::OpenAI, "OpenAI", None, "ref")

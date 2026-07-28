@@ -62,7 +62,8 @@ export function polishOrchestrationTask(
   } else if (has(["测试", "test", "单元测试", "回归"])) {
     goals.push("指出应覆盖的测试点与现有测试入口");
     pushRole("tester");
-  } else if (has(["文档", "doc", "readme", "说明"])) {
+  } else if (has(["文档", "写文档", "文档化", "readme", "documentation", "docs/"])) {
+    // Avoid bare "说明" — it collides with generic requirements boilerplate.
     goals.push("整理文档缺口与建议补充内容");
     pushRole("doc-writer");
   } else if (
@@ -80,6 +81,7 @@ export function polishOrchestrationTask(
       "仓库",
       "看下",
       "看看",
+      "扫描",
     ])
   ) {
     goals.push("梳理项目结构、关键入口与技术架构要点");
@@ -96,11 +98,13 @@ export function polishOrchestrationTask(
   }
 
   // Keep the brief short so subagents don't burn the context window.
+  // Wording carefully avoids soft-keyword false positives on the backend
+  // (e.g. bare "说明" used to force doc-writer).
   const polished = [
     `【任务】${raw}`,
     `【目标】${goals[0] ?? raw}`,
     `【角色】${roles.join(" → ") || "default"}`,
-    "【要求】中文结论先行；标注依据路径；不确定则说明。",
+    "【要求】中文结论先行；标注依据路径；不确定则标明不确定。",
   ].join("\n");
 
   return {

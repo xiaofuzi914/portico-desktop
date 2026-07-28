@@ -27,7 +27,7 @@ cd "$ROOT_DIR"
 CARGO_TARGET_DIR="$E2E_TARGET_DIR" pnpm exec tauri build --no-bundle \
   --features desktop-e2e --config src-tauri/tauri.e2e.conf.json
 
-e2e_binary="$E2E_TARGET_DIR/release/portico-tauri"
+e2e_binary="$E2E_TARGET_DIR/release/Portico"
 LC_ALL=C strings "$e2e_binary" | \
   grep -E 'WDIO WebDriver plugin|TAURI_WEBDRIVER_PORT|WebDriver server listening' >/dev/null
 

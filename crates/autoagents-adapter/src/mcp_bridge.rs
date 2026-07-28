@@ -50,7 +50,17 @@ impl PorticoTool for McpToolAdapter {
         self.info.input_schema.clone()
     }
 
+    fn policy_action(&self) -> Option<&'static str> {
+        Some(if self.info.side_effects {
+            "mcp.invoke.write"
+        } else {
+            "mcp.invoke.read"
+        })
+    }
+
     async fn invoke(&self, input: ToolInput) -> Result<ToolOutput, app_models::AppError> {
+        // Permission is enforced by PolicyGate (agent loop) or invoke_mcp_tool
+        // (manual UI). Do not re-Ask here or approved durable grants dead-end.
         let action = if self.info.side_effects {
             "mcp.invoke.write"
         } else {
@@ -66,19 +76,11 @@ impl PorticoTool for McpToolAdapter {
             trusted_workspace: true,
         });
 
-        if !matches!(permission_result, PermissionResult::Allowed) {
+        if let PermissionResult::Denied { reason } = &permission_result {
             self.audit(input.workspace_id, input.run_id, action, &permission_result);
-            let reason = match permission_result {
-                PermissionResult::Allowed => unreachable!(),
-                PermissionResult::Ask { ref request } => {
-                    format!(
-                        "approval required for {} on {}",
-                        request.action, request.resource
-                    )
-                }
-                PermissionResult::Denied { ref reason } => reason.clone(),
-            };
-            return Err(app_models::AppError::PermissionDenied { reason });
+            return Err(app_models::AppError::PermissionDenied {
+                reason: reason.clone(),
+            });
         }
 
         let result = self

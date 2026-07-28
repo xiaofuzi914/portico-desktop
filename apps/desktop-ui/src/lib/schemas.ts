@@ -61,6 +61,7 @@ export const providerKindSchema = z.enum([
   "Anthropic",
   "Moonshot",
   "DeepSeek",
+  "Xai",
   "Google",
   "Groq",
   "OpenRouter",
@@ -234,6 +235,10 @@ export const threadSchema = z.object({
   id: threadIdSchema,
   workspace_id: workspaceIdSchema,
   title: z.string().min(1),
+  /** Parent session when this thread was branched (mind-map relationship). */
+  parent_thread_id: threadIdSchema.nullable(),
+  /** Soft-delete timestamp; active sessions have null. Purged after 30 days. */
+  archived_at: z.string().datetime().nullable(),
   created_at: z.string().datetime(),
   updated_at: z.string().datetime(),
 });
@@ -709,13 +714,82 @@ export const patternHintSchema = z.object({
 });
 export type PatternHint = z.infer<typeof patternHintSchema>;
 
+export const orchestrationStageKindSchema = z.enum(["single", "foreach", "reduce", "loop"]);
+export type OrchestrationStageKind = z.infer<typeof orchestrationStageKindSchema>;
+
+export const orchestrationStageStatusSchema = z.enum([
+  "Pending",
+  "Running",
+  "Completed",
+  "Failed",
+  "Cancelled",
+  "Skipped",
+]);
+export type OrchestrationStageStatus = z.infer<typeof orchestrationStageStatusSchema>;
+
+export const orchestrationStageTaskSchema = z.object({
+  id: z.string(),
+  item_index: z.number().int().nullable().optional(),
+  label: z.string(),
+  status: orchestrationStageStatusSchema,
+  subagent_id: agentRunIdSchema.nullable().optional(),
+  output_summary: z.string().nullable().optional(),
+  output_payload: z.string().nullable().optional(),
+});
+export type OrchestrationStageTask = z.infer<typeof orchestrationStageTaskSchema>;
+
+export const orchestrationStageSchema = z.object({
+  id: z.string(),
+  kind: orchestrationStageKindSchema,
+  title: z.string(),
+  agent_name: z.string(),
+  status: orchestrationStageStatusSchema,
+  prompt_template: z.string(),
+  depends_on: z.array(z.string()).default([]),
+  foreach_path: z.string().nullable().optional(),
+  body_stage_ids: z.array(z.string()).optional().default([]),
+  max_iterations: z.number().int().nullable().optional(),
+  stop_flag_path: z.string().nullable().optional(),
+  current_iteration: z.number().int().nullable().optional(),
+  tasks: z.array(orchestrationStageTaskSchema).default([]),
+  output_payload: z.string().nullable().optional(),
+  error_message: z.string().nullable().optional(),
+});
+export type OrchestrationStage = z.infer<typeof orchestrationStageSchema>;
+
+export const workflowTemplateIdSchema = z.string().uuid().brand<"WorkflowTemplateId">();
+export type WorkflowTemplateId = z.infer<typeof workflowTemplateIdSchema>;
+
+export const workflowTemplateSchema = z.object({
+  id: workflowTemplateIdSchema,
+  catalog_key: z.string().nullable().optional(),
+  title: z.string(),
+  summary: z.string(),
+  stages: z.array(orchestrationStageSchema).default([]),
+  builtin: z.boolean().default(false),
+  workspace_id: workspaceIdSchema.nullable().optional(),
+  created_at: z.string(),
+  updated_at: z.string(),
+});
+export type WorkflowTemplate = z.infer<typeof workflowTemplateSchema>;
+
 export const orchestrationPlanSchema = z.object({
   parent_run_id: agentRunIdSchema,
   subagents: z.array(subagentRunSchema),
   pattern_ids: z.array(workflowPatternIdSchema).default([]),
   planning_rationale: z.string().default(""),
+  stages: z.array(orchestrationStageSchema).default([]),
+  workflow_id: z.string().nullable().optional(),
+  workflow_title: z.string().nullable().optional(),
 });
 export type OrchestrationPlan = z.infer<typeof orchestrationPlanSchema>;
+
+export const bundledWorkflowSchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  summary: z.string(),
+});
+export type BundledWorkflow = z.infer<typeof bundledWorkflowSchema>;
 
 export const orchestrationIdSchema = z.string().uuid().brand<"OrchestrationId">();
 export type OrchestrationId = z.infer<typeof orchestrationIdSchema>;
@@ -879,3 +953,125 @@ export const migrationInfoSchema = z.object({
   checksum: z.string(),
 });
 export type MigrationInfo = z.infer<typeof migrationInfoSchema>;
+
+
+// Canvas / mind-map schemas
+
+export const canvasIdSchema = z.string().uuid().brand<"CanvasId">();
+export type CanvasId = z.infer<typeof canvasIdSchema>;
+
+export const canvasNodeIdSchema = z.string().uuid().brand<"CanvasNodeId">();
+export type CanvasNodeId = z.infer<typeof canvasNodeIdSchema>;
+
+export const canvasEdgeIdSchema = z.string().uuid().brand<"CanvasEdgeId">();
+export type CanvasEdgeId = z.infer<typeof canvasEdgeIdSchema>;
+
+export const canvasLinkIdSchema = z.string().uuid().brand<"CanvasLinkId">();
+export type CanvasLinkId = z.infer<typeof canvasLinkIdSchema>;
+
+export function asCanvasId(id: string): CanvasId {
+  return id as CanvasId;
+}
+
+export function asCanvasNodeId(id: string): CanvasNodeId {
+  return id as CanvasNodeId;
+}
+
+export function asCanvasEdgeId(id: string): CanvasEdgeId {
+  return id as CanvasEdgeId;
+}
+
+export function asCanvasLinkId(id: string): CanvasLinkId {
+  return id as CanvasLinkId;
+}
+
+export const canvasKindSchema = z.enum(["Project", "Thread"]);
+export type CanvasKind = z.infer<typeof canvasKindSchema>;
+
+export const canvasNodeKindSchema = z.enum([
+  "Insight",
+  "Goal",
+  "Stage",
+  "ThreadCluster",
+  "Note",
+]);
+export type CanvasNodeKind = z.infer<typeof canvasNodeKindSchema>;
+
+export const canvasNodeStatusSchema = z.enum([
+  "Todo",
+  "InProgress",
+  "Done",
+  "Blocked",
+  "Stale",
+]);
+export type CanvasNodeStatus = z.infer<typeof canvasNodeStatusSchema>;
+
+export const canvasNodeSourceSchema = z.enum(["Auto", "User", "Agent"]);
+export type CanvasNodeSource = z.infer<typeof canvasNodeSourceSchema>;
+
+export const canvasEdgeKindSchema = z.enum(["Parent", "Related", "DerivedFrom", "Blocks"]);
+export type CanvasEdgeKind = z.infer<typeof canvasEdgeKindSchema>;
+
+export const canvasLinkRefTypeSchema = z.enum(["Thread", "Message", "Run", "Orchestration"]);
+export type CanvasLinkRefType = z.infer<typeof canvasLinkRefTypeSchema>;
+
+export const canvasSchema = z.object({
+  id: canvasIdSchema,
+  workspace_id: workspaceIdSchema,
+  thread_id: threadIdSchema.nullable(),
+  title: z.string(),
+  kind: canvasKindSchema,
+  viewport_json: z.string(),
+  revision: z.number().int(),
+  last_extracted_at: z.string().datetime().nullable(),
+  created_at: z.string().datetime(),
+  updated_at: z.string().datetime(),
+});
+export type Canvas = z.infer<typeof canvasSchema>;
+
+export const canvasNodeSchema = z.object({
+  id: canvasNodeIdSchema,
+  canvas_id: canvasIdSchema,
+  kind: canvasNodeKindSchema,
+  title: z.string(),
+  summary: z.string(),
+  status: canvasNodeStatusSchema,
+  parent_id: canvasNodeIdSchema.nullable(),
+  position_x: z.number(),
+  position_y: z.number(),
+  layout_rank: z.number().int(),
+  source: canvasNodeSourceSchema,
+  payload_json: z.string(),
+  created_at: z.string().datetime(),
+  updated_at: z.string().datetime(),
+});
+export type CanvasNode = z.infer<typeof canvasNodeSchema>;
+
+export const canvasEdgeSchema = z.object({
+  id: canvasEdgeIdSchema,
+  canvas_id: canvasIdSchema,
+  from_id: canvasNodeIdSchema,
+  to_id: canvasNodeIdSchema,
+  kind: canvasEdgeKindSchema,
+  label: z.string().nullable(),
+  created_at: z.string().datetime(),
+});
+export type CanvasEdge = z.infer<typeof canvasEdgeSchema>;
+
+export const canvasLinkSchema = z.object({
+  id: canvasLinkIdSchema,
+  node_id: canvasNodeIdSchema,
+  ref_type: canvasLinkRefTypeSchema,
+  ref_id: z.string(),
+  snippet: z.string().nullable(),
+  created_at: z.string().datetime(),
+});
+export type CanvasLink = z.infer<typeof canvasLinkSchema>;
+
+export const canvasSnapshotSchema = z.object({
+  canvas: canvasSchema,
+  nodes: z.array(canvasNodeSchema),
+  edges: z.array(canvasEdgeSchema),
+  links: z.array(canvasLinkSchema),
+});
+export type CanvasSnapshot = z.infer<typeof canvasSnapshotSchema>;

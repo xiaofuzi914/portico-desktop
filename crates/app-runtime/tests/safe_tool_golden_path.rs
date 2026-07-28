@@ -44,7 +44,7 @@ async fn restart_after_file_effect_reconciles_receipt_without_replaying_write() 
             )
             .await
             .expect("allowed paths");
-        let thread = storage.create_thread(workspace.id, "thread").await.expect("thread");
+        let thread = storage.create_thread(workspace.id, "thread", None).await.expect("thread");
         let run = storage.create_run(workspace.id, thread.id).await.expect("run");
         storage
             .update_run_status(run.id, AgentRunStatus::Running)
@@ -152,7 +152,7 @@ async fn read_approved_atomic_write_and_git_diff_form_one_safe_golden_path() {
         )
         .await
         .expect("allowed paths");
-    let thread = storage.create_thread(workspace.id, "thread").await.expect("thread");
+    let thread = storage.create_thread(workspace.id, "thread", None).await.expect("thread");
     let run = storage.create_run(workspace.id, thread.id).await.expect("run");
     storage
         .update_run_status(run.id, AgentRunStatus::Running)

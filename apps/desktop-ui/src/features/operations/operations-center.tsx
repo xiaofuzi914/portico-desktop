@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { Home } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { typography } from "@/components/ui/typography";
 import { AutomationSummary } from "./automation-summary";
 import { NotificationInbox } from "./notification-inbox";
@@ -39,28 +39,29 @@ export function OperationsCenter({ defaultTab = "automations" }: OperationsCente
         </Link>
       </div>
 
-      <div className="flex gap-2 border-b pb-2">
+      <TabsList aria-label={t("operations.title")} className="flex gap-2 border-b pb-2">
         {tabs.map((tab) => (
-          <button
+          <TabsTrigger
             key={tab.id}
-            type="button"
+            id={`operations-tab-${tab.id}`}
+            aria-controls={`operations-panel-${tab.id}`}
+            active={activeTab === tab.id}
             onClick={() => setActiveTab(tab.id)}
-            className={cn(
-              "rounded-md px-3 py-1.5 text-sm font-medium transition-colors",
-              activeTab === tab.id
-                ? "bg-muted text-foreground"
-                : "text-muted-foreground hover:bg-muted/50 hover:text-foreground",
-            )}
           >
             {tab.label}
-          </button>
+          </TabsTrigger>
         ))}
-      </div>
+      </TabsList>
 
-      {activeTab === "automations" && <AutomationSummary />}
-      {activeTab === "notifications" && <NotificationInbox />}
-      {activeTab === "background-tasks" && <BackgroundTaskList />}
-      {activeTab === "audit" && <AuditLogPanel />}
+      <TabsContent
+        id={`operations-panel-${activeTab}`}
+        aria-labelledby={`operations-tab-${activeTab}`}
+      >
+        {activeTab === "automations" && <AutomationSummary />}
+        {activeTab === "notifications" && <NotificationInbox />}
+        {activeTab === "background-tasks" && <BackgroundTaskList />}
+        {activeTab === "audit" && <AuditLogPanel />}
+      </TabsContent>
     </main>
   );
 }

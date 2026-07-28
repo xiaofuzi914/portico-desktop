@@ -12,7 +12,7 @@ async fn fixture() -> (SqliteStorage, ToolInvocation) {
         .create_workspace("tools", &root.to_string_lossy(), true)
         .await
         .expect("workspace");
-    let thread = storage.create_thread(workspace.id, "thread").await.expect("thread");
+    let thread = storage.create_thread(workspace.id, "thread", None).await.expect("thread");
     let run = storage.create_run(workspace.id, thread.id).await.expect("run");
     let now = Utc::now();
     let invocation = ToolInvocation {

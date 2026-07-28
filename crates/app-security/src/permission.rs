@@ -18,9 +18,10 @@ impl PolicyPermissionEngine {
     /// Create a policy with sensible Phase 5 defaults.
     ///
     /// Default rules:
-    /// - Deny all `shell.*` actions.
+    /// - **Ask** for `shell.*` (agent may run commands after user approval).
     /// - Allow `filesystem.read` / `filesystem.write` / `git.read` in trusted
     ///   workspaces (path allowlists enforced by the policy gate).
+    /// - **Ask** for `git.write` (stage/commit) so mutations never silent-fire.
     /// - Allow read-only MCP tool invocations.
     /// - Ask for side-effect MCP tool invocations.
     /// - Allow `network.*` at the action level; private host/port checks are
@@ -28,11 +29,18 @@ impl PolicyPermissionEngine {
     #[must_use]
     pub fn default_rules() -> Self {
         let rules = vec![
+            // Shell is available to the agent, but every invocation needs approval.
             crate::PermissionRule {
                 action_pattern: "shell.*".to_owned(),
                 resource_pattern: "*".to_owned(),
-                decision: crate::PermissionDecision::Deny,
-                scope: crate::PermissionScope::Global,
+                decision: crate::PermissionDecision::Ask,
+                scope: crate::PermissionScope::Once,
+            },
+            crate::PermissionRule {
+                action_pattern: "git.write".to_owned(),
+                resource_pattern: "*".to_owned(),
+                decision: crate::PermissionDecision::Ask,
+                scope: crate::PermissionScope::Once,
             },
             // Untrusted / non-default write handling falls through to
             // apply_default_policy, which Allows only when trusted_workspace is set.
@@ -113,9 +121,21 @@ fn matches_glob(pattern: &str, value: &str) -> bool {
 }
 
 fn apply_default_policy(request: &PermissionRequest) -> PermissionResult {
+    // Shell stays available but never auto-runs without approval.
     if request.action.starts_with("shell.") {
-        return PermissionResult::Denied {
-            reason: "shell commands are blocked by default".to_owned(),
+        return PermissionResult::Ask {
+            request: app_models::ApprovalRequest {
+                id: app_models::ApprovalRequestId(0),
+                run_id: request.run_id.unwrap_or_default(),
+                workspace_id: request.workspace_id,
+                thread_id: request.thread_id.unwrap_or_default(),
+                action: request.action.clone(),
+                resource: request.resource.clone(),
+                status: app_models::ApprovalRequestStatus::Pending,
+                created_at: chrono::Utc::now(),
+                resolved_at: None,
+                resolution_reason: None,
+            },
         };
     }
 
@@ -125,6 +145,23 @@ fn apply_default_policy(request: &PermissionRequest) -> PermissionResult {
 
     if request.action == "git.read" && request.trusted_workspace {
         return PermissionResult::Allowed;
+    }
+
+    if request.action == "git.write" {
+        return PermissionResult::Ask {
+            request: app_models::ApprovalRequest {
+                id: app_models::ApprovalRequestId(0),
+                run_id: request.run_id.unwrap_or_default(),
+                workspace_id: request.workspace_id,
+                thread_id: request.thread_id.unwrap_or_default(),
+                action: request.action.clone(),
+                resource: request.resource.clone(),
+                status: app_models::ApprovalRequestStatus::Pending,
+                created_at: chrono::Utc::now(),
+                resolved_at: None,
+                resolution_reason: None,
+            },
+        };
     }
 
     // Trusted projects may write inside their allowlist (path checks happen in
@@ -140,6 +177,27 @@ fn apply_default_policy(request: &PermissionRequest) -> PermissionResult {
 
     // Network category decisions are delegated to NetworkPolicy at request time.
     if request.action.starts_with("network.") {
+        return PermissionResult::Allowed;
+    }
+
+    if request.action.starts_with("mcp.invoke.") {
+        // Side-effect MCP defaults to Ask; read-only MCP is Allow (see rules above).
+        if request.action.ends_with(".write") {
+            return PermissionResult::Ask {
+                request: app_models::ApprovalRequest {
+                    id: app_models::ApprovalRequestId(0),
+                    run_id: request.run_id.unwrap_or_default(),
+                    workspace_id: request.workspace_id,
+                    thread_id: request.thread_id.unwrap_or_default(),
+                    action: request.action.clone(),
+                    resource: request.resource.clone(),
+                    status: app_models::ApprovalRequestStatus::Pending,
+                    created_at: chrono::Utc::now(),
+                    resolved_at: None,
+                    resolution_reason: None,
+                },
+            };
+        }
         return PermissionResult::Allowed;
     }
 
@@ -165,11 +223,20 @@ mod tests {
     }
 
     #[test]
-    fn shell_actions_are_denied() {
+    fn shell_actions_require_approval() {
         let engine = PolicyPermissionEngine::default_rules();
         assert!(matches!(
             engine.evaluate(request("shell.exec", "ls", true)),
-            PermissionResult::Denied { .. }
+            PermissionResult::Ask { .. }
+        ));
+    }
+
+    #[test]
+    fn git_write_requires_approval() {
+        let engine = PolicyPermissionEngine::default_rules();
+        assert!(matches!(
+            engine.evaluate(request("git.write", "/repo", true)),
+            PermissionResult::Ask { .. }
         ));
     }
 

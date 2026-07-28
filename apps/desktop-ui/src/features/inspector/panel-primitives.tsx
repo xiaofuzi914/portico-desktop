@@ -3,7 +3,7 @@ import { useTranslation } from "@/lib/i18n-react";
 export function InlineError({ title, message }: { title: string; message: string }) {
   return (
     <div className="p-3">
-      <div className="rounded border border-red-200 bg-red-50 p-3 text-xs text-red-700 dark:border-red-900 dark:bg-red-950">
+      <div className="rounded border border-destructive/25 bg-destructive-subtle p-3 text-xs text-destructive-ink">
         <p className="font-semibold">{title}</p>
         <p>{message}</p>
       </div>

@@ -247,6 +247,11 @@ pub struct Thread {
     pub workspace_id: WorkspaceId,
     /// Display title.
     pub title: String,
+    /// When set, this session was branched from another session (mind-map edge).
+    pub parent_thread_id: Option<ThreadId>,
+    /// When set, the session is in the archive (hidden from the active list).
+    /// Rows older than 30 days are permanently purged.
+    pub archived_at: Option<chrono::DateTime<chrono::Utc>>,
     /// Creation timestamp.
     pub created_at: chrono::DateTime<chrono::Utc>,
     /// Last update timestamp.
@@ -659,6 +664,8 @@ pub enum ProviderKind {
     Anthropic,
     Moonshot,
     DeepSeek,
+    /// xAI Grok (OpenAI-compatible API at api.x.ai).
+    Xai,
     Google,
     Groq,
     OpenRouter,
@@ -676,6 +683,7 @@ impl ProviderKind {
             Self::Anthropic => "Anthropic",
             Self::Moonshot => "Moonshot",
             Self::DeepSeek => "DeepSeek",
+            Self::Xai => "Xai",
             Self::Google => "Google",
             Self::Groq => "Groq",
             Self::OpenRouter => "OpenRouter",
@@ -695,6 +703,7 @@ impl TryFrom<&str> for ProviderKind {
             "Anthropic" => Ok(Self::Anthropic),
             "Moonshot" => Ok(Self::Moonshot),
             "DeepSeek" => Ok(Self::DeepSeek),
+            "Xai" | "Grok" | "xAI" => Ok(Self::Xai),
             "Google" => Ok(Self::Google),
             "Groq" => Ok(Self::Groq),
             "OpenRouter" => Ok(Self::OpenRouter),
@@ -1157,13 +1166,179 @@ pub struct SubagentRun {
     pub completed_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
+/// Kind of multi-agent stage in a durable stage graph (pi-workflow-inspired).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "snake_case")]
+pub enum OrchestrationStageKind {
+    /// One focused agent step.
+    Single,
+    /// Fan-out: one task per item from an upstream control list.
+    Foreach,
+    /// Fan-in: synthesize upstream stage outputs.
+    Reduce,
+    /// Bounded loop over an ordered set of body stage ids.
+    Loop,
+}
+
+impl OrchestrationStageKind {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Single => "single",
+            Self::Foreach => "foreach",
+            Self::Reduce => "reduce",
+            Self::Loop => "loop",
+        }
+    }
+}
+
+/// Lifecycle of one stage in a multi-stage orchestration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub enum OrchestrationStageStatus {
+    Pending,
+    Running,
+    Completed,
+    Failed,
+    Cancelled,
+    Skipped,
+}
+
+impl OrchestrationStageStatus {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "Pending",
+            Self::Running => "Running",
+            Self::Completed => "Completed",
+            Self::Failed => "Failed",
+            Self::Cancelled => "Cancelled",
+            Self::Skipped => "Skipped",
+        }
+    }
+}
+
+/// One work unit under a stage (foreach expands to N tasks).
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct OrchestrationStageTask {
+    pub id: String,
+    /// Optional index when expanded from a list.
+    #[serde(default)]
+    pub item_index: Option<u32>,
+    pub label: String,
+    pub status: OrchestrationStageStatus,
+    /// Bound subagent row when executed.
+    #[serde(default)]
+    pub subagent_id: Option<AgentRunId>,
+    #[serde(default)]
+    pub output_summary: Option<String>,
+    /// Structured payload for downstream stages (JSON string).
+    #[serde(default)]
+    pub output_payload: Option<String>,
+}
+
+/// One stage in a multi-stage orchestration graph.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct OrchestrationStage {
+    pub id: String,
+    pub kind: OrchestrationStageKind,
+    pub title: String,
+    /// Preferred agent role name (e.g. explorer, reviewer).
+    pub agent_name: String,
+    pub status: OrchestrationStageStatus,
+    /// Prompt template; may include `{task}`, `{upstream}`, `{item}` placeholders.
+    pub prompt_template: String,
+    /// Stage ids that must complete before this stage starts.
+    #[serde(default)]
+    pub depends_on: Vec<String>,
+    /// For foreach: JSON path-like hint (e.g. `items`) on upstream control payload.
+    #[serde(default)]
+    pub foreach_path: Option<String>,
+    /// For loop: ordered body stage ids executed each iteration.
+    #[serde(default)]
+    pub body_stage_ids: Vec<String>,
+    /// For loop: hard cap on iterations (required for loop; ignored otherwise).
+    #[serde(default)]
+    pub max_iterations: Option<u32>,
+    /// For loop: control JSON key that stops when true (e.g. `done` / `pass`).
+    #[serde(default)]
+    pub stop_flag_path: Option<String>,
+    /// Runtime: current loop iteration (1-based when running).
+    #[serde(default)]
+    pub current_iteration: Option<u32>,
+    #[serde(default)]
+    pub tasks: Vec<OrchestrationStageTask>,
+    /// Aggregated control/output JSON for downstream stages.
+    #[serde(default)]
+    pub output_payload: Option<String>,
+    #[serde(default)]
+    pub error_message: Option<String>,
+}
+
+/// Identifier for a user/app-editable multi-stage workflow template.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct WorkflowTemplateId(pub uuid::Uuid);
+
+impl WorkflowTemplateId {
+    #[must_use]
+    pub fn new() -> Self {
+        Self(uuid::Uuid::new_v4())
+    }
+}
+
+impl Default for WorkflowTemplateId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl std::str::FromStr for WorkflowTemplateId {
+    type Err = uuid::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(Self(uuid::Uuid::parse_str(s)?))
+    }
+}
+
+impl std::fmt::Display for WorkflowTemplateId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+/// Editable multi-stage workflow definition (bundled or user-saved).
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct WorkflowTemplate {
+    pub id: WorkflowTemplateId,
+    /// Stable catalog key for bundled templates (e.g. multi-lens-review); null for user-only.
+    #[serde(default)]
+    pub catalog_key: Option<String>,
+    pub title: String,
+    pub summary: String,
+    /// Stage graph definition (no parent_run_id until start).
+    pub stages: Vec<OrchestrationStage>,
+    /// When true, template is shipped with the app and not deleted by users.
+    #[serde(default)]
+    pub builtin: bool,
+    /// Optional workspace scope; null = global/app.
+    #[serde(default)]
+    pub workspace_id: Option<WorkspaceId>,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+}
+
 /// A plan describing the subagents to run for a parent run.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct OrchestrationPlan {
     /// Parent run the plan belongs to.
     pub parent_run_id: AgentRunId,
-    /// Subagents to execute.
+    /// Subagents to execute (flat view; stage graph also records the same work).
     pub subagents: Vec<SubagentRun>,
     /// Pattern ids that conditioned this plan (loose coupling evidence).
     #[serde(default)]
@@ -1171,6 +1346,15 @@ pub struct OrchestrationPlan {
     /// Human-readable reason the plan was shaped this way.
     #[serde(default)]
     pub planning_rationale: String,
+    /// Multi-stage graph (single / foreach / reduce). Empty = legacy role-only plan.
+    #[serde(default)]
+    pub stages: Vec<OrchestrationStage>,
+    /// Bundled workflow id when started from a named template (e.g. multi-lens-review).
+    #[serde(default)]
+    pub workflow_id: Option<String>,
+    /// Display title for the workflow board.
+    #[serde(default)]
+    pub workflow_title: Option<String>,
 }
 
 /// Identifier for a learned workflow pattern in the memory layer.
@@ -1358,6 +1542,397 @@ pub struct OrchestrationOutcome {
     pub agent_names: Vec<String>,
     pub pattern_ids: Vec<WorkflowPatternId>,
     pub result_summary: Option<String>,
+}
+
+
+// ── Project / thread canvas (mind-map work surface) ─────────────────────────
+
+/// Identifier for a canvas document.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct CanvasId(pub uuid::Uuid);
+
+impl CanvasId {
+    /// Create a new random canvas id.
+    #[must_use]
+    pub fn new() -> Self {
+        Self(uuid::Uuid::new_v4())
+    }
+}
+
+impl Default for CanvasId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Identifier for a canvas node.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct CanvasNodeId(pub uuid::Uuid);
+
+impl CanvasNodeId {
+    /// Create a new random canvas node id.
+    #[must_use]
+    pub fn new() -> Self {
+        Self(uuid::Uuid::new_v4())
+    }
+}
+
+impl Default for CanvasNodeId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Identifier for a canvas edge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct CanvasEdgeId(pub uuid::Uuid);
+
+impl CanvasEdgeId {
+    /// Create a new random canvas edge id.
+    #[must_use]
+    pub fn new() -> Self {
+        Self(uuid::Uuid::new_v4())
+    }
+}
+
+impl Default for CanvasEdgeId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Identifier for a canvas ↔ entity link.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct CanvasLinkId(pub uuid::Uuid);
+
+impl CanvasLinkId {
+    /// Create a new random canvas link id.
+    #[must_use]
+    pub fn new() -> Self {
+        Self(uuid::Uuid::new_v4())
+    }
+}
+
+impl Default for CanvasLinkId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Scope of a canvas document.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub enum CanvasKind {
+    /// One default map per workspace (project overview).
+    Project,
+    /// Optional per-thread mind-map projection.
+    Thread,
+}
+
+impl CanvasKind {
+    /// Persistable string form.
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Project => "project",
+            Self::Thread => "thread",
+        }
+    }
+}
+
+impl TryFrom<&str> for CanvasKind {
+    type Error = AppError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "project" => Ok(Self::Project),
+            "thread" => Ok(Self::Thread),
+            _ => Err(AppError::Internal {
+                message: format!("unknown canvas kind: {value}"),
+            }),
+        }
+    }
+}
+
+/// Semantic role of a canvas node.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub enum CanvasNodeKind {
+    /// Extracted conversation takeaway.
+    Insight,
+    /// Root goal for decomposition.
+    Goal,
+    /// Executable stage under a goal.
+    Stage,
+    /// Cluster representing one thread.
+    ThreadCluster,
+    /// Freeform sticky note.
+    Note,
+}
+
+impl CanvasNodeKind {
+    /// Persistable string form.
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Insight => "insight",
+            Self::Goal => "goal",
+            Self::Stage => "stage",
+            Self::ThreadCluster => "thread_cluster",
+            Self::Note => "note",
+        }
+    }
+}
+
+impl TryFrom<&str> for CanvasNodeKind {
+    type Error = AppError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "insight" => Ok(Self::Insight),
+            "goal" => Ok(Self::Goal),
+            "stage" => Ok(Self::Stage),
+            "thread_cluster" => Ok(Self::ThreadCluster),
+            "note" => Ok(Self::Note),
+            _ => Err(AppError::Internal {
+                message: format!("unknown canvas node kind: {value}"),
+            }),
+        }
+    }
+}
+
+/// Lifecycle of a goal/stage (insights use Todo/Done loosely).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub enum CanvasNodeStatus {
+    Todo,
+    InProgress,
+    Done,
+    Blocked,
+    Stale,
+}
+
+impl CanvasNodeStatus {
+    /// Persistable string form.
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Todo => "todo",
+            Self::InProgress => "in_progress",
+            Self::Done => "done",
+            Self::Blocked => "blocked",
+            Self::Stale => "stale",
+        }
+    }
+}
+
+impl TryFrom<&str> for CanvasNodeStatus {
+    type Error = AppError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "todo" => Ok(Self::Todo),
+            "in_progress" => Ok(Self::InProgress),
+            "done" => Ok(Self::Done),
+            "blocked" => Ok(Self::Blocked),
+            "stale" => Ok(Self::Stale),
+            _ => Err(AppError::Internal {
+                message: format!("unknown canvas node status: {value}"),
+            }),
+        }
+    }
+}
+
+/// Who created or last owned the node content.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub enum CanvasNodeSource {
+    Auto,
+    User,
+    Agent,
+}
+
+impl CanvasNodeSource {
+    /// Persistable string form.
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::User => "user",
+            Self::Agent => "agent",
+        }
+    }
+}
+
+impl TryFrom<&str> for CanvasNodeSource {
+    type Error = AppError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "auto" => Ok(Self::Auto),
+            "user" => Ok(Self::User),
+            "agent" => Ok(Self::Agent),
+            _ => Err(AppError::Internal {
+                message: format!("unknown canvas node source: {value}"),
+            }),
+        }
+    }
+}
+
+/// Semantic kind of a canvas edge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub enum CanvasEdgeKind {
+    Parent,
+    Related,
+    DerivedFrom,
+    Blocks,
+}
+
+impl CanvasEdgeKind {
+    /// Persistable string form.
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Parent => "parent",
+            Self::Related => "related",
+            Self::DerivedFrom => "derived_from",
+            Self::Blocks => "blocks",
+        }
+    }
+}
+
+impl TryFrom<&str> for CanvasEdgeKind {
+    type Error = AppError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "parent" => Ok(Self::Parent),
+            "related" => Ok(Self::Related),
+            "derived_from" => Ok(Self::DerivedFrom),
+            "blocks" => Ok(Self::Blocks),
+            _ => Err(AppError::Internal {
+                message: format!("unknown canvas edge kind: {value}"),
+            }),
+        }
+    }
+}
+
+/// Existing product entity referenced by a canvas node.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub enum CanvasLinkRefType {
+    Thread,
+    Message,
+    Run,
+    Orchestration,
+}
+
+impl CanvasLinkRefType {
+    /// Persistable string form.
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Thread => "thread",
+            Self::Message => "message",
+            Self::Run => "run",
+            Self::Orchestration => "orchestration",
+        }
+    }
+}
+
+impl TryFrom<&str> for CanvasLinkRefType {
+    type Error = AppError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "thread" => Ok(Self::Thread),
+            "message" => Ok(Self::Message),
+            "run" => Ok(Self::Run),
+            "orchestration" => Ok(Self::Orchestration),
+            _ => Err(AppError::Internal {
+                message: format!("unknown canvas link ref type: {value}"),
+            }),
+        }
+    }
+}
+
+/// Durable mind-map document for a project or thread.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct Canvas {
+    pub id: CanvasId,
+    pub workspace_id: WorkspaceId,
+    /// Set when `kind == Thread`.
+    pub thread_id: Option<ThreadId>,
+    pub title: String,
+    pub kind: CanvasKind,
+    /// JSON: `{ "x": number, "y": number, "zoom": number }`.
+    pub viewport_json: String,
+    pub revision: i64,
+    pub last_extracted_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// One node on a canvas.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct CanvasNode {
+    pub id: CanvasNodeId,
+    pub canvas_id: CanvasId,
+    pub kind: CanvasNodeKind,
+    pub title: String,
+    pub summary: String,
+    pub status: CanvasNodeStatus,
+    pub parent_id: Option<CanvasNodeId>,
+    pub position_x: f64,
+    pub position_y: f64,
+    pub layout_rank: i64,
+    pub source: CanvasNodeSource,
+    /// Kind-specific JSON payload (insight links, stage launch hints, …).
+    pub payload_json: String,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// Directed edge between canvas nodes.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct CanvasEdge {
+    pub id: CanvasEdgeId,
+    pub canvas_id: CanvasId,
+    pub from_id: CanvasNodeId,
+    pub to_id: CanvasNodeId,
+    pub kind: CanvasEdgeKind,
+    pub label: Option<String>,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// Link from a canvas node to a durable product entity.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct CanvasLink {
+    pub id: CanvasLinkId,
+    pub node_id: CanvasNodeId,
+    pub ref_type: CanvasLinkRefType,
+    pub ref_id: String,
+    pub snippet: Option<String>,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// Full graph snapshot for the canvas UI.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct CanvasSnapshot {
+    pub canvas: Canvas,
+    pub nodes: Vec<CanvasNode>,
+    pub edges: Vec<CanvasEdge>,
+    pub links: Vec<CanvasLink>,
 }
 
 /// A loaded instruction file (e.g. `AGENTS.md`).

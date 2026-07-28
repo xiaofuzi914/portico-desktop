@@ -1,10 +1,14 @@
 import { useQuery } from "@tanstack/react-query";
-import { FolderLock } from "lucide-react";
+import { Folder, FolderLock, FolderOpen } from "lucide-react";
 import { listWorkspaces } from "@/lib/tauri-api";
 import type { WorkspaceId } from "@/lib/schemas";
 import { useTranslation } from "@/lib/i18n-react";
 import { workspaceKeys } from "@/lib/query-keys";
-import { buildAllowedPathsSummary } from "./allowed-paths-summary-model";
+import { cn } from "@/lib/utils";
+import {
+  buildAllowedPathsSummary,
+  type AllowedFolderItem,
+} from "./allowed-paths-summary-model";
 
 interface AllowedPathsSummaryProps {
   workspaceId?: WorkspaceId | null;
@@ -46,24 +50,16 @@ export function AllowedPathsSummary({
               key={item.workspace.id}
               className="space-y-2 border-t pt-3 first:border-t-0 first:pt-0"
             >
-              <div className="min-w-0">
-                <p className="truncate text-sm font-medium">{item.workspace.name}</p>
-                {!compact && (
-                  <p className="text-muted-foreground truncate font-mono text-xs">
-                    {item.workspace.root_path}
-                  </p>
-                )}
-              </div>
-              <PathGroup
-                label={t("operations.allowedRead")}
-                paths={item.readPaths}
-                compact={compact}
-              />
-              <PathGroup
-                label={t("operations.allowedWrite")}
-                paths={item.writePaths}
-                compact={compact}
-              />
+              {!compact && (
+                <p className="text-muted-foreground text-[11px] font-medium tracking-wide uppercase">
+                  {item.workspace.name}
+                </p>
+              )}
+              <ul className="space-y-1.5">
+                {item.folders.map((folder) => (
+                  <FolderRow key={folder.path} folder={folder} compact={compact} />
+                ))}
+              </ul>
             </div>
           ))
         ) : (
@@ -74,35 +70,82 @@ export function AllowedPathsSummary({
   );
 }
 
-function PathGroup({
-  label,
-  paths,
+function FolderRow({
+  folder,
   compact,
 }: {
-  label: string;
-  paths: string[];
+  folder: AllowedFolderItem;
   compact: boolean;
 }) {
   const { t } = useTranslation();
+  const Icon = folder.isProjectRoot ? FolderOpen : Folder;
 
   return (
-    <div className="grid gap-1">
-      <p className="text-muted-foreground text-xs font-medium">{label}</p>
-      {paths.length ? (
-        <ul className={compact ? "space-y-1" : "grid gap-1"}>
-          {paths.map((path) => (
-            <li
-              key={path}
-              className="bg-muted truncate rounded px-2 py-1 font-mono text-xs"
-              title={path}
-            >
-              {path}
-            </li>
-          ))}
-        </ul>
-      ) : (
-        <p className="text-muted-foreground text-xs">{t("common.none")}</p>
+    <li
+      className={cn(
+        "bg-muted/60 flex items-start gap-2 rounded-lg border px-2.5 py-2",
+        folder.isProjectRoot && "border-primary/25 bg-primary/5",
       )}
-    </div>
+      title={folder.path}
+    >
+      <Icon
+        className={cn(
+          "mt-0.5 h-4 w-4 shrink-0",
+          folder.isProjectRoot ? "text-primary" : "text-muted-foreground",
+        )}
+        aria-hidden
+      />
+      <div className="min-w-0 flex-1">
+        <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+          <span className="truncate text-sm font-medium">{folder.name}</span>
+          {folder.isProjectRoot ? (
+            <Tag>{t("operations.folderTagRoot")}</Tag>
+          ) : null}
+          {folder.canRead ? <Tag tone="read">{t("operations.folderTagRead")}</Tag> : null}
+          {folder.canWrite ? (
+            <Tag tone="write">{t("operations.folderTagWrite")}</Tag>
+          ) : null}
+          {!folder.canRead && !folder.canWrite ? (
+            <Tag>{t("operations.folderTagNone")}</Tag>
+          ) : null}
+        </div>
+        {!compact ? (
+          <p className="text-muted-foreground mt-0.5 truncate font-mono text-[10px] leading-4">
+            {folder.path}
+          </p>
+        ) : folder.parentPath ? (
+          <p className="text-muted-foreground mt-0.5 truncate text-[10px] leading-4">
+            {folder.parentPath}
+          </p>
+        ) : (
+          <p className="text-muted-foreground mt-0.5 truncate font-mono text-[10px] leading-4">
+            {folder.path}
+          </p>
+        )}
+      </div>
+    </li>
+  );
+}
+
+function Tag({
+  children,
+  tone = "default",
+}: {
+  children: React.ReactNode;
+  tone?: "default" | "read" | "write";
+}) {
+  return (
+    <span
+      className={cn(
+        "inline-flex shrink-0 rounded-full border px-1.5 py-0.5 text-[10px] font-medium",
+        tone === "read" &&
+          "border-sky-500/30 bg-sky-500/10 text-sky-800 dark:text-sky-300",
+        tone === "write" &&
+          "border-amber-500/30 bg-amber-500/10 text-amber-900 dark:text-amber-300",
+        tone === "default" && "border-border bg-background text-muted-foreground",
+      )}
+    >
+      {children}
+    </span>
   );
 }

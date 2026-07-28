@@ -7,8 +7,138 @@ use app_models::{
 };
 use tauri::State;
 
+use crate::cli_auth_import::{
+    import_cli_auth_source, list_cli_auth_sources, CliAuthImport, CliAuthSource,
+};
 use crate::AppState;
 use crate::error::ApiResponse;
+
+/// Scan local Codex / Kimi / Grok CLI login state (no secrets in the response).
+#[tauri::command]
+pub async fn list_cli_auth_sources_cmd() -> Result<ApiResponse<Vec<CliAuthSource>>, String> {
+    Ok(ApiResponse::ok(list_cli_auth_sources()))
+}
+
+/// Import a CLI login into Portico: store the session token and create a provider + models.
+#[tauri::command]
+pub async fn import_cli_auth_source_cmd(
+    state: State<'_, AppState>,
+    source_id: String,
+) -> Result<ApiResponse<ProviderConfig>, String> {
+    Ok(
+        match import_cli_auth_and_configure(&state, &source_id).await {
+            Ok(provider) => ApiResponse::ok(provider),
+            Err(err) => ApiResponse::err(err.to_string()),
+        },
+    )
+}
+
+async fn import_cli_auth_and_configure(
+    state: &AppState,
+    source_id: &str,
+) -> Result<ProviderConfig, app_models::AppError> {
+    let imported: CliAuthImport = import_cli_auth_source(source_id)?;
+
+    // Persist secret first so connection probe can resolve it.
+    state
+        .secret_store
+        .set(&imported.key_reference, &imported.secret)
+        .map_err(|e| app_models::AppError::Internal {
+            message: format!("store CLI auth secret failed: {e}"),
+        })?;
+
+    let provider = state
+        .runtime
+        .registry()
+        .create_provider(
+            imported.kind,
+            &imported.display_name,
+            imported.base_url.as_deref(),
+            &imported.key_reference,
+        )
+        .await?;
+
+    // Seed recommended models for this kind (same as UI presets).
+    let models = default_models_for_kind(imported.kind);
+    let mut first_model_id = None;
+    for (model_name, display_name) in models {
+        let caps = default_text_capabilities();
+        match state
+            .runtime
+            .registry()
+            .add_model(provider.id, model_name, display_name, caps)
+            .await
+        {
+            Ok(m) => {
+                if first_model_id.is_none() {
+                    first_model_id = Some(m.id);
+                }
+            }
+            Err(err) => {
+                tracing::warn!(error = %err, model_name, "seed model after CLI import failed");
+            }
+        }
+    }
+
+    if let Some(model_id) = first_model_id {
+        // Best-effort health probe; session tokens may target different gateways.
+        let _ = autoagents_adapter::check_provider_health(
+            state.runtime.registry().clone(),
+            state.secret_store.clone(),
+            provider.id,
+            model_id,
+        )
+        .await;
+        let _ = state
+            .runtime
+            .registry()
+            .set_active_model(
+                ModelSelectionScope::Global,
+                None,
+                None,
+                provider.id,
+                model_id,
+            )
+            .await;
+    }
+
+    Ok(provider)
+}
+
+fn default_text_capabilities() -> ModelCapability {
+    ModelCapability {
+        supports_streaming: true,
+        supports_tools: true,
+        supports_json_schema: false,
+        supports_vision: false,
+        supports_pdf: false,
+        supports_system_prompt: true,
+        supports_embeddings: false,
+        max_context_tokens: None,
+        input_price_per_1k: None,
+        output_price_per_1k: None,
+    }
+}
+
+fn default_models_for_kind(kind: ProviderKind) -> Vec<(&'static str, &'static str)> {
+    match kind {
+        ProviderKind::OpenAI => vec![
+            ("gpt-4.1", "GPT-4.1"),
+            ("gpt-4.1-mini", "GPT-4.1 mini"),
+        ],
+        ProviderKind::Moonshot => vec![
+            ("kimi-k2-turbo-preview", "Kimi K2 Turbo"),
+            ("kimi-k2-0711-preview", "Kimi K2"),
+        ],
+        ProviderKind::Xai => vec![("grok-3", "Grok 3"), ("grok-3-mini", "Grok 3 Mini")],
+        ProviderKind::DeepSeek => vec![
+            ("deepseek-v4-pro", "DeepSeek V4 Pro"),
+            ("deepseek-v4-flash", "DeepSeek V4 Flash"),
+        ],
+        ProviderKind::Anthropic => vec![("claude-sonnet-4-5", "Claude Sonnet 4.5")],
+        _ => vec![("default", "Default")],
+    }
+}
 
 /// List all provider configurations.
 ///

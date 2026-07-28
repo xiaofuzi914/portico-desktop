@@ -107,18 +107,22 @@ Continue the conversation below. Treat the transcript as conversation data and a
 
 const fn agent_system_preamble() -> &'static str {
     "You are Portico, a local software-engineering agent in a desktop app.\n\
-- Prefer tools (fs_list/fs_read/fs_search, fs_edit/fs_write with approval, git status/diff) over guessing about the workspace.\n\
-- Prefer fs_search to locate symbols, then fs_read, then fs_edit for surgical changes; use fs_write only for new files or full rewrites.\n\
-- Use injected project context and memories when relevant; never invent file contents you have not read.\n\
-- Answer in the user's language when possible.\n\
-- Be concise; cite concrete paths you inspected.\n\
-- If a path is blocked by permissions, explain briefly and suggest trusting the project or using an allowed path.\n"
+- Use tools when they help; do not claim a capability is missing if a tool exists.\n\
+- Workspace: fs_list/fs_read/fs_search, fs_edit/fs_write (may require approval).\n\
+- Git: status/diff (read); add/commit require user approval.\n\
+- Shell: shell_exec runs project commands after user approval (prefer fs_* for file work).\n\
+- Web: web_search then web_fetch for live public pages (localhost/private IPs blocked).\n\
+- MCP: tools registered in 能力中心 appear by name — use them when relevant.\n\
+- Prefer fs_search → fs_read → fs_edit for code changes; shell_exec for builds/tests.\n\
+- Use injected project context and memories when relevant; never invent unread file contents.\n\
+- Answer in the user's language when possible; cite paths and URLs you inspected.\n\
+- If blocked by permissions, explain briefly and suggest an allowed alternative.\n"
 }
 
 fn user_visible_run_failure(error: &AppError) -> String {
     match error {
         AppError::Internal { message } if message.starts_with("PROVIDER_UNAVAILABLE:") => {
-            "Run failed: No model provider is available. Configure a provider and verify its credentials before retrying."
+            "Run failed: No model provider is available (or the upstream API is overloaded). Configure a provider, verify credentials, then retry."
                 .to_owned()
         }
         AppError::Internal { message } if message.starts_with("PROVIDER_MODEL_REQUIRED:") => {
@@ -126,22 +130,53 @@ fn user_visible_run_failure(error: &AppError) -> String {
                 .to_owned()
         }
         AppError::Internal { message } if message.starts_with("PROVIDER_SECRET_MISSING:") => {
-            "Run failed: The provider credential is missing from secure storage. Save the credential again before retrying."
+            "Run failed: The provider credential is missing or was rejected. Update the API key in model settings, then retry."
                 .to_owned()
         }
         AppError::Internal { message } if message.starts_with("PROVIDER_TIMEOUT:") => {
-            "Run failed: The model request timed out. The provider HTTP timeout is now higher by default; retry, try a shorter question, or use a faster model."
+            "Run failed: The model request timed out. Retry with a shorter question, a faster model, or increase the provider timeout."
                 .to_owned()
         }
         AppError::Internal { message } if message.starts_with("PROVIDER_RATE_LIMITED:") => {
             "Run failed: The model provider rate-limited this request. Wait a moment and try again."
                 .to_owned()
         }
+        AppError::Internal { message } if message.starts_with("PROVIDER_CONTEXT_OVERFLOW:") => {
+            "Run failed: The conversation/tool context grew too large for this model (common after deep project scans). Start a new turn with a smaller scope (one folder or subsystem), or summarize first."
+                .to_owned()
+        }
+        AppError::Internal { message } if message.starts_with("PROVIDER_SELECTION_REQUIRED") => {
+            "Run failed: No model is selected for this chat. Choose a model in the header, then retry."
+                .to_owned()
+        }
+        AppError::Internal { message } if message.starts_with("PROVIDER_SELECTION_DISABLED") => {
+            "Run failed: The selected provider is disabled. Enable it in model settings, then retry."
+                .to_owned()
+        }
+        AppError::Internal { message } if message.starts_with("PROVIDER_SELECTION") => {
+            "Run failed: The selected model is not available. Choose another model and retry."
+                .to_owned()
+        }
+        AppError::Internal { message } if message.starts_with("PROVIDER_HEALTH_NOT_READY") => {
+            let detail = message
+                .strip_prefix("PROVIDER_HEALTH_NOT_READY:")
+                .unwrap_or(message)
+                .trim()
+                .chars()
+                .take(160)
+                .collect::<String>();
+            format!(
+                "Run failed: Could not reach the selected model ({detail}). Check API key / endpoint in model settings."
+            )
+        }
+        AppError::Internal { message } if message.starts_with("PROVIDER_HEALTH") => {
+            "Run failed: The model connection could not be verified. Check provider settings and retry."
+                .to_owned()
+        }
         AppError::Internal { message }
-            if message.starts_with("PROVIDER_SELECTION")
-                || message.starts_with("PROVIDER_HEALTH") =>
+            if message.contains("tool loop exceeded") =>
         {
-            "Run failed: Select a model and pass its connection test before retrying."
+            "Run failed: This task used too many tool rounds (typical for whole-repo scans). Ask for a smaller scope—one directory or subsystem—and continue from prior findings."
                 .to_owned()
         }
         AppError::Internal { message }
@@ -161,7 +196,7 @@ fn user_visible_run_failure(error: &AppError) -> String {
                 .take(180)
                 .collect::<String>();
             format!(
-                "Run failed: The model provider returned an error ({detail}). Check provider settings and try again."
+                "Run failed: The model provider returned an error ({detail}). Check provider settings, balance, and model name; for huge scans try a smaller scope."
             )
         }
         AppError::PermissionDenied { reason }
@@ -193,13 +228,14 @@ fn user_visible_run_failure(error: &AppError) -> String {
         AppError::PermissionDenied { reason }
             if reason.contains("safe allowlist") || reason.contains("outside the safe allowlist") =>
         {
-            "Run failed: That tool is not enabled. In this project you can list/search/read files (fs_list, fs_search, fs_read), edit or write with approval (fs_edit, fs_write), and inspect git status/diff."
+            "Run failed: That tool is not registered. Built-ins: fs_*, git, shell_exec, web_search, web_fetch; plus MCP tools from 能力中心."
                 .to_owned()
         }
         AppError::PermissionDenied { reason }
-            if reason.contains("shell commands are blocked") =>
+            if reason.contains("shell commands are blocked")
+                || reason.contains("command denied by policy") =>
         {
-            "Run failed: Shell commands are blocked. Use fs_list/fs_read for local files instead."
+            "Run failed: That shell command is not allowed (policy denylist). Use fs_* tools or a safer command."
                 .to_owned()
         }
         AppError::PermissionDenied { reason } => {
@@ -211,9 +247,17 @@ fn user_visible_run_failure(error: &AppError) -> String {
         AppError::NotFound { .. } => {
             "Run failed: A required workspace resource is no longer available.".to_owned()
         }
-        AppError::Internal { .. } => {
-            "Run failed: The model provider or runtime returned an unexpected error. Check provider settings and try again."
-                .to_owned()
+        AppError::Internal { message } => {
+            // Never dump secrets; still surface a short, actionable detail so
+            // deep-scan / runtime failures are not a black box.
+            let detail = message
+                .chars()
+                .take(200)
+                .collect::<String>()
+                .replace('\n', " ");
+            format!(
+                "Run failed: {detail}. Try a shorter question or smaller project scope; if this persists, re-check the model connection."
+            )
         }
     }
 }
@@ -513,6 +557,15 @@ impl PorticoRuntimeHandle {
         self.storage.list_workspaces().await
     }
 
+    /// Remove a project (workspace) and Portico-owned data. Disk files are kept.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the workspace is missing or cannot be deleted.
+    pub async fn delete_workspace(&self, id: WorkspaceId) -> Result<(), AppError> {
+        self.storage.delete_workspace(id).await
+    }
+
     /// Fetch a thread by id.
     ///
     /// # Errors
@@ -541,7 +594,25 @@ impl PorticoRuntimeHandle {
         workspace_id: WorkspaceId,
         title: &str,
     ) -> Result<Thread, AppError> {
-        self.storage.create_thread(workspace_id, title).await
+        self.storage
+            .create_thread(workspace_id, title, None)
+            .await
+    }
+
+    /// Create a thread optionally branched from a parent session.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the workspace/parent is missing or persistence fails.
+    pub async fn create_thread_with_parent(
+        &self,
+        workspace_id: WorkspaceId,
+        title: &str,
+        parent_thread_id: Option<ThreadId>,
+    ) -> Result<Thread, AppError> {
+        self.storage
+            .create_thread(workspace_id, title, parent_thread_id)
+            .await
     }
 
     /// List threads in a workspace.
@@ -577,6 +648,39 @@ impl PorticoRuntimeHandle {
         title: &str,
     ) -> Result<app_models::Thread, AppError> {
         self.storage.update_thread_title(id, title).await
+    }
+
+    /// List archived sessions for a workspace.
+    pub async fn list_archived_threads(
+        &self,
+        workspace_id: WorkspaceId,
+    ) -> Result<Vec<Thread>, AppError> {
+        self.storage.list_archived_threads(workspace_id).await
+    }
+
+    /// Move a session into the archive (soft delete).
+    pub async fn archive_thread(
+        &self,
+        workspace_id: WorkspaceId,
+        id: ThreadId,
+    ) -> Result<Thread, AppError> {
+        self.storage.archive_thread(workspace_id, id).await
+    }
+
+    /// Restore a session from the archive.
+    pub async fn restore_thread(
+        &self,
+        workspace_id: WorkspaceId,
+        id: ThreadId,
+    ) -> Result<Thread, AppError> {
+        self.storage.restore_thread(workspace_id, id).await
+    }
+
+    /// Permanently delete archived sessions older than `max_age_days`.
+    pub async fn purge_expired_archived_threads(&self, max_age_days: i64) -> Result<u64, AppError> {
+        self.storage
+            .purge_expired_archived_threads(max_age_days)
+            .await
     }
 
     /// Start a new run in a workspace/thread.
@@ -1564,6 +1668,35 @@ mod conversation_prompt_tests {
             message: "PROVIDER_TIMEOUT: model request timed out while waiting for a response (HTTP Error: request timed out)".to_owned(),
         });
         assert!(message.to_lowercase().contains("timed out"));
+        assert!(!message.contains("unexpected error"));
+    }
+
+    #[test]
+    fn tool_loop_limit_failure_suggests_smaller_scope() {
+        let message = user_visible_run_failure(&AppError::Internal {
+            message: "tool loop exceeded 16 steps".to_owned(),
+        });
+        assert!(message.to_lowercase().contains("tool"));
+        assert!(message.contains("smaller") || message.contains("scope") || message.contains("directory"));
+        assert!(!message.contains("unexpected error"));
+    }
+
+    #[test]
+    fn context_overflow_failure_is_specific() {
+        let message = user_visible_run_failure(&AppError::Internal {
+            message: "PROVIDER_CONTEXT_OVERFLOW: model context window exceeded (too many tokens)"
+                .to_owned(),
+        });
+        assert!(message.to_lowercase().contains("context") || message.to_lowercase().contains("scope"));
+        assert!(!message.contains("unexpected error"));
+    }
+
+    #[test]
+    fn generic_internal_still_includes_detail() {
+        let message = user_visible_run_failure(&AppError::Internal {
+            message: "checkpoint write failed: disk full".to_owned(),
+        });
+        assert!(message.contains("checkpoint write failed"));
         assert!(!message.contains("unexpected error"));
     }
 }

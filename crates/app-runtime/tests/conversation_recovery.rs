@@ -198,7 +198,7 @@ async fn recover_incomplete_runs_interrupts_active_states_but_keeps_waiting_appr
         .create_workspace("test", "/tmp/test", false)
         .await
         .expect("create workspace");
-    let thread = storage.create_thread(workspace.id, "thread").await.expect("create thread");
+    let thread = storage.create_thread(workspace.id, "thread", None).await.expect("create thread");
 
     // `create_run` persists the run in `Queued`.
     let queued = storage.create_run(workspace.id, thread.id).await.expect("queued run");

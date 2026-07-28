@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { Home } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { typography } from "@/components/ui/typography";
 import { ModelCapabilitiesPanel } from "./model-capabilities-panel";
 import { MemoryCapabilitiesPanel } from "./memory-capabilities-panel";
@@ -42,28 +42,29 @@ export function CapabilitiesCenter({ defaultTab = "models" }: CapabilitiesCenter
         </Link>
       </div>
 
-      <div className="flex flex-wrap gap-2 border-b pb-2">
+      <TabsList aria-label={t("capabilities.title")} className="flex flex-wrap gap-2 border-b pb-2">
         {tabs.map((tab) => (
-          <button
+          <TabsTrigger
             key={tab.id}
-            type="button"
+            id={`capabilities-tab-${tab.id}`}
+            aria-controls={`capabilities-panel-${tab.id}`}
+            active={activeTab === tab.id}
             onClick={() => setActiveTab(tab.id)}
-            className={cn(
-              "rounded-md px-3 py-1.5 text-sm font-medium transition-colors",
-              activeTab === tab.id
-                ? "bg-muted text-foreground"
-                : "text-muted-foreground hover:bg-muted/50 hover:text-foreground",
-            )}
           >
             {tab.label}
-          </button>
+          </TabsTrigger>
         ))}
-      </div>
+      </TabsList>
 
-      {activeTab === "models" && <ModelCapabilitiesPanel />}
-      {activeTab === "memory" && <MemoryCapabilitiesPanel />}
-      {activeTab === "plugins" && <PluginCapabilitiesPanel />}
-      {activeTab === "mcp" && <McpCapabilitiesPanel />}
+      <TabsContent
+        id={`capabilities-panel-${activeTab}`}
+        aria-labelledby={`capabilities-tab-${activeTab}`}
+      >
+        {activeTab === "models" && <ModelCapabilitiesPanel />}
+        {activeTab === "memory" && <MemoryCapabilitiesPanel />}
+        {activeTab === "plugins" && <PluginCapabilitiesPanel />}
+        {activeTab === "mcp" && <McpCapabilitiesPanel />}
+      </TabsContent>
     </main>
   );
 }

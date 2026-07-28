@@ -168,7 +168,7 @@ mod tests {
             .create_workspace("test", "/tmp/test", false)
             .await
             .expect("create workspace");
-        let thread = storage.create_thread(workspace.id, "thread").await.expect("create thread");
+        let thread = storage.create_thread(workspace.id, "thread", None).await.expect("create thread");
         let run = storage.create_run(workspace.id, thread.id).await.expect("create run");
         (
             BackgroundTaskQueue::new(storage),

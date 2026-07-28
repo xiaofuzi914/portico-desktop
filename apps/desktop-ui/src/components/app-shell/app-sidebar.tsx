@@ -15,6 +15,7 @@ import { cn } from "@/lib/utils";
 import { SidebarProjectActions } from "./sidebar-project-actions";
 import { SidebarProjects } from "./sidebar-projects";
 import { SidebarThreads } from "./sidebar-threads";
+import { PorticoMark } from "./portico-mark";
 import { buildNavigationSections } from "./navigation-model";
 import {
   COLLAPSED_SIDEBAR_WIDTH,
@@ -52,18 +53,16 @@ export function AppSidebar() {
         {collapsed ? (
           <button
             type="button"
-            className="bg-primary text-primary-foreground focus-visible:ring-ring flex h-7 w-7 items-center justify-center rounded-md text-xs font-semibold focus-visible:ring-2 focus-visible:outline-none"
+            className="focus-visible:ring-ring flex h-7 w-7 items-center justify-center overflow-hidden rounded-md focus-visible:ring-2 focus-visible:outline-none"
             onClick={() => setSidebarCollapsed(false)}
             aria-label={t("sidebar.expand")}
             title={t("sidebar.expand")}
           >
-            P
+            <PorticoMark className="h-7 w-7" />
           </button>
         ) : (
           <>
-            <div className="bg-primary text-primary-foreground flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-xs font-semibold">
-              P
-            </div>
+            <PorticoMark className="h-7 w-7" />
             <div className="min-w-0 flex-1">
               <Link to="/" className="block truncate text-sm font-semibold">
                 {t("app.name")}
@@ -111,24 +110,28 @@ export function AppSidebar() {
           </>
         ) : (
           <>
-            <div className="space-y-5">
-              <SidebarSection
-                icon={Folder}
-                title={t("nav.projects")}
-                action={<SidebarProjectActions />}
-              >
-                <SidebarProjects activeWorkspaceId={workspaceId} />
-              </SidebarSection>
-
-              {workspaceId && (
-                <SidebarSection icon={MessageSquare} title={t("nav.threads")}>
-                  <SidebarThreads workspaceId={workspaceId} />
+            {/*
+              Top block shrinks/scrolls if long; bottom nav stays compact.
+              Avoid stretching session/archive rows into the mt-auto gap.
+            */}
+            <div className="flex min-h-0 flex-1 flex-col gap-5">
+              <div className="min-h-0 shrink-0 space-y-5 overflow-y-auto">
+                <SidebarSection
+                  icon={Folder}
+                  title={t("nav.projects")}
+                  action={<SidebarProjectActions />}
+                >
+                  <SidebarProjects activeWorkspaceId={workspaceId} />
                 </SidebarSection>
-              )}
-            </div>
 
-            <div className="mt-auto space-y-2 pt-5">
-              <div className="border-t pt-3">
+                {workspaceId && (
+                  <SidebarSection icon={MessageSquare} title={t("nav.threads")}>
+                    <SidebarThreads workspaceId={workspaceId} />
+                  </SidebarSection>
+                )}
+              </div>
+
+              <div className="mt-auto shrink-0 space-y-2 border-t pt-3">
                 {navigationSections.map((section) => (
                   <CollapsibleLinkGroup
                     key={section.id}
@@ -136,10 +139,10 @@ export function AppSidebar() {
                     links={section.links}
                   />
                 ))}
+                <NavLink to="/settings" icon={Settings}>
+                  {t("common.settings")}
+                </NavLink>
               </div>
-              <NavLink to="/settings" icon={Settings}>
-                {t("common.settings")}
-              </NavLink>
             </div>
           </>
         )}

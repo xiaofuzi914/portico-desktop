@@ -11,6 +11,15 @@ import type {
   Automation,
   AutomationId,
   AutomationTrigger,
+  Canvas,
+  CanvasEdge,
+  CanvasEdgeId,
+  CanvasId,
+  CanvasLink,
+  CanvasLinkId,
+  CanvasNode,
+  CanvasNodeId,
+  CanvasSnapshot,
   BackgroundTask,
   BackgroundTaskId,
   BrowserAction,
@@ -54,6 +63,8 @@ import type {
   ThreadId,
   WorkflowPattern,
   WorkflowPatternId,
+  WorkflowTemplate,
+  WorkflowTemplateId,
   Worktree,
   WorktreeId,
   Workspace,
@@ -115,8 +126,25 @@ export function setWorkspacePaths(
   });
 }
 
+/** Attach an extra project folder (read+write) next to the main engineering root. */
+export function addLinkedProjectFolder(id: WorkspaceId, path: string): Promise<Workspace> {
+  return invokeCommand<Workspace>("add_linked_project_folder", { id, path });
+}
+
+/** Detach a linked folder (cannot remove the main root). */
+export function removeLinkedProjectFolder(id: WorkspaceId, path: string): Promise<Workspace> {
+  return invokeCommand<Workspace>("remove_linked_project_folder", { id, path });
+}
+
 export function getWorkspace(id: WorkspaceId): Promise<Workspace> {
   return invokeCommand<Workspace>("get_workspace", { id });
+}
+
+/**
+ * Remove a project from Portico. Does not delete files on disk.
+ */
+export function deleteWorkspace(id: WorkspaceId): Promise<void> {
+  return invokeCommand<void>("delete_workspace", { id });
 }
 
 export interface WorkspaceFileEntry {
@@ -128,23 +156,38 @@ export interface WorkspaceFileEntry {
 export function listWorkspaceFiles(
   id: WorkspaceId,
   relativePath = "",
+  basePath?: string | null,
 ): Promise<WorkspaceFileEntry[]> {
-  return invokeCommand<WorkspaceFileEntry[]>("list_workspace_files", { id, relativePath });
+  return invokeCommand<WorkspaceFileEntry[]>("list_workspace_files", {
+    id,
+    relativePath,
+    basePath: basePath ?? null,
+  });
 }
 
 /** Open a workspace directory in Finder / Explorer / the system file manager. */
 export function openWorkspaceFolder(
   id: WorkspaceId,
   relativePath = "",
+  basePath?: string | null,
 ): Promise<void> {
-  return invokeCommand<void>("open_workspace_folder", { id, relativePath });
+  return invokeCommand<void>("open_workspace_folder", {
+    id,
+    relativePath,
+    basePath: basePath ?? null,
+  });
 }
 
 export function previewWorkspaceMarkdown(
   id: WorkspaceId,
   relativePath: string,
+  basePath?: string | null,
 ): Promise<ArtifactPreview> {
-  return invokeCommand<ArtifactPreview>("preview_workspace_markdown", { id, relativePath });
+  return invokeCommand<ArtifactPreview>("preview_workspace_markdown", {
+    id,
+    relativePath,
+    basePath: basePath ?? null,
+  });
 }
 
 // Thread commands
@@ -153,8 +196,32 @@ export function createThread(workspaceId: WorkspaceId, title: string): Promise<T
   return invokeCommand<Thread>("create_thread", { workspaceId, title });
 }
 
+/**
+ * Branch a new session from an existing one with parent context seeded.
+ * Pass `focusText` (划词) to prioritise that snippet in the seed + title.
+ * The new session appears as a child edge on the project mind map after sync.
+ */
+export function branchThreadFromContext(
+  workspaceId: WorkspaceId,
+  parentThreadId: ThreadId,
+  title?: string | null,
+  focusText?: string | null,
+): Promise<Thread> {
+  return invokeCommand<Thread>("branch_thread_from_context", {
+    workspaceId,
+    parentThreadId,
+    title: title ?? null,
+    focusText: focusText ?? null,
+  });
+}
+
+/** Active (non-archived) sessions. Also triggers 30-day archive purge. */
 export function listThreads(workspaceId: WorkspaceId): Promise<Thread[]> {
   return invokeCommand<Thread[]>("list_threads", { workspaceId });
+}
+
+export function listArchivedThreads(workspaceId: WorkspaceId): Promise<Thread[]> {
+  return invokeCommand<Thread[]>("list_archived_threads", { workspaceId });
 }
 
 export function getThread(id: ThreadId): Promise<Thread> {
@@ -165,6 +232,16 @@ export function updateThreadTitle(id: ThreadId, title: string): Promise<Thread> 
   return invokeCommand<Thread>("update_thread_title", { id, title });
 }
 
+/** Soft-delete: move session to archive (retained 30 days). */
+export function archiveThread(workspaceId: WorkspaceId, id: ThreadId): Promise<Thread> {
+  return invokeCommand<Thread>("archive_thread", { workspaceId, id });
+}
+
+export function restoreThread(workspaceId: WorkspaceId, id: ThreadId): Promise<Thread> {
+  return invokeCommand<Thread>("restore_thread", { workspaceId, id });
+}
+
+/** Permanent delete (prefer archiveThread for normal UI delete). */
 export function deleteThread(workspaceId: WorkspaceId, id: ThreadId): Promise<void> {
   return invokeCommand<void>("delete_thread", { workspaceId, id });
 }
@@ -372,6 +449,31 @@ export function deleteProvider(id: ProviderId): Promise<void> {
 
 export function setProviderSecret(apiKeyReference: string, apiKey: string): Promise<void> {
   return invokeCommand<void>("set_provider_secret", { apiKeyReference, apiKey });
+}
+
+/** Detected local Codex / Kimi / Grok CLI login (no secrets). */
+export type CliAuthSource = {
+  id: string;
+  kind: ProviderKind;
+  label: string;
+  path: string;
+  auth_mode: string;
+  available: boolean;
+  preview: string;
+  hint: string | null;
+};
+
+/** Scan ~/.codex, ~/.grok, ~/.kimi-code for session credentials. */
+export function listCliAuthSources(): Promise<CliAuthSource[]> {
+  return invokeCommand<CliAuthSource[]>("list_cli_auth_sources_cmd");
+}
+
+/**
+ * Import a CLI session into Portico (stores access token, creates provider + models).
+ * Matches Codex / Kimi Code / Grok Build login state — not platform API-key paste.
+ */
+export function importCliAuthSource(sourceId: string): Promise<ProviderConfig> {
+  return invokeCommand<ProviderConfig>("import_cli_auth_source_cmd", { sourceId });
 }
 
 export function deleteProviderSecret(apiKeyReference: string): Promise<void> {
@@ -766,8 +868,40 @@ export function startOrchestration(
   workspaceId: WorkspaceId,
   threadId: ThreadId,
   task: string,
+  workflowId?: string | null,
 ): Promise<Orchestration> {
-  return invokeCommand<Orchestration>("start_orchestration", { workspaceId, threadId, task });
+  return invokeCommand<Orchestration>("start_orchestration", {
+    workspaceId,
+    threadId,
+    task,
+    workflowId: workflowId ?? null,
+  });
+}
+
+export function listBundledWorkflows(): Promise<
+  Array<{ id: string; title: string; summary: string }>
+> {
+  return invokeCommand("list_bundled_workflows");
+}
+
+export function listWorkflowTemplates(
+  workspaceId?: WorkspaceId | null,
+): Promise<WorkflowTemplate[]> {
+  return invokeCommand<WorkflowTemplate[]>("list_workflow_templates", {
+    workspaceId: workspaceId ?? null,
+  });
+}
+
+export function saveWorkflowTemplate(template: WorkflowTemplate): Promise<WorkflowTemplate> {
+  return invokeCommand<WorkflowTemplate>("save_workflow_template", { template });
+}
+
+export function getWorkflowTemplate(templateId: WorkflowTemplateId): Promise<WorkflowTemplate> {
+  return invokeCommand<WorkflowTemplate>("get_workflow_template", { templateId });
+}
+
+export function deleteWorkflowTemplate(templateId: WorkflowTemplateId): Promise<void> {
+  return invokeCommand<void>("delete_workflow_template", { templateId });
 }
 
 export function getOrchestration(orchestrationId: OrchestrationId): Promise<Orchestration> {
@@ -942,4 +1076,115 @@ export function listMigrations(): Promise<MigrationInfo[]> {
 
 export function rollbackLastMigration(): Promise<void> {
   return invokeCommand<void>("rollback_last_migration");
+}
+
+
+// Canvas / mind-map
+
+export function getOrCreateProjectCanvas(workspaceId: WorkspaceId): Promise<Canvas> {
+  return invokeCommand<Canvas>("get_or_create_project_canvas", { workspaceId });
+}
+
+export function getOrCreateThreadCanvas(
+  workspaceId: WorkspaceId,
+  threadId: ThreadId,
+): Promise<Canvas> {
+  return invokeCommand<Canvas>("get_or_create_thread_canvas", { workspaceId, threadId });
+}
+
+export function getCanvasSnapshot(canvasId: CanvasId): Promise<CanvasSnapshot> {
+  return invokeCommand<CanvasSnapshot>("get_canvas_snapshot", { canvasId });
+}
+
+export function updateCanvasViewport(
+  canvasId: CanvasId,
+  viewportJson: string,
+): Promise<Canvas> {
+  return invokeCommand<Canvas>("update_canvas_viewport", { canvasId, viewportJson });
+}
+
+export function upsertCanvasNode(node: CanvasNode): Promise<void> {
+  return invokeCommand<void>("upsert_canvas_node", { node });
+}
+
+export function deleteCanvasNode(nodeId: CanvasNodeId): Promise<void> {
+  return invokeCommand<void>("delete_canvas_node", { nodeId });
+}
+
+export function upsertCanvasEdge(edge: CanvasEdge): Promise<void> {
+  return invokeCommand<void>("upsert_canvas_edge", { edge });
+}
+
+export function deleteCanvasEdge(edgeId: CanvasEdgeId): Promise<void> {
+  return invokeCommand<void>("delete_canvas_edge", { edgeId });
+}
+
+export function upsertCanvasLink(link: CanvasLink): Promise<void> {
+  return invokeCommand<void>("upsert_canvas_link", { link });
+}
+
+export function deleteCanvasLink(linkId: CanvasLinkId): Promise<void> {
+  return invokeCommand<void>("delete_canvas_link", { linkId });
+}
+
+/** Heuristically organize workspace conversations into canvas insight nodes. */
+export function extractCanvasInsights(
+  canvasId: CanvasId,
+  mode: "heuristic" = "heuristic",
+): Promise<CanvasSnapshot> {
+  return invokeCommand<CanvasSnapshot>("extract_canvas_insights", { canvasId, mode });
+}
+
+/** Template-decompose a free-text goal into Stage nodes under a Goal. */
+export function decomposeCanvasGoal(
+  canvasId: CanvasId,
+  goalText: string,
+  parentNodeId?: CanvasNodeId | null,
+): Promise<CanvasSnapshot> {
+  return invokeCommand<CanvasSnapshot>("decompose_canvas_goal", {
+    canvasId,
+    goalText,
+    parentNodeId: parentNodeId ?? null,
+  });
+}
+
+/** Persist stage launch bookkeeping after send/orchestration. */
+export function markCanvasStageLaunched(
+  nodeId: CanvasNodeId,
+  threadId: ThreadId,
+  runId?: string | null,
+): Promise<CanvasNode> {
+  return invokeCommand<CanvasNode>("mark_canvas_stage_launched", {
+    nodeId,
+    threadId,
+    runId: runId ?? null,
+  });
+}
+
+/** Set goal/stage status from the UI. */
+export function setCanvasNodeStatus(
+  nodeId: CanvasNodeId,
+  status: string,
+): Promise<CanvasNode> {
+  return invokeCommand<CanvasNode>("set_canvas_node_status", { nodeId, status });
+}
+
+/** Write run outcome back onto Stage/Goal nodes launched from the canvas. */
+export function reconcileCanvasStagesFromRun(
+  workspaceId: WorkspaceId,
+  threadId: ThreadId,
+  runId: string,
+  outcome: "done" | "blocked" | "in_progress" | string,
+): Promise<CanvasNode[]> {
+  return invokeCommand<CanvasNode[]>("reconcile_canvas_stages_from_run", {
+    workspaceId,
+    threadId,
+    runId,
+    outcome,
+  });
+}
+
+/** Re-link insights to goal stages after extract (also called server-side). */
+export function refreshCanvasGoalLinks(canvasId: CanvasId): Promise<CanvasSnapshot> {
+  return invokeCommand<CanvasSnapshot>("refresh_canvas_goal_links", { canvasId });
 }

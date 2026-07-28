@@ -2,18 +2,10 @@ import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Input } from "@/components/ui/input";
-import {
-  addMcpServer,
-  listMcpServers,
-  refreshMcpTools,
-  removeMcpServer,
-} from "@/lib/tauri-api";
-import {
-  mcpServerConfigSchema,
-  type McpServerConfig,
-  type McpTransport,
-} from "@/lib/schemas";
+import { addMcpServer, listMcpServers, refreshMcpTools, removeMcpServer } from "@/lib/tauri-api";
+import { mcpServerConfigSchema, type McpServerConfig, type McpTransport } from "@/lib/schemas";
 import { useTranslation } from "@/lib/i18n-react";
 import { mcpKeys } from "@/lib/query-keys";
 
@@ -36,6 +28,7 @@ export function McpCapabilitiesPanel() {
   const [envKey, setEnvKey] = useState("");
   const [envValue, setEnvValue] = useState("");
   const [formError, setFormError] = useState<string | null>(null);
+  const [serverPendingRemove, setServerPendingRemove] = useState<number | null>(null);
 
   const { data: mcpServers = [], isLoading } = useQuery({
     queryKey: mcpKeys.list(),
@@ -272,7 +265,7 @@ export function McpCapabilitiesPanel() {
                       <span className="font-medium">{server.name}</span>
                       <span className="text-muted-foreground text-sm">{server.transport}</span>
                       <span
-                        className={`text-xs ${server.enabled ? "text-green-600" : "text-amber-600"}`}
+                        className={`text-xs ${server.enabled ? "text-success" : "text-warning-ink"}`}
                       >
                         {server.enabled ? t("common.enabled") : t("common.disabled")}
                       </span>
@@ -292,11 +285,7 @@ export function McpCapabilitiesPanel() {
                   <Button
                     variant="destructive"
                     size="sm"
-                    onClick={() => {
-                      if (window.confirm(t("capabilities.confirmRemoveMcp"))) {
-                        removeMcp.mutate(server.id);
-                      }
-                    }}
+                    onClick={() => setServerPendingRemove(server.id)}
                     disabled={removeMcp.isPending}
                   >
                     {t("capabilities.remove")}
@@ -309,6 +298,21 @@ export function McpCapabilitiesPanel() {
           )}
         </CardContent>
       </Card>
+
+      <ConfirmDialog
+        open={serverPendingRemove !== null}
+        title={t("capabilities.remove")}
+        description={t("capabilities.confirmRemoveMcp")}
+        confirmLabel={t("capabilities.remove")}
+        destructive
+        onConfirm={() => {
+          if (serverPendingRemove !== null) {
+            removeMcp.mutate(serverPendingRemove);
+          }
+          setServerPendingRemove(null);
+        }}
+        onCancel={() => setServerPendingRemove(null)}
+      />
     </div>
   );
 }

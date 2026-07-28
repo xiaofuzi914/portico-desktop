@@ -57,6 +57,9 @@ pub fn build_memory_conditioned_plan(
         subagents,
         pattern_ids,
         planning_rationale: rationale,
+        stages: vec![],
+        workflow_id: None,
+        workflow_title: None,
     }
 }
 
@@ -176,8 +179,35 @@ fn select_roles(
 ) -> (Vec<BuiltInAgent>, String, Vec<WorkflowPatternId>) {
     let deliverable = wants_deliverable(task) && !plan_only_explicit(task);
     let plan_only = plan_only_explicit(task);
+    let ids: Vec<WorkflowPatternId> = hints.iter().take(3).map(|h| h.id).collect();
 
-    // 1) Prefer the strongest recalled pattern's role list when parseable —
+    // 1) Structured task cards from the UI (【角色】explorer / role: worker → …)
+    //    are authoritative. The frontend always embeds the cast it selected;
+    //    re-deriving from soft keywords used to mis-route on boilerplate like
+    //    "不确定则说明" (the generic "说明" substring).
+    let explicit = extract_explicit_roles(task);
+    if !explicit.is_empty() {
+        let mut roles = explicit;
+        if deliverable && roles_are_plan_only(&roles) {
+            roles = vec![BuiltInAgent::Explorer, BuiltInAgent::Worker];
+        }
+        let roles = cap_roles(roles);
+        return (
+            roles,
+            format!(
+                "按任务指定角色分配（最多 {} 个）{}",
+                MAX_SUBAGENTS,
+                if deliverable {
+                    "；结果导向：确保有执行/交付角色"
+                } else {
+                    ""
+                }
+            ),
+            ids,
+        );
+    }
+
+    // 2) Prefer the strongest recalled pattern's role list when parseable —
     //    but upgrade planner-only habits when the user clearly wants delivery.
     if let Some(best) = hints.first() {
         let parsed: Vec<BuiltInAgent> =
@@ -188,7 +218,6 @@ fn select_roles(
                 roles = vec![BuiltInAgent::Explorer, BuiltInAgent::Worker];
             }
             let roles = cap_roles(roles);
-            let ids: Vec<WorkflowPatternId> = hints.iter().take(3).map(|h| h.id).collect();
             return (
                 roles,
                 format!(
@@ -206,7 +235,7 @@ fn select_roles(
         }
     }
 
-    // 2) Soft task signals (zh/en) — result-first when deliverable is present.
+    // 3) Soft task signals (zh/en) — result-first when deliverable is present.
     let lower = task.to_lowercase();
     let mut roles: Vec<BuiltInAgent> = Vec::new();
 
@@ -235,6 +264,7 @@ fn select_roles(
             "plantuml",
             "结构图",
             "架构图",
+            "扫描",
         ],
     );
     let plan = contains_any(
@@ -248,11 +278,12 @@ fn select_roles(
     let test = contains_any(&lower, &["测试", "test", "spec", "单元测试"]);
     let review = contains_any(&lower, &["review", "评审", "code review"]);
     let research = contains_any(&lower, &["研究", "调研", "research", "search"]);
-    let docs = contains_any(&lower, &["文档", "doc", "readme", "说明"]);
-
-    // Explicit role tag in the user message (e.g. 【角色】planner) is a hint,
-    // not a hard stop — deliverable still upgrades the cast.
-    let forced_planner = contains_any(&lower, &["【角色】planner", "[角色]planner", "角色 planner", "role: planner", "role：planner"]);
+    // Avoid bare "说明" — it appears in generic requirements ("不确定则说明")
+    // and was mis-routing explore tasks to doc-writer.
+    let docs = contains_any(
+        &lower,
+        &["文档", "写文档", "文档化", "readme", "documentation", "docs/", "api doc"],
+    );
 
     if security {
         roles.push(BuiltInAgent::Explorer);
@@ -268,10 +299,7 @@ fn select_roles(
         } else {
             roles.push(BuiltInAgent::Worker);
         }
-    } else if plan_only || (plan && forced_planner && !deliverable) {
-        roles.push(BuiltInAgent::Planner);
-    } else if plan && !deliverable {
-        // "help me plan X" without deliverable language → planner only.
+    } else if plan_only || (plan && !deliverable && !explore) {
         roles.push(BuiltInAgent::Planner);
     } else if test {
         roles.push(BuiltInAgent::Tester);
@@ -281,6 +309,8 @@ fn select_roles(
         roles.push(BuiltInAgent::DocWriter);
     } else if explore {
         roles.push(BuiltInAgent::Explorer);
+    } else if plan {
+        roles.push(BuiltInAgent::Planner);
     } else {
         roles.push(BuiltInAgent::Default);
     }
@@ -306,8 +336,51 @@ fn select_roles(
             ""
         }
     );
-    let ids = hints.iter().take(3).map(|h| h.id).collect();
     (roles, rationale, ids)
+}
+
+/// Pull roles from structured task cards: `【角色】explorer → worker`, `role: planner`, …
+fn extract_explicit_roles(task: &str) -> Vec<BuiltInAgent> {
+    const MARKERS: &[&str] = &["【角色】", "[角色]", "role:", "role："];
+    for marker in MARKERS {
+        let Some(idx) = find_ignore_case(task, marker) else {
+            continue;
+        };
+        let rest = &task[idx + marker.len()..];
+        let end = rest
+            .find(['\n', '【', '['])
+            .unwrap_or(rest.len());
+        let section = rest[..end].trim();
+        if section.is_empty() {
+            continue;
+        }
+        let mut roles = Vec::new();
+        for token in section.split(|c: char| {
+            c == '→' || c == ',' || c == '|' || c == '/' || c == '、' || c == ';' || c == '；'
+        }) {
+            for part in token.split("->") {
+                if let Some(role) = parse_role(part.trim()) {
+                    if !roles.contains(&role) {
+                        roles.push(role);
+                    }
+                }
+            }
+        }
+        if !roles.is_empty() {
+            return roles;
+        }
+    }
+    Vec::new()
+}
+
+fn find_ignore_case(haystack: &str, needle: &str) -> Option<usize> {
+    let lower_h = haystack.to_lowercase();
+    let lower_n = needle.to_lowercase();
+    lower_h.find(&lower_n).map(|byte_idx| {
+        // Map byte index from lowercased string back — both are UTF-8 with same
+        // length for ASCII markers; for CJK markers casefold is identity.
+        byte_idx
+    })
 }
 
 fn roles_are_plan_only(roles: &[BuiltInAgent]) -> bool {
@@ -431,5 +504,47 @@ mod tests {
         }];
         let (roles, _, _) = select_roles("画 PlantUML 架构图并落地到仓库", &hints);
         assert!(roles.contains(&BuiltInAgent::Worker));
+    }
+
+    #[test]
+    fn polished_explore_brief_does_not_become_doc_writer() {
+        // Regression: frontend always appends "不确定则说明", and bare "说明"
+        // used to force doc-writer over the explicit explorer cast.
+        let task = "【任务】扫描下这个项目\n\
+【目标】梳理项目结构、关键入口与技术架构要点\n\
+【角色】explorer\n\
+【要求】中文结论先行；标注依据路径；不确定则说明。";
+        let (roles, rationale, _) = select_roles(task, &[]);
+        assert_eq!(roles, vec![BuiltInAgent::Explorer], "got {roles:?}");
+        assert!(
+            rationale.contains("指定角色") || rationale.contains("结果导向编排"),
+            "rationale={rationale}"
+        );
+    }
+
+    #[test]
+    fn generic_说明_boilerplate_does_not_select_doc_writer() {
+        let (roles, _, _) = select_roles(
+            "扫描下这个项目的目录结构。中文结论先行；不确定则说明。",
+            &[],
+        );
+        assert_eq!(roles, vec![BuiltInAgent::Explorer], "got {roles:?}");
+    }
+
+    #[test]
+    fn explicit_multi_role_arrow_is_honored() {
+        let (roles, _, _) =
+            select_roles("【任务】修 bug\n【角色】explorer → worker\n【要求】闭环交付", &[]);
+        assert_eq!(
+            roles,
+            vec![BuiltInAgent::Explorer, BuiltInAgent::Worker],
+            "got {roles:?}"
+        );
+    }
+
+    #[test]
+    fn real_docs_task_still_selects_doc_writer() {
+        let (roles, _, _) = select_roles("请补充 README 文档并文档化 API", &[]);
+        assert_eq!(roles, vec![BuiltInAgent::DocWriter], "got {roles:?}");
     }
 }

@@ -29,6 +29,8 @@ uuid = { workspace = true }
 sha2 = { workspace = true }
 ts-rs = { workspace = true }
 dirs = "6"
+reqwest = { workspace = true }
+url = "2"
 
 [dev-dependencies]
 tempfile = "3"

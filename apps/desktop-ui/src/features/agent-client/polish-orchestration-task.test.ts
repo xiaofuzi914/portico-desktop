@@ -19,6 +19,16 @@ describe("polishOrchestrationTask", () => {
     const result = polishOrchestrationTask("详细看下这个项目，技术架构是什么");
     expect(result.suggestedRoles).toEqual(["explorer"]);
     expect(result.polished).toContain("【任务】");
+    expect(result.polished).toContain("【角色】explorer");
+    // Must not use bare "说明" — backend used to mis-route that to doc-writer.
+    expect(result.polished).not.toMatch(/不确定则说明/);
+    expect(result.polished).toContain("不确定则标明不确定");
+  });
+
+  it("does not treat generic 说明 boilerplate as a docs task", () => {
+    const result = polishOrchestrationTask("扫描下这个项目，不确定则说明一下现状");
+    expect(result.suggestedRoles).toEqual(["explorer"]);
+    expect(result.suggestedRoles).not.toContain("doc-writer");
   });
 
   it("uses a single default agent for vague questions", () => {

@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-labelledby="title description">
+  <title id="title">Portico</title>
+  <desc id="description">A luminous blue doorway framed by a pale architectural arch.</desc>
+  <defs>
+    <linearGradient id="background" x1="176" y1="128" x2="840" y2="904" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#262933"/>
+      <stop offset="1" stop-color="#111217"/>
+    </linearGradient>
+    <linearGradient id="portal" x1="512" y1="312" x2="512" y2="792" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#73B7FF"/>
+      <stop offset="1" stop-color="#2878F0"/>
+    </linearGradient>
+  </defs>
+  <rect x="64" y="64" width="896" height="896" rx="216" fill="url(#background)"/>
+  <rect x="65" y="65" width="894" height="894" rx="215" fill="none" stroke="#FFFFFF" stroke-opacity=".08" stroke-width="2"/>
+  <path d="M392 792V438c0-77 48-126 120-126s120 49 120 126v354H392Z" fill="url(#portal)"/>
+  <path fill="#F4F3EE" fill-rule="evenodd" d="M236 792V438c0-168 118-278 276-278s276 110 276 278v354H632V438c0-77-48-126-120-126s-120 49-120 126v354H236Zm0 0h156v72H236v-72Zm396 0h156v72H632v-72Z"/>
+  <path d="M512 402c9 37 30 58 67 67-37 9-58 30-67 67-9-37-30-58-67-67 37-9 58-30 67-67Z" fill="#F8FBFF"/>
+</svg>

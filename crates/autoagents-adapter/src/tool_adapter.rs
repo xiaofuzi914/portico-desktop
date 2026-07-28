@@ -42,6 +42,37 @@ impl PorticoToolRegistry {
         tools.insert(tool.name().to_owned(), tool);
     }
 
+    /// Look up a registered tool by name.
+    #[must_use]
+    pub fn get(&self, name: &str) -> Option<Arc<dyn PorticoTool>> {
+        let tools = self.tools.read().expect("registry lock poisoned");
+        tools.get(name).cloned()
+    }
+
+    /// Whether a tool name is currently registered.
+    #[must_use]
+    pub fn contains(&self, name: &str) -> bool {
+        let tools = self.tools.read().expect("registry lock poisoned");
+        tools.contains_key(name)
+    }
+
+    /// Built-in tools handled by [`app_runtime::SafeToolExecutor`] (not `Tool::invoke`).
+    #[must_use]
+    pub fn is_durable_builtin(name: &str) -> bool {
+        matches!(
+            name,
+            "fs_read"
+                | "fs_list"
+                | "fs_search"
+                | "fs_write"
+                | "fs_edit"
+                | "git"
+                | "web_fetch"
+                | "web_search"
+                | "shell_exec"
+        )
+    }
+
     /// Register the reviewed, product-owned golden-path definitions.
     pub fn register_safe_builtin_definitions(&self) {
         self.register(Arc::new(SafeToolDefinition::fs_read()));
@@ -50,6 +81,9 @@ impl PorticoToolRegistry {
         self.register(Arc::new(SafeToolDefinition::fs_write()));
         self.register(Arc::new(SafeToolDefinition::fs_edit()));
         self.register(Arc::new(SafeToolDefinition::git_read()));
+        self.register(Arc::new(SafeToolDefinition::web_fetch()));
+        self.register(Arc::new(SafeToolDefinition::web_search()));
+        self.register(Arc::new(SafeToolDefinition::shell_exec()));
     }
 
     /// Convert registered schemas to provider-independent LLM tools.
@@ -201,17 +235,93 @@ impl SafeToolDefinition {
     fn git_read() -> Self {
         Self {
             name: "git",
-            description: "Inspect git status or diff in the current workspace. repo_path may be absolute or relative; use '.' for the workspace root.",
+            description: "Git in the workspace. Read: status, diff. Write (needs user approval): add, commit. repo_path may be absolute or relative; use '.' for the workspace root.",
             schema: json!({
                 "type": "object",
                 "properties": {
-                    "subcommand": {"type": "string", "enum": ["status", "diff"]},
+                    "subcommand": {
+                        "type": "string",
+                        "enum": ["status", "diff", "add", "commit"],
+                        "description": "status/diff are read-only; add/commit require approval."
+                    },
                     "repo_path": {
                         "type": "string",
                         "description": "Repository path absolute or relative to the workspace root. Use '.' for the project root."
+                    },
+                    "paths": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Paths to stage for subcommand=add (default: ['.'])."
+                    },
+                    "message": {
+                        "type": "string",
+                        "description": "Commit message for subcommand=commit."
                     }
                 },
                 "required": ["subcommand", "repo_path"]
+            }),
+        }
+    }
+
+    fn shell_exec() -> Self {
+        Self {
+            name: "shell_exec",
+            description: "Run a shell command in the trusted project root (requires user approval). Prefer fs_* tools for reading/editing files. Blocked: sudo, rm -rf, curl|sh, force-push. Use for builds, tests, package managers when needed.",
+            schema: json!({
+                "type": "object",
+                "properties": {
+                    "command": {
+                        "type": "string",
+                        "description": "Shell command line, e.g. 'pnpm test' or 'cargo check'."
+                    },
+                    "cwd": {
+                        "type": "string",
+                        "description": "Optional working directory absolute or relative to the workspace root (default: project root)."
+                    }
+                },
+                "required": ["command"]
+            }),
+        }
+    }
+
+    fn web_fetch() -> Self {
+        Self {
+            name: "web_fetch",
+            description: "Fetch a public HTTP(S) URL and return readable text (HTML stripped). Use for live documentation, blogs, GitHub pages, or APIs. Localhost and private IPs are blocked. Prefer this when the user asks for current web information.",
+            schema: json!({
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "Absolute http:// or https:// URL to fetch."
+                    },
+                    "max_chars": {
+                        "type": "integer",
+                        "description": "Optional cap on returned text length (default 24000, max 80000)."
+                    }
+                },
+                "required": ["url"]
+            }),
+        }
+    }
+
+    fn web_search() -> Self {
+        Self {
+            name: "web_search",
+            description: "Search the public web for recent pages. Returns titles, URLs, and snippets. Follow up with web_fetch on the best URLs for full page text.",
+            schema: json!({
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Search query in the user's language when appropriate."
+                    },
+                    "max_results": {
+                        "type": "integer",
+                        "description": "How many results to return (default 5, max 10)."
+                    }
+                },
+                "required": ["query"]
             }),
         }
     }
@@ -255,11 +365,21 @@ mod tests {
         names.sort();
         assert_eq!(
             names,
-            ["fs_edit", "fs_list", "fs_read", "fs_search", "fs_write", "git"]
+            [
+                "fs_edit",
+                "fs_list",
+                "fs_read",
+                "fs_search",
+                "fs_write",
+                "git",
+                "shell_exec",
+                "web_fetch",
+                "web_search"
+            ]
         );
 
         registry.retain(|name, _| name != "git");
-        assert_eq!(registry.llm_tools().len(), 5);
+        assert_eq!(registry.llm_tools().len(), 8);
     }
 
     #[tokio::test]

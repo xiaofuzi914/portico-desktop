@@ -19,7 +19,7 @@ export function AppShell({ children }: AppShellProps) {
       <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
         <AppTopbar />
         <div className="flex min-h-0 flex-1 overflow-hidden">
-          <main className="min-w-0 flex-1 overflow-hidden">{children}</main>
+          <div className="min-w-0 flex-1 overflow-hidden">{children}</div>
           {showInspector && <InspectorShell />}
         </div>
       </div>

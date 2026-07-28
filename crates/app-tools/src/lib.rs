@@ -23,6 +23,14 @@ pub trait Tool: Send + Sync {
         None
     }
 
+    /// Policy action used by the durable gate when this tool is not a builtin.
+    ///
+    /// Dynamic tools (MCP) return `mcp.invoke.read` or `mcp.invoke.write`.
+    /// Built-in schema-only tools leave this as `None` (mapped separately).
+    fn policy_action(&self) -> Option<&'static str> {
+        None
+    }
+
     /// Invoke the tool with the given input.
     ///
     /// # Errors

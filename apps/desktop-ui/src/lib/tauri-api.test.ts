@@ -213,6 +213,7 @@ describe("tauri-api phase 6 commands", () => {
     expect(mockInvoke).toHaveBeenCalledWith("list_workspace_files", {
       id: workspaceId,
       relativePath: "src",
+      basePath: null,
     });
   });
 
@@ -225,6 +226,7 @@ describe("tauri-api phase 6 commands", () => {
     expect(mockInvoke).toHaveBeenCalledWith("open_workspace_folder", {
       id: workspaceId,
       relativePath: "src",
+      basePath: null,
     });
   });
 
@@ -242,6 +244,7 @@ describe("tauri-api phase 6 commands", () => {
     expect(mockInvoke).toHaveBeenCalledWith("preview_workspace_markdown", {
       id: workspaceId,
       relativePath: "README.md",
+      basePath: null,
     });
   });
 
@@ -840,6 +843,7 @@ describe("tauri-api phase 9 commands", () => {
       workspaceId,
       threadId,
       task: "review this code",
+      workflowId: null,
     });
   });
 });

@@ -8,6 +8,7 @@ import {
   CircleAlert,
   CircleCheck,
   CircleDashed,
+  Expand,
   Loader2,
   Pause,
   ShieldAlert,
@@ -18,8 +19,16 @@ import { getRunTokenUsage, listMessages, listRunEvents, listRuns } from "@/lib/t
 import type { AgentRun, AgentRunId, Message, RunEvent, ThreadId } from "@/lib/schemas";
 import { useTranslation } from "@/lib/i18n-react";
 import { cn } from "@/lib/utils";
+import { Modal } from "@/components/ui/modal";
+import { Button } from "@/components/ui/button";
 import { EmptyState, InlineError, PanelLoading } from "./panel-primitives";
 import { JsonTree } from "./json-tree";
+
+/** Open full text/JSON in a modal when the inspector column is too narrow. */
+type ContentPreview = {
+  title: string;
+  body: string;
+};
 
 interface TimelinePanelProps {
   threadId?: ThreadId;
@@ -352,16 +361,16 @@ function buildTurn(run: AgentRun, messages: Message[], events: RunEvent[]): ApiT
 function statusTone(status: AgentRun["status"]): string {
   switch (status) {
     case "Completed":
-      return "text-emerald-700 bg-emerald-50 border-emerald-200";
+      return "text-success-ink bg-success-subtle border-success/25";
     case "Failed":
     case "Interrupted":
     case "Cancelled":
-      return "text-red-700 bg-red-50 border-red-200";
+      return "text-destructive-ink bg-destructive-subtle border-destructive/25";
     case "Running":
     case "Queued":
-      return "text-sky-700 bg-sky-50 border-sky-200";
+      return "text-running-ink bg-running-soft border-running-mid";
     case "WaitingApproval":
-      return "text-amber-700 bg-amber-50 border-amber-200";
+      return "text-warning-ink bg-warning-subtle border-warning/30";
     case "Paused":
       return "text-muted-foreground bg-muted border-border";
     default:
@@ -373,16 +382,16 @@ function StatusIcon({ status }: { status: AgentRun["status"] }) {
   const className = "h-3.5 w-3.5 shrink-0";
   switch (status) {
     case "Completed":
-      return <CircleCheck className={cn(className, "text-emerald-600")} />;
+      return <CircleCheck className={cn(className, "text-success")} />;
     case "Failed":
     case "Interrupted":
     case "Cancelled":
-      return <CircleAlert className={cn(className, "text-red-600")} />;
+      return <CircleAlert className={cn(className, "text-destructive")} />;
     case "Running":
     case "Queued":
-      return <Loader2 className={cn(className, "animate-spin text-sky-600")} />;
+      return <Loader2 className={cn(className, "animate-spin text-running")} />;
     case "WaitingApproval":
-      return <ShieldAlert className={cn(className, "text-amber-600")} />;
+      return <ShieldAlert className={cn(className, "text-warning-ink")} />;
     case "Paused":
       return <Pause className={cn(className, "text-muted-foreground")} />;
     default:
@@ -434,25 +443,82 @@ function readableResponseBody(exchange: ExchangeStep): string {
   return prettyJson(exchange.response);
 }
 
+/** Compact body with optional “view full” when content is long or clipped. */
+function PreviewableText({
+  text,
+  title,
+  clampClassName,
+  mono,
+  onPreview,
+  previewLabel,
+}: {
+  text: string;
+  title: string;
+  clampClassName?: string;
+  mono?: boolean;
+  onPreview: (preview: ContentPreview) => void;
+  previewLabel: string;
+}) {
+  const long = text.length > 280 || text.split("\n").length > 6;
+  return (
+    <div className="group/preview relative">
+      <button
+        type="button"
+        className={cn(
+          "text-foreground hover:bg-muted/30 w-full rounded text-left transition-colors",
+          long && "cursor-zoom-in",
+        )}
+        onClick={() => onPreview({ title, body: text })}
+        title={previewLabel}
+      >
+        <p
+          className={cn(
+            "whitespace-pre-wrap break-words text-[11px] leading-relaxed",
+            mono && "font-mono text-[10px]",
+            clampClassName ?? "max-h-40 overflow-hidden",
+          )}
+        >
+          {text}
+        </p>
+      </button>
+      {long ? (
+        <button
+          type="button"
+          className="text-primary hover:bg-primary/10 mt-1 inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium"
+          onClick={() => onPreview({ title, body: text })}
+        >
+          <Expand className="h-3 w-3" />
+          {previewLabel}
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
 function ExchangeCard({
   exchange,
   index,
   jsonMode,
   t,
+  onPreview,
 }: {
   exchange: ExchangeStep;
   index: number;
   jsonMode: boolean;
   t: (key: string) => string;
+  onPreview: (preview: ContentPreview) => void;
 }) {
   const [open, setOpen] = useState(index === 0 || exchange.kind === "llm");
   const isLlm = exchange.kind === "llm";
+  const requestBody = readableRequestBody(exchange);
+  const responseBody =
+    readableResponseBody(exchange) || t("inspector.timelineResponseEmpty");
 
   return (
     <div
       className={cn(
         "rounded-md border",
-        isLlm ? "border-violet-100 bg-violet-50/30" : "border-amber-100 bg-amber-50/30",
+        isLlm ? "border-primary/10 bg-primary/5" : "border-warning/20 bg-warning-subtle/30",
       )}
     >
       <button
@@ -466,9 +532,9 @@ function ExchangeCard({
         </span>
         <span className="mt-0.5">
           {isLlm ? (
-            <Bot className="h-3.5 w-3.5 text-violet-800" />
+            <Bot className="h-3.5 w-3.5 text-primary" />
           ) : (
-            <Wrench className="h-3.5 w-3.5 text-amber-800" />
+            <Wrench className="h-3.5 w-3.5 text-warning-ink" />
           )}
         </span>
         <div className="min-w-0 flex-1">
@@ -514,46 +580,94 @@ function ExchangeCard({
         <div className="space-y-2 border-t px-2 py-2">
           {jsonMode ? (
             <>
-              <JsonTree
-                key={`${exchange.id}-req`}
-                title={t("inspector.timelineJsonRequest")}
-                value={exchange.request}
-                defaultExpandDepth={1}
-                expandAllLabel={t("inspector.timelineJsonExpandAll")}
-                collapseAllLabel={t("inspector.timelineJsonCollapse")}
-              />
-              <JsonTree
-                key={`${exchange.id}-res`}
-                title={t("inspector.timelineJsonResponse")}
-                value={exchange.response}
-                defaultExpandDepth={1}
-                expandAllLabel={t("inspector.timelineJsonExpandAll")}
-                collapseAllLabel={t("inspector.timelineJsonCollapse")}
-              />
+              <div className="space-y-1">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[10px] font-semibold">
+                    {t("inspector.timelineJsonRequest")}
+                  </span>
+                  <button
+                    type="button"
+                    className="text-primary hover:bg-primary/10 inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium"
+                    onClick={() =>
+                      onPreview({
+                        title: t("inspector.timelineJsonRequest"),
+                        body: prettyJson(exchange.request),
+                      })
+                    }
+                  >
+                    <Expand className="h-3 w-3" />
+                    {t("inspector.timelineOpenPreview")}
+                  </button>
+                </div>
+                <JsonTree
+                  key={`${exchange.id}-req`}
+                  value={exchange.request}
+                  defaultExpandDepth={1}
+                  expandAllLabel={t("inspector.timelineJsonExpandAll")}
+                  collapseAllLabel={t("inspector.timelineJsonCollapse")}
+                />
+              </div>
+              <div className="space-y-1">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[10px] font-semibold">
+                    {t("inspector.timelineJsonResponse")}
+                  </span>
+                  <button
+                    type="button"
+                    className="text-primary hover:bg-primary/10 inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium"
+                    onClick={() =>
+                      onPreview({
+                        title: t("inspector.timelineJsonResponse"),
+                        body: prettyJson(exchange.response),
+                      })
+                    }
+                  >
+                    <Expand className="h-3 w-3" />
+                    {t("inspector.timelineOpenPreview")}
+                  </button>
+                </div>
+                <JsonTree
+                  key={`${exchange.id}-res`}
+                  value={exchange.response}
+                  defaultExpandDepth={1}
+                  expandAllLabel={t("inspector.timelineJsonExpandAll")}
+                  collapseAllLabel={t("inspector.timelineJsonCollapse")}
+                />
+              </div>
             </>
           ) : (
             <>
-              <section className="rounded border border-sky-100 bg-sky-50/50 px-2 py-1.5">
+              <section className="rounded border border-running-mid bg-running-soft/50 px-2 py-1.5">
                 <div className="mb-0.5 flex items-center gap-1">
-                  <User className="h-3 w-3 text-sky-800" />
-                  <span className="text-[10px] font-semibold text-sky-900">
+                  <User className="h-3 w-3 text-running-ink" />
+                  <span className="text-[10px] font-semibold text-running-ink">
                     {t("inspector.timelineRequestBody")}
                   </span>
                 </div>
-                <pre className="text-foreground max-h-56 overflow-auto whitespace-pre-wrap break-words font-mono text-[10px] leading-relaxed">
-                  {readableRequestBody(exchange)}
-                </pre>
+                <PreviewableText
+                  text={requestBody}
+                  title={t("inspector.timelineRequestBody")}
+                  mono
+                  clampClassName="max-h-40 overflow-hidden"
+                  onPreview={onPreview}
+                  previewLabel={t("inspector.timelineOpenPreview")}
+                />
               </section>
-              <section className="rounded border border-violet-100 bg-violet-50/40 px-2 py-1.5">
+              <section className="rounded border border-primary/10 bg-primary/5 px-2 py-1.5">
                 <div className="mb-0.5 flex items-center gap-1">
-                  <Bot className="h-3 w-3 text-violet-800" />
-                  <span className="text-[10px] font-semibold text-violet-900">
+                  <Bot className="h-3 w-3 text-primary" />
+                  <span className="text-[10px] font-semibold text-primary">
                     {t("inspector.timelineResponseBody")}
                   </span>
                 </div>
-                <pre className="text-foreground max-h-56 overflow-auto whitespace-pre-wrap break-words font-mono text-[10px] leading-relaxed">
-                  {readableResponseBody(exchange) || t("inspector.timelineResponseEmpty")}
-                </pre>
+                <PreviewableText
+                  text={responseBody}
+                  title={t("inspector.timelineResponseBody")}
+                  mono
+                  clampClassName="max-h-40 overflow-hidden"
+                  onPreview={onPreview}
+                  previewLabel={t("inspector.timelineOpenPreview")}
+                />
               </section>
             </>
           )}
@@ -567,6 +681,7 @@ export function TimelinePanel({ threadId, activeRunId }: TimelinePanelProps) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [jsonMode, setJsonMode] = useState(false);
+  const [preview, setPreview] = useState<ContentPreview | null>(null);
 
   const runsQuery = useQuery({
     queryKey: ["inspector-timeline-runs", threadId ?? "none"],
@@ -640,6 +755,33 @@ export function TimelinePanel({ threadId, activeRunId }: TimelinePanelProps) {
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
+      <Modal
+        open={Boolean(preview)}
+        onClose={() => setPreview(null)}
+        labelledBy="timeline-content-preview-title"
+        className="flex max-h-[min(85vh,720px)] w-full max-w-2xl flex-col gap-3 p-4 sm:p-5"
+      >
+        <div className="flex shrink-0 items-start justify-between gap-3">
+          <h2
+            id="timeline-content-preview-title"
+            className="text-sm font-semibold leading-snug"
+          >
+            {preview?.title ?? t("inspector.timelineOpenPreview")}
+          </h2>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="h-7 shrink-0"
+            onClick={() => setPreview(null)}
+          >
+            {t("inspector.timelineClosePreview")}
+          </Button>
+        </div>
+        <pre className="bg-muted/40 text-foreground min-h-0 flex-1 overflow-auto rounded-md border p-3 font-mono text-[11px] leading-relaxed whitespace-pre-wrap break-words">
+          {preview?.body ?? ""}
+        </pre>
+      </Modal>
       <div className="border-b px-3 py-2">
         <p className="text-muted-foreground text-[11px] leading-relaxed">
           {t("inspector.timelineHint")}
@@ -650,7 +792,7 @@ export function TimelinePanel({ threadId, activeRunId }: TimelinePanelProps) {
             className={cn(
               "inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-[11px] font-medium transition-colors",
               jsonMode
-                ? "border-violet-300 bg-violet-50 text-violet-900"
+                ? "border-primary/25 bg-primary/5 text-primary"
                 : "border-border bg-background text-muted-foreground hover:bg-muted/50",
             )}
             onClick={() => setJsonMode((v) => !v)}
@@ -681,14 +823,14 @@ export function TimelinePanel({ threadId, activeRunId }: TimelinePanelProps) {
                 <span
                   className={cn(
                     "mt-1.5 h-2.5 w-2.5 rounded-full border-2 border-background ring-2",
-                    turn.run.status === "Completed" && "bg-emerald-500 ring-emerald-200",
+                    turn.run.status === "Completed" && "bg-success ring-success/25",
                     (turn.run.status === "Failed" ||
                       turn.run.status === "Cancelled" ||
                       turn.run.status === "Interrupted") &&
-                      "bg-red-500 ring-red-200",
+                      "bg-destructive ring-destructive/25",
                     (turn.run.status === "Running" || turn.run.status === "Queued") &&
-                      "bg-sky-500 ring-sky-200",
-                    turn.run.status === "WaitingApproval" && "bg-amber-500 ring-amber-200",
+                      "bg-running ring-running-mid",
+                    turn.run.status === "WaitingApproval" && "bg-warning ring-warning/30",
                     turn.run.status === "Paused" && "bg-muted-foreground ring-border",
                   )}
                   aria-hidden
@@ -785,10 +927,10 @@ export function TimelinePanel({ threadId, activeRunId }: TimelinePanelProps) {
                 {isOpen ? (
                   <div className="space-y-2.5 border-t px-2.5 py-2.5">
                     {/* Turn-level summary (user message + final reply) */}
-                    <section className="rounded-md border border-sky-100 bg-sky-50/50 px-2.5 py-2">
+                    <section className="rounded-md border border-running-mid bg-running-soft/50 px-2.5 py-2">
                       <div className="mb-1 flex items-center gap-1.5">
-                        <User className="h-3.5 w-3.5 text-sky-800" />
-                        <span className="text-[11px] font-semibold text-sky-900">
+                        <User className="h-3.5 w-3.5 text-running-ink" />
+                        <span className="text-[11px] font-semibold text-running-ink">
                           {t("inspector.timelineRequestBody")}
                         </span>
                         <span className="text-muted-foreground ml-auto text-[10px] tabular-nums">
@@ -796,25 +938,44 @@ export function TimelinePanel({ threadId, activeRunId }: TimelinePanelProps) {
                         </span>
                       </div>
                       {jsonMode ? (
-                        <JsonTree
-                          key={`${runId}-user`}
-                          value={{ role: "user", content: turn.request }}
-                          defaultExpandDepth={1}
-                          maxHeightClassName="max-h-48"
-                          expandAllLabel={t("inspector.timelineJsonExpandAll")}
-                          collapseAllLabel={t("inspector.timelineJsonCollapse")}
-                        />
+                        <div className="space-y-1">
+                          <button
+                            type="button"
+                            className="text-primary hover:bg-primary/10 inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium"
+                            onClick={() =>
+                              setPreview({
+                                title: t("inspector.timelineRequestBody"),
+                                body: prettyJson({ role: "user", content: turn.request }),
+                              })
+                            }
+                          >
+                            <Expand className="h-3 w-3" />
+                            {t("inspector.timelineOpenPreview")}
+                          </button>
+                          <JsonTree
+                            key={`${runId}-user`}
+                            value={{ role: "user", content: turn.request }}
+                            defaultExpandDepth={1}
+                            maxHeightClassName="max-h-48"
+                            expandAllLabel={t("inspector.timelineJsonExpandAll")}
+                            collapseAllLabel={t("inspector.timelineJsonCollapse")}
+                          />
+                        </div>
                       ) : (
-                        <p className="text-foreground whitespace-pre-wrap break-words text-[11px] leading-relaxed">
-                          {turn.request}
-                        </p>
+                        <PreviewableText
+                          text={turn.request}
+                          title={t("inspector.timelineRequestBody")}
+                          clampClassName="max-h-36 overflow-hidden"
+                          onPreview={setPreview}
+                          previewLabel={t("inspector.timelineOpenPreview")}
+                        />
                       )}
                     </section>
 
-                    <section className="rounded-md border border-violet-100 bg-violet-50/40 px-2.5 py-2">
+                    <section className="rounded-md border border-primary/10 bg-primary/5 px-2.5 py-2">
                       <div className="mb-1 flex items-center gap-1.5">
-                        <Bot className="h-3.5 w-3.5 text-violet-800" />
-                        <span className="text-[11px] font-semibold text-violet-900">
+                        <Bot className="h-3.5 w-3.5 text-primary" />
+                        <span className="text-[11px] font-semibold text-primary">
                           {t("inspector.timelineResponseBody")}
                         </span>
                         {turn.responseAt ? (
@@ -824,22 +985,45 @@ export function TimelinePanel({ threadId, activeRunId }: TimelinePanelProps) {
                         ) : null}
                       </div>
                       {jsonMode ? (
-                        <JsonTree
-                          key={`${runId}-assistant`}
-                          value={{
-                            role: "assistant",
-                            content: turn.response || null,
-                            status: turn.run.status,
-                          }}
-                          defaultExpandDepth={1}
-                          maxHeightClassName="max-h-48"
-                          expandAllLabel={t("inspector.timelineJsonExpandAll")}
-                          collapseAllLabel={t("inspector.timelineJsonCollapse")}
-                        />
+                        <div className="space-y-1">
+                          <button
+                            type="button"
+                            className="text-primary hover:bg-primary/10 inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium"
+                            onClick={() =>
+                              setPreview({
+                                title: t("inspector.timelineResponseBody"),
+                                body: prettyJson({
+                                  role: "assistant",
+                                  content: turn.response || null,
+                                  status: turn.run.status,
+                                }),
+                              })
+                            }
+                          >
+                            <Expand className="h-3 w-3" />
+                            {t("inspector.timelineOpenPreview")}
+                          </button>
+                          <JsonTree
+                            key={`${runId}-assistant`}
+                            value={{
+                              role: "assistant",
+                              content: turn.response || null,
+                              status: turn.run.status,
+                            }}
+                            defaultExpandDepth={1}
+                            maxHeightClassName="max-h-48"
+                            expandAllLabel={t("inspector.timelineJsonExpandAll")}
+                            collapseAllLabel={t("inspector.timelineJsonCollapse")}
+                          />
+                        </div>
                       ) : turn.response ? (
-                        <p className="text-foreground whitespace-pre-wrap break-words text-[11px] leading-relaxed">
-                          {truncate(turn.response, 2_400)}
-                        </p>
+                        <PreviewableText
+                          text={turn.response}
+                          title={t("inspector.timelineResponseBody")}
+                          clampClassName="max-h-48 overflow-hidden"
+                          onPreview={setPreview}
+                          previewLabel={t("inspector.timelineOpenPreview")}
+                        />
                       ) : turn.run.status === "Running" || turn.run.status === "Queued" ? (
                         <p className="text-muted-foreground text-[11px] italic">
                           {t("inspector.timelineResponsePending")}
@@ -852,16 +1036,20 @@ export function TimelinePanel({ threadId, activeRunId }: TimelinePanelProps) {
                     </section>
 
                     {turn.errorText ? (
-                      <section className="rounded-md border border-red-200 bg-red-50/60 px-2.5 py-2">
+                      <section className="rounded-md border border-destructive/25 bg-destructive-subtle/60 px-2.5 py-2">
                         <div className="mb-1 flex items-center gap-1.5">
-                          <CircleAlert className="h-3.5 w-3.5 text-red-700" />
-                          <span className="text-[11px] font-semibold text-red-800">
+                          <CircleAlert className="h-3.5 w-3.5 text-destructive" />
+                          <span className="text-[11px] font-semibold text-destructive-ink">
                             {t("inspector.timelineStepError")}
                           </span>
                         </div>
-                        <p className="whitespace-pre-wrap break-words text-[11px] leading-relaxed text-red-900/90">
-                          {truncate(turn.errorText, 800)}
-                        </p>
+                        <PreviewableText
+                          text={turn.errorText}
+                          title={t("inspector.timelineStepError")}
+                          clampClassName="max-h-28 overflow-hidden"
+                          onPreview={setPreview}
+                          previewLabel={t("inspector.timelineOpenPreview")}
+                        />
                       </section>
                     ) : null}
 
@@ -882,6 +1070,7 @@ export function TimelinePanel({ threadId, activeRunId }: TimelinePanelProps) {
                               index={ei}
                               jsonMode={jsonMode}
                               t={t}
+                              onPreview={setPreview}
                             />
                           ))}
                         </div>

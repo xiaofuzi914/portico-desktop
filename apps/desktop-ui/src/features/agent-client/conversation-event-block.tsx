@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import {
   AlertCircle,
   Bot,
@@ -6,6 +6,7 @@ import {
   Code2,
   FileBox,
   HelpCircle,
+  Loader2,
   RotateCcw,
   ShieldAlert,
   User,
@@ -15,20 +16,28 @@ import { Button } from "@/components/ui/button";
 import { formatDateTime } from "@/lib/formatters";
 import { useTranslation } from "@/lib/i18n-react";
 import { cn } from "@/lib/utils";
+import type { ArtifactPreview, WorkspaceId } from "@/lib/schemas";
+import { previewWorkspaceMarkdown } from "@/lib/tauri-api";
+import { MarkdownPreviewDialog } from "@/features/markdown-provider/markdown-preview-dialog";
 import type {
   ConversationBlock,
   ConversationBlockKind,
   ConversationBlockTone,
 } from "./event-view-models";
+import { MessageFileChanges } from "./message-file-changes";
+import { isPreviewablePath } from "./message-file-refs";
 
 interface ConversationEventBlockProps {
   block: ConversationBlock;
+  workspaceId?: WorkspaceId;
   /** Original user text for this turn (shown above errors; used by Retry). */
   userPrompt?: string | null;
   onRetry?: (content: string) => void;
   retryDisabled?: boolean;
   /** Active turn: soft pulse background while the agent is working. */
   isRunning?: boolean;
+  /** Canvas deep-link: highlight this message block. */
+  isHighlighted?: boolean;
 }
 
 function toneClasses(tone: ConversationBlockTone): string {
@@ -59,9 +68,7 @@ function iconForKind(kind: ConversationBlockKind, title: string) {
 }
 
 function shouldRenderMarkdown(block: ConversationBlock): boolean {
-  // Assistant / user chat messages always go through MD.
   if (block.kind === "message") return true;
-  // System / orchestration summaries often arrive as markdown-ish prose.
   if (block.kind === "error" || block.kind === "status" || block.kind === "diagnostic") {
     return looksLikeMarkdown(block.body);
   }
@@ -76,12 +83,15 @@ function looksLikeMarkdown(text: string): boolean {
 
 export function ConversationEventBlock({
   block,
+  workspaceId,
   userPrompt,
   onRetry,
   retryDisabled = false,
   isRunning = false,
+  isHighlighted = false,
 }: ConversationEventBlockProps) {
   const { t } = useTranslation();
+  const [inlinePreview, setInlinePreview] = useState<ArtifactPreview | null>(null);
   const displayBody = useMemo(() => {
     if (block.kind === "tool") {
       try {
@@ -95,17 +105,116 @@ export function ConversationEventBlock({
   }, [block]);
   const Icon = iconForKind(block.kind, block.title);
   const asMarkdown = shouldRenderMarkdown(block);
+  const isUserBubble = block.kind === "message" && block.role === "user";
+  const isAssistantBubble = block.kind === "message" && block.role === "assistant";
   const showRetry =
     (block.kind === "error" || block.tone === "danger") &&
     Boolean(userPrompt?.trim()) &&
     typeof onRetry === "function";
+  const messageId = block.id.startsWith("message-")
+    ? block.id.slice("message-".length)
+    : undefined;
+  const runId = block.raw.run_id;
 
+  const openInlinePath = (path: string) => {
+    if (!workspaceId || !isPreviewablePath(path)) return;
+    void previewWorkspaceMarkdown(workspaceId, path, null)
+      .then(setInlinePreview)
+      .catch(() => undefined);
+  };
+
+  // Chat bubbles: user right (compact), assistant left (use full column width
+  // so tables / long deliverables are not squeezed on wide screens).
+  if (isUserBubble || isAssistantBubble) {
+    return (
+      <div
+        className={cn(
+          "flex w-full min-w-0",
+          isUserBubble ? "justify-end" : "justify-start",
+        )}
+      >
+        <article
+          id={messageId ? `msg-${messageId}` : undefined}
+          data-message-id={messageId}
+          className={cn(
+            "min-w-0 rounded-2xl border px-3.5 py-2.5 text-sm shadow-xs transition-colors",
+            // User: short prompts stay bubble-sized; grow on large screens a bit.
+            isUserBubble &&
+              "max-w-[min(100%,28rem)] sm:max-w-[min(100%,32rem)] lg:max-w-[min(100%,40rem)] border-user-bubble-border bg-user-bubble rounded-br-md",
+            // Assistant: fill the conversation column (tables / docs need width).
+            isAssistantBubble &&
+              "w-full max-w-full border-border bg-muted/40 rounded-bl-md",
+            isRunning && "conversation-block-running",
+            isHighlighted && "ring-primary ring-2 ring-offset-2",
+          )}
+          data-running={isRunning ? "true" : undefined}
+        >
+          {asMarkdown ? (
+            <MarkdownBody
+              content={displayBody}
+              compact
+              className="!m-0 !border-0 !bg-transparent !p-0 shadow-none"
+              onOpenFilePath={
+                isAssistantBubble && workspaceId ? openInlinePath : undefined
+              }
+            />
+          ) : (
+            <p className="leading-6 whitespace-pre-wrap">{displayBody}</p>
+          )}
+          {isAssistantBubble && workspaceId && !isRunning ? (
+            <MessageFileChanges
+              workspaceId={workspaceId}
+              runId={runId}
+              messageText={displayBody}
+            />
+          ) : null}
+          <div
+            className={cn(
+              "text-muted-foreground mt-1.5 flex items-center gap-1.5 text-[11px]",
+              isUserBubble ? "justify-end" : "justify-start",
+            )}
+          >
+            {isUserBubble ? (
+              <User className="h-3 w-3 shrink-0" aria-hidden />
+            ) : (
+              <Bot className="h-3 w-3 shrink-0" aria-hidden />
+            )}
+            <span className="font-medium">
+              {isUserBubble ? t("agent.you") : t("agent.assistant")}
+            </span>
+            {isRunning ? (
+              <>
+                <span aria-hidden>·</span>
+                <span className="conversation-running-pill inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-medium">
+                  <span className="conversation-running-dot" aria-hidden />
+                  {t("agent.runningPill")}
+                </span>
+              </>
+            ) : null}
+            <span aria-hidden>·</span>
+            <span className="shrink-0">{formatDateTime(block.createdAt)}</span>
+          </div>
+          {inlinePreview ? (
+            <MarkdownPreviewDialog
+              preview={inlinePreview}
+              onClose={() => setInlinePreview(null)}
+            />
+          ) : null}
+        </article>
+      </div>
+    );
+  }
+
+  // Tool / error / status / diagnostic: full-width cards (not chat bubbles).
   return (
     <article
+      id={messageId ? `msg-${messageId}` : undefined}
+      data-message-id={messageId}
       className={cn(
-        "rounded-lg border text-sm shadow-xs transition-colors",
+        "w-full min-w-0 rounded-lg border text-sm shadow-xs transition-colors",
         toneClasses(block.tone),
         isRunning && "conversation-block-running",
+        isHighlighted && "ring-primary ring-2 ring-offset-2",
       )}
       data-running={isRunning ? "true" : undefined}
     >
@@ -136,7 +245,7 @@ export function ConversationEventBlock({
         </div>
       ) : null}
       {asMarkdown ? (
-        <MarkdownBody content={displayBody} compact />
+        <MarkdownBody content={displayBody} compact className="!border-0" />
       ) : (
         <pre className="text-foreground max-h-96 overflow-auto p-3 font-mono text-xs leading-5 whitespace-pre-wrap">
           {displayBody}
@@ -150,10 +259,18 @@ export function ConversationEventBlock({
             variant="outline"
             className="h-8 gap-1.5 text-xs"
             disabled={retryDisabled}
-            onClick={() => onRetry?.(userPrompt)}
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              onRetry?.(userPrompt);
+            }}
           >
-            <RotateCcw className="h-3.5 w-3.5" />
-            {t("agent.retry")}
+            {retryDisabled ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <RotateCcw className="h-3.5 w-3.5" />
+            )}
+            {retryDisabled ? t("agent.retrying") : t("agent.retry")}
           </Button>
         </div>
       ) : null}

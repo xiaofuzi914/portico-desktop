@@ -130,12 +130,12 @@ function DecisionBadge({ decision }: { decision: string }) {
   const normalized = decision.toLowerCase();
   const classes =
     normalized === "allow"
-      ? "bg-green-100 text-green-800"
+      ? "bg-success-subtle text-success-ink"
       : normalized === "ask"
-        ? "bg-amber-100 text-amber-800"
+        ? "bg-warning-subtle text-warning-ink"
         : normalized === "deny"
-          ? "bg-red-100 text-red-800"
-          : "bg-gray-100 text-gray-800";
+          ? "bg-destructive-subtle text-destructive-ink"
+          : "bg-muted text-muted-foreground";
   return (
     <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${classes}`}>{decision}</span>
   );
