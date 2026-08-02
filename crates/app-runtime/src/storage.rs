@@ -511,6 +511,9 @@ pub trait Storage: Send + Sync {
         thread_id: ThreadId,
     ) -> Result<Vec<Orchestration>, AppError>;
 
+    /// List orchestration sessions currently Planning or Running (for restart reconcile).
+    async fn list_active_orchestrations(&self) -> Result<Vec<Orchestration>, AppError>;
+
     /// Upsert an editable multi-stage workflow template.
     async fn upsert_workflow_template(
         &self,
@@ -3376,6 +3379,22 @@ impl Storage for SqliteStorage {
         rows.into_iter().map(orchestration_from_row).collect()
     }
 
+    async fn list_active_orchestrations(&self) -> Result<Vec<Orchestration>, AppError> {
+        let rows = sqlx::query_as::<_, OrchestrationRow>(
+            "SELECT id, parent_run_id, workspace_id, thread_id, task, status,
+                    plan_json, pattern_ids_json, result_summary, created_at, updated_at, completed_at
+             FROM orchestrations
+             WHERE status IN ('Planning', 'Running')
+             ORDER BY updated_at DESC",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| AppError::Internal {
+            message: format!("list_active_orchestrations failed: {e}"),
+        })?;
+        rows.into_iter().map(orchestration_from_row).collect()
+    }
+
     async fn upsert_workflow_template(
         &self,
         template: &app_models::WorkflowTemplate,
@@ -4603,6 +4622,8 @@ impl From<SubagentRunRow> for SubagentRun {
             output_summary: row.output_summary,
             created_at: row.created_at,
             completed_at: row.completed_at,
+            retry_count: 0,
+            last_error_code: None,
         }
     }
 }

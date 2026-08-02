@@ -8,6 +8,7 @@ pub mod executor;
 pub mod notification_center;
 pub mod provider_registry;
 pub mod repo_root_provider;
+pub mod run_spec;
 pub mod runner;
 pub mod safe_tools;
 pub mod storage;
@@ -35,9 +36,10 @@ pub use app_models::{
     CanvasLinkRefType, CanvasNode, CanvasNodeId, CanvasNodeKind, CanvasNodeSource, CanvasNodeStatus,
     CanvasSnapshot, PermissionScope, PluginId, PluginManifest, PluginPermissions, ProviderConfig, ProviderHealth,
     ProviderHealthStatus, ProviderId, ProviderKind, RagChunk, RetryPolicy, RunEvent,
-    RunModelSnapshot, Skill, SkillId, SubagentRun, TaskKind, Thread, ThreadId, ToolInvocation,
-    ToolInvocationId, ToolInvocationStatus, UsageBudget, UsageRecord, WorkflowPatternId, Workspace,
-    WorkspaceId, Worktree, WorktreeId,
+    ModelTier, RetryClass, RunExecutionSpec, RunModelSnapshot, Skill, SkillId, SubagentRun,
+    TaskKind, ThinkingMode, Thread, ThreadId, ToolInvocation, ToolInvocationId,
+    ToolInvocationStatus, UsageBudget, UsageRecord, WorkflowPatternId, Workspace, WorkspaceId,
+    Worktree, WorktreeId, WriteIsolation,
 };
 
 // Re-export runtime modules.
@@ -54,6 +56,7 @@ pub use executor::{
 pub use notification_center::NotificationCenter;
 pub use provider_registry::{ModelProviderRegistry, SqliteModelProviderRegistry};
 pub use repo_root_provider::StorageRepoRootProvider;
+pub use run_spec::RunExecutionSpecStore;
 pub use runner::PorticoRuntimeHandle;
 pub use safe_tools::{SafeToolExecutor, ToolReconciliation};
 pub use storage::{AgentCheckpoint, AuditLogEntry, SqliteStorage, Storage};

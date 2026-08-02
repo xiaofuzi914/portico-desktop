@@ -18,12 +18,15 @@ import { maybeAutoTitleThread } from "@/lib/maybe-auto-title-thread";
 import { polishOrchestrationTask } from "./polish-orchestration-task";
 import { classifyTaskMode } from "./classify-task-mode";
 import { WorkflowDagEditor } from "./workflow-dag-editor";
+import { ThreadModelSelector } from "./thread-model-selector";
+import { ThreadThinkingControl } from "./thread-thinking-control";
 import {
   type ComposerQueuedTask,
   queueMultiRoleTask,
   queueSendTask,
   resolveQueuedOrchestrationStart,
 } from "./orchestration-queue";
+import type { ThinkingControlState } from "./model-thinking-prefs";
 import { cn } from "@/lib/utils";
 
 const EMPTY_PATTERNS: PatternHint[] = [];
@@ -31,6 +34,8 @@ const EMPTY_PATTERNS: PatternHint[] = [];
 interface ConversationComposerProps {
   /** Default path: single-agent chat. Prefer Promise so draft clears only on success. */
   onSubmit: (content: string) => void | Promise<void>;
+  /** Thinking / reasoning-depth control for the active model (parent uses for send). */
+  onThinkingChange?: (state: ThinkingControlState) => void;
   /** True only while the current send HTTP/mutation is in flight (not while a run is active). */
   isSubmitting: boolean;
   /**
@@ -59,6 +64,7 @@ interface ConversationComposerProps {
  */
 export function ConversationComposer({
   onSubmit,
+  onThinkingChange,
   isSubmitting,
   sessionBusy = false,
   controls,
@@ -166,6 +172,7 @@ export function ConversationComposer({
 
   const latest = sessionsQuery.data?.[0];
   const multiRoleBusy = latest?.status === "Running" || latest?.status === "Planning";
+  // PartialCompleted / Failed are terminal — allow new sends.
   const dispatchBusy = isSubmitting || orchestrate.isPending;
   const channelBusy = sessionBusy || multiRoleBusy || dispatchBusy || dispatchHold;
 
@@ -475,9 +482,23 @@ export function ConversationComposer({
         />
       )}
 
-      <div className="flex items-center justify-between gap-3 border-t pt-3">
-        <div className="min-w-0 flex-1">{controls}</div>
-        <div className="flex shrink-0 items-center gap-2">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-t pt-3">
+        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+          {workspaceId && threadId ? (
+            <>
+              <ThreadModelSelector
+                workspaceId={workspaceId}
+                threadId={threadId}
+                variant="composer"
+              />
+              <ThreadThinkingControl
+                workspaceId={workspaceId}
+                threadId={threadId}
+                onChange={onThinkingChange}
+              />
+            </>
+          ) : null}
+          {controls ? <div className="min-w-0">{controls}</div> : null}
           {multiRoleReady ? (
             <button
               type="button"
@@ -489,6 +510,8 @@ export function ConversationComposer({
               {t("orchestration.advancedCustomize")}
             </button>
           ) : null}
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
           <Button
             type="button"
             disabled={!canCompose}

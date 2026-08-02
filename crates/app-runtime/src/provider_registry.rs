@@ -106,6 +106,13 @@ pub trait ModelProviderRegistry: Send + Sync {
         run_id: AgentRunId,
     ) -> Result<Option<RunModelSnapshot>, AppError>;
 
+    /// Patch thinking metadata after a degrade retry (core provider/model stay immutable).
+    async fn mark_run_thinking_degraded(
+        &self,
+        run_id: AgentRunId,
+        thinking_mode: &str,
+    ) -> Result<(), AppError>;
+
     /// Persist a usage record.
     async fn record_usage(&self, record: UsageRecord) -> Result<(), AppError>;
 
@@ -662,8 +669,9 @@ impl ModelProviderRegistry for SqliteModelProviderRegistry {
         sqlx::query(
             "INSERT OR IGNORE INTO run_model_snapshots
                 (run_id, provider_id, model_id, provider_name, model_name,
-                 provider_config_updated_at, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
+                 provider_config_updated_at, created_at,
+                 selection_reason, thinking_mode, thinking_degraded)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(snapshot.run_id.0)
         .bind(snapshot.provider_id.0)
@@ -672,6 +680,9 @@ impl ModelProviderRegistry for SqliteModelProviderRegistry {
         .bind(&snapshot.model_name)
         .bind(snapshot.provider_config_updated_at)
         .bind(snapshot.created_at)
+        .bind(snapshot.selection_reason.as_deref())
+        .bind(snapshot.thinking_mode.as_deref())
+        .bind(i64::from(snapshot.thinking_degraded))
         .execute(&self.pool)
         .await
         .map_err(|e| AppError::Internal {
@@ -682,11 +693,17 @@ impl ModelProviderRegistry for SqliteModelProviderRegistry {
                 message: "run model snapshot was not persisted".to_owned(),
             }
         })?;
-        if persisted != snapshot {
+        if persisted.run_id != snapshot.run_id
+            || persisted.provider_id != snapshot.provider_id
+            || persisted.model_id != snapshot.model_id
+            || persisted.model_name != snapshot.model_name
+            || persisted.provider_name != snapshot.provider_name
+        {
             return Err(AppError::PermissionDenied {
                 reason: "run model snapshot is immutable".to_owned(),
             });
         }
+        // Allow thinking_degraded / mode to be patched later via update_run_model_meta.
         Ok(persisted)
     }
 
@@ -696,7 +713,8 @@ impl ModelProviderRegistry for SqliteModelProviderRegistry {
     ) -> Result<Option<RunModelSnapshot>, AppError> {
         let row = sqlx::query_as::<_, RunModelSnapshotRow>(
             "SELECT run_id, provider_id, model_id, provider_name, model_name,
-                    provider_config_updated_at, created_at
+                    provider_config_updated_at, created_at,
+                    selection_reason, thinking_mode, thinking_degraded
              FROM run_model_snapshots WHERE run_id = ?",
         )
         .bind(run_id.0)
@@ -706,6 +724,26 @@ impl ModelProviderRegistry for SqliteModelProviderRegistry {
             message: format!("get_run_model_snapshot failed: {e}"),
         })?;
         Ok(row.map(Into::into))
+    }
+
+    async fn mark_run_thinking_degraded(
+        &self,
+        run_id: AgentRunId,
+        thinking_mode: &str,
+    ) -> Result<(), AppError> {
+        sqlx::query(
+            "UPDATE run_model_snapshots
+             SET thinking_mode = ?, thinking_degraded = 1
+             WHERE run_id = ?",
+        )
+        .bind(thinking_mode)
+        .bind(run_id.0)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| AppError::Internal {
+            message: format!("mark_run_thinking_degraded failed: {e}"),
+        })?;
+        Ok(())
     }
 
     async fn record_usage(&self, record: UsageRecord) -> Result<(), AppError> {
@@ -1002,6 +1040,9 @@ struct RunModelSnapshotRow {
     model_name: String,
     provider_config_updated_at: DateTime<Utc>,
     created_at: DateTime<Utc>,
+    selection_reason: Option<String>,
+    thinking_mode: Option<String>,
+    thinking_degraded: i64,
 }
 
 impl From<RunModelSnapshotRow> for RunModelSnapshot {
@@ -1014,6 +1055,9 @@ impl From<RunModelSnapshotRow> for RunModelSnapshot {
             model_name: row.model_name,
             provider_config_updated_at: row.provider_config_updated_at,
             created_at: row.created_at,
+            selection_reason: row.selection_reason,
+            thinking_mode: row.thinking_mode,
+            thinking_degraded: row.thinking_degraded != 0,
         }
     }
 }
@@ -1383,6 +1427,9 @@ mod tests {
             model_name: model.model_name,
             provider_config_updated_at: updated_provider.updated_at,
             created_at: Utc::now(),
+            selection_reason: None,
+            thinking_mode: None,
+            thinking_degraded: false,
         };
         assert_eq!(
             registry.snapshot_run_model(snapshot.clone()).await.expect("snapshot"),

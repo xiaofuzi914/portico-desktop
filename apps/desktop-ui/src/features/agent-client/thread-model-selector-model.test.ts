@@ -1,6 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ModelInfo, ProviderConfig, ThreadId, WorkspaceId } from "@/lib/schemas";
-import { persistThreadModelSelection, selectableThreadModels } from "./thread-model-selector-model";
+import {
+  modelPickerDetail,
+  modelPickerLabel,
+  persistThreadModelSelection,
+  providerKindForModel,
+  selectableThreadModels,
+} from "./thread-model-selector-model";
 
 const capabilities: ModelInfo["capabilities"] = {
   supports_streaming: true,
@@ -15,11 +21,16 @@ const capabilities: ModelInfo["capabilities"] = {
   output_price_per_1k: null,
 };
 
-function provider(id: string, enabled: boolean): ProviderConfig {
+function provider(
+  id: string,
+  enabled: boolean,
+  kind: ProviderConfig["kind"] = "DeepSeek",
+  displayName = id,
+): ProviderConfig {
   return {
     id: id as ProviderConfig["id"],
-    kind: "DeepSeek",
-    display_name: id,
+    kind,
+    display_name: displayName,
     base_url: null,
     api_key_reference: `${id}-key`,
     organization_id: null,
@@ -84,5 +95,20 @@ describe("thread model selector model", () => {
       selected.provider_id,
       selected.id,
     );
+  });
+
+  it("shows only the model name in the picker label", () => {
+    const item = model("gpt-5.6-sol", "codex", "GPT-5.6 Sol");
+    item.provider_name = "OpenAI (Codex ChatGPT session)";
+    expect(modelPickerLabel(item)).toBe("GPT-5.6 Sol");
+    expect(modelPickerLabel(item)).not.toContain("Codex");
+    expect(modelPickerDetail(item)).toContain("OpenAI (Codex ChatGPT session)");
+  });
+
+  it("resolves provider kind for icons", () => {
+    const openai = provider("codex", true, "OpenAI", "OpenAI (Codex ChatGPT session)");
+    const deepseek = provider("ds", true, "DeepSeek", "DeepSeek");
+    const item = model("gpt-5.6-sol", "codex", "GPT-5.6 Sol");
+    expect(providerKindForModel(item, [openai, deepseek])).toBe("OpenAI");
   });
 });

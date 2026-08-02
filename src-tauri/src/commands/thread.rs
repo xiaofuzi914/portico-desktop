@@ -106,9 +106,36 @@ async fn branch_thread_from_context_inner(
         .create_thread_with_parent(workspace_id, &child_title, Some(parent_thread_id))
         .await?;
 
+    // Inherit the parent's effective model so the first child send does not race
+    // an empty Thread selection (parent-only model → NotFound / provider errors).
+    if let Ok(selection) = state
+        .runtime
+        .registry()
+        .resolve_active_model(workspace_id, parent_thread_id)
+        .await
+    {
+        let _ = state
+            .runtime
+            .registry()
+            .set_active_model(
+                app_models::ModelSelectionScope::Thread,
+                Some(workspace_id),
+                Some(child.id),
+                selection.provider_id,
+                selection.model_id,
+            )
+            .await;
+    }
+
     if !context_seed.trim().is_empty() {
+        // Prefix is recognized by the UI as context (not a run failure).
+        let seeded = if context_seed.trim_start().starts_with('【') {
+            context_seed
+        } else {
+            format!("【会话上下文】\n{context_seed}")
+        };
         let _ = storage
-            .create_standalone_message(child.id, MessageRole::System, &context_seed)
+            .create_standalone_message(child.id, MessageRole::System, &seeded)
             .await?;
     }
 

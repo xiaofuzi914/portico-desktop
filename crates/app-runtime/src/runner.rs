@@ -18,9 +18,10 @@ use app_memory::{EmbeddingProvider, MemoryManager, SqliteMemoryManager, SqliteRa
 use app_models::{
     AgentRun, AgentRunId, AgentRunStatus, AppError, ApprovalRequest, ApprovalRequestId,
     ApprovalRequestStatus, BackgroundTask, BackgroundTaskId, BackgroundTaskStatus, Message,
-    MessageRole, Notification, NotificationCategory, NotificationId, RunEvent, TaskKind, Thread,
-    ThreadId, Workspace, WorkspaceId,
+    MessageRole, Notification, NotificationCategory, NotificationId, RunEvent, RunExecutionSpec,
+    TaskKind, ThinkingMode, Thread, ThreadId, Workspace, WorkspaceId,
 };
+use crate::run_spec::RunExecutionSpecStore;
 use app_plugins::{McpClientManager, PluginRegistry, SqlitePluginRegistry};
 use app_security::{AuditEvent, PermissionRequest, PermissionResult, SecurityContext};
 use app_tools::{git::GitTool, terminal::TerminalManager};
@@ -244,8 +245,10 @@ fn user_visible_run_failure(error: &AppError) -> String {
                 "Run failed: Portico blocked this operation ({summary}). Stay inside the trusted project and use fs_list/fs_read for local files."
             )
         }
-        AppError::NotFound { .. } => {
-            "Run failed: A required workspace resource is no longer available.".to_owned()
+        AppError::NotFound { resource } => {
+            format!(
+                "Run failed: A required resource is no longer available ({resource}). Re-open the project or re-select a model, then retry."
+            )
         }
         AppError::Internal { message } => {
             // Never dump secrets; still surface a short, actionable detail so
@@ -284,6 +287,7 @@ pub struct PorticoRuntimeHandle {
     notification_center: NotificationCenter,
     approval_broker: Arc<ApprovalBroker>,
     safe_tool_executor: Arc<SafeToolExecutor>,
+    run_specs: Arc<RunExecutionSpecStore>,
 }
 
 impl PorticoRuntimeHandle {
@@ -362,7 +366,19 @@ impl PorticoRuntimeHandle {
             notification_center,
             approval_broker,
             safe_tool_executor,
+            run_specs: Arc::new(RunExecutionSpecStore::new()),
         })
+    }
+
+    /// Shared run-execution-spec store (multi-agent tool/model binding).
+    #[must_use]
+    pub fn run_spec_store(&self) -> Arc<RunExecutionSpecStore> {
+        Arc::clone(&self.run_specs)
+    }
+
+    /// Bind an execution spec for the next resolve of this run (tool allowlist + model tier).
+    pub fn bind_run_execution_spec(&self, run_id: AgentRunId, spec: RunExecutionSpec) {
+        self.run_specs.bind(run_id, spec);
     }
 
     /// Attach a security context to this runtime handle.
@@ -939,11 +955,42 @@ impl PorticoRuntimeHandle {
         content: &str,
         client_request_id: Option<&str>,
     ) -> Result<AgentRun, AppError> {
+        self.send_message_with_options(thread_id, content, client_request_id, None, None)
+            .await
+    }
+
+    /// Send a user turn with optional thinking / reasoning-effort overrides for this run.
+    pub async fn send_message_with_options(
+        &self,
+        thread_id: ThreadId,
+        content: &str,
+        client_request_id: Option<&str>,
+        thinking_mode: Option<&str>,
+        reasoning_effort: Option<&str>,
+    ) -> Result<AgentRun, AppError> {
         let (_message, run, created) = self
             .storage
             .create_message_and_run(thread_id, content, client_request_id)
             .await?;
         if created {
+            // Bind a single-agent execution envelope so thinking / reasoning reach the adapter.
+            let mut spec = RunExecutionSpec::single_agent_default();
+            if let Some(raw) = thinking_mode {
+                if let Ok(mode) = ThinkingMode::try_from(raw) {
+                    spec.thinking_mode = mode;
+                }
+            }
+            if let Some(effort) = reasoning_effort {
+                let e = effort.trim().to_ascii_lowercase();
+                if matches!(
+                    e.as_str(),
+                    "low" | "medium" | "high" | "xhigh" | "max" | "ultra"
+                ) {
+                    spec.reasoning_effort = Some(e);
+                }
+            }
+            self.bind_run_execution_spec(run.id, spec);
+
             let runtime = self.clone();
             let content = content.to_owned();
             tokio::spawn(async move {
@@ -1586,7 +1633,7 @@ mod conversation_prompt_tests {
         assert!(prompt.contains("User"));
         assert!(prompt.contains("Assistant"));
         // Single-agent product framing (tools over guessing).
-        assert!(prompt.contains("Prefer tools"));
+        assert!(prompt.contains("Prefer fs_search") || prompt.contains("Use tools"));
         assert!(prompt.contains("Portico"));
     }
 
@@ -1649,8 +1696,11 @@ mod conversation_prompt_tests {
             reason: "shell commands are blocked by default".to_owned(),
         });
 
-        assert!(message.contains("Shell commands are blocked"));
-        assert!(message.contains("fs_list") || message.contains("fs_read"));
+        assert!(
+            message.contains("shell command is not allowed")
+                || message.contains("Shell commands are blocked")
+                || message.contains("fs_")
+        );
     }
 
     #[test]

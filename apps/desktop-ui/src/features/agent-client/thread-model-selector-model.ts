@@ -5,6 +5,7 @@ import type {
   ModelSelectionScope,
   ProviderConfig,
   ProviderId,
+  ProviderKind,
   ThreadId,
   WorkspaceId,
 } from "@/lib/schemas";
@@ -24,6 +25,32 @@ export function selectableThreadModels(
         `${right.provider_name}\u0000${right.display_name}`,
       ),
     );
+}
+
+/** Short label for the picker: model name only (no provider suffix). */
+export function modelPickerLabel(model: Pick<ModelInfo, "display_name" | "model_name">): string {
+  const name = model.display_name.trim() || model.model_name.trim();
+  return name || "Model";
+}
+
+/** Resolve provider kind for a model (for icons). */
+export function providerKindForModel(
+  model: Pick<ModelInfo, "provider_id">,
+  providers: readonly ProviderConfig[],
+): ProviderKind | null {
+  return providers.find((p) => p.id === model.provider_id)?.kind ?? null;
+}
+
+/** Hover / a11y detail — not shown as primary label. */
+export function modelPickerDetail(
+  model: Pick<ModelInfo, "display_name" | "provider_name" | "model_name">,
+): string {
+  const label = modelPickerLabel(model);
+  const provider = model.provider_name?.trim();
+  if (provider && !label.includes(provider)) {
+    return `${label} · ${provider}`;
+  }
+  return label;
 }
 
 type PersistModelSelection = (

@@ -14,6 +14,7 @@ import {
   subscribeWorkspaceRunActivityChanged,
 } from "./workspace-activity-store";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { SIDEBAR_LEAF_ACTIVE_CLASS, SIDEBAR_LEAF_CLASS } from "./sidebar-density";
 
 const projectLastUsedStorageKey = "portico.sidebarProjectLastUsedAt";
 
@@ -136,12 +137,12 @@ export function SidebarProjects({ activeWorkspaceId, compact = false }: SidebarP
 
   if (isLoading) {
     if (compact) return null;
-    return <p className="text-muted-foreground px-2 text-sm">{t("sidebar.loadingProjects")}</p>;
+    return <p className="text-muted-foreground px-2 text-xs">{t("sidebar.loadingProjects")}</p>;
   }
 
   if (!workspaces?.length) {
     if (compact) return null;
-    return <p className="text-muted-foreground px-2 text-sm">{t("sidebar.noProjects")}</p>;
+    return <p className="text-muted-foreground px-2 text-xs">{t("sidebar.noProjects")}</p>;
   }
 
   const projectItems = buildSidebarProjectItems(workspaces, {
@@ -261,15 +262,12 @@ export function SidebarProjects({ activeWorkspaceId, compact = false }: SidebarP
             <li key="overview">
               <Link
                 to="/workspaces"
-                className="text-muted-foreground hover:bg-sidebar-accent hover:text-foreground flex h-8 items-center gap-2 rounded-md px-2 text-sm transition-colors"
-                activeProps={{
-                  className:
-                    "flex h-8 items-center gap-2 rounded-md px-2 text-sm bg-sidebar-accent font-medium text-foreground",
-                }}
+                className={SIDEBAR_LEAF_CLASS}
+                activeProps={{ className: SIDEBAR_LEAF_ACTIVE_CLASS }}
               >
                 <FolderOpen className="h-3.5 w-3.5 shrink-0" />
                 <span className="min-w-0 flex-1 truncate">{t("projects.allProjects")}</span>
-                <span className="text-muted-foreground text-xs tabular-nums">
+                <span className="text-muted-foreground text-[11px] tabular-nums">
                   {item.overflowCount}
                 </span>
               </Link>
@@ -279,11 +277,8 @@ export function SidebarProjects({ activeWorkspaceId, compact = false }: SidebarP
               <Link
                 to="/workspaces/$workspaceId"
                 params={{ workspaceId: item.workspace.id }}
-                className="text-muted-foreground hover:bg-sidebar-accent hover:text-foreground flex h-8 items-center gap-2 rounded-md px-2 text-sm transition-colors"
-                activeProps={{
-                  className:
-                    "flex h-8 items-center gap-2 rounded-md px-2 text-sm bg-sidebar-accent font-medium text-foreground",
-                }}
+                className={SIDEBAR_LEAF_CLASS}
+                activeProps={{ className: SIDEBAR_LEAF_ACTIVE_CLASS }}
                 title={t("projects.projectMenuHint")}
                 onContextMenu={(event) =>
                   openContextMenu(event, item.workspace.id, item.workspace.name)

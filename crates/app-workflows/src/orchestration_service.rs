@@ -530,6 +530,19 @@ impl OrchestrationService {
             plan.planning_rationale
         );
         plan.subagents = all_subagents;
+        let any_failed = plan.stages.iter().any(|s| {
+            matches!(
+                s.status,
+                OrchestrationStageStatus::Failed | OrchestrationStageStatus::Cancelled
+            )
+        });
+        let status = if ok && !any_failed {
+            OrchestrationStatus::Completed
+        } else if ok && any_failed {
+            OrchestrationStatus::PartialCompleted
+        } else {
+            OrchestrationStatus::Failed
+        };
         session.plan = plan;
         session.updated_at = Utc::now();
         self.store_session(session).await;
@@ -543,13 +556,9 @@ impl OrchestrationService {
             };
         }
         ExecutionOutcome {
-            success: ok,
+            success: ok || matches!(status, OrchestrationStatus::PartialCompleted),
             summary: Some(enriched),
-            status: if ok {
-                OrchestrationStatus::Completed
-            } else {
-                OrchestrationStatus::Failed
-            },
+            status,
         }
     }
 
@@ -589,6 +598,8 @@ impl OrchestrationService {
             subagent_id: Some(sub.id),
             output_summary: summary,
             output_payload: stage.output_payload.clone(),
+            attempt: 1,
+            last_error_code: sub.last_error_code.clone(),
         }];
         stage.status = map_run_to_stage_status(sub.status);
         if stage.status == OrchestrationStageStatus::Failed {
@@ -780,6 +791,8 @@ impl OrchestrationService {
                     format!("continue (pass=false)")
                 }),
                 output_payload: Some(last_control.clone()),
+                attempt: 1,
+                last_error_code: None,
             });
 
             if stopped {
@@ -836,6 +849,8 @@ impl OrchestrationService {
             subagent_id: Some(sub.id),
             output_summary: summary,
             output_payload: stage.output_payload.clone(),
+            attempt: 1,
+            last_error_code: sub.last_error_code.clone(),
         }];
         stage.status = map_run_to_stage_status(sub.status);
         if stage.status == OrchestrationStageStatus::Failed {
@@ -868,6 +883,8 @@ impl OrchestrationService {
             output_summary: None,
             created_at: Utc::now(),
             completed_at: None,
+            retry_count: 0,
+            last_error_code: None,
         })
     }
 
@@ -905,6 +922,8 @@ impl OrchestrationService {
                                 output_summary: Some(format!("自动执行阶段失败: {err}")),
                                 created_at: Utc::now(),
                                 completed_at: Some(Utc::now()),
+                                retry_count: 0,
+                                last_error_code: Some("FOLLOWUP_FAILED".to_owned()),
                             });
                         }
                     }
@@ -921,12 +940,23 @@ impl OrchestrationService {
                         AgentRunStatus::Completed | AgentRunStatus::WaitingApproval
                     )
                 });
-                let ok = all_ok || results.iter().any(|r| r.status == AgentRunStatus::Completed);
-                let status = if ok {
+                let any_ok = results.iter().any(|r| {
+                    matches!(
+                        r.status,
+                        AgentRunStatus::Completed | AgentRunStatus::WaitingApproval
+                    )
+                });
+                let status = if all_ok {
                     OrchestrationStatus::Completed
+                } else if any_ok {
+                    OrchestrationStatus::PartialCompleted
                 } else {
                     OrchestrationStatus::Failed
                 };
+                let ok = matches!(
+                    status,
+                    OrchestrationStatus::Completed | OrchestrationStatus::PartialCompleted
+                );
                 let loop_note = if wants_deliverable(task) {
                     "闭环：结果导向（交付物优先）"
                 } else {
@@ -1013,6 +1043,8 @@ List paths or paste the final artifact.",
             output_summary: None,
             created_at: Utc::now(),
             completed_at: None,
+            retry_count: 0,
+            last_error_code: None,
         };
 
         // Ensure worktree exists for write agent (best-effort).
@@ -1073,8 +1105,11 @@ List paths or paste the final artifact.",
 
         // Parent run terminal state for UI consistency.
         let parent_status = match final_status {
-            OrchestrationStatus::Completed => AgentRunStatus::Completed,
+            OrchestrationStatus::Completed | OrchestrationStatus::PartialCompleted => {
+                AgentRunStatus::Completed
+            }
             OrchestrationStatus::Cancelled => AgentRunStatus::Cancelled,
+            OrchestrationStatus::Interrupted => AgentRunStatus::Interrupted,
             _ => AgentRunStatus::Failed,
         };
         let _ = self
@@ -1149,6 +1184,250 @@ List paths or paste the final artifact.",
         session.completed_at = Some(Utc::now());
         self.store_session(&session).await;
         Ok(session)
+    }
+
+    /// Build progressive UI progress for a session.
+    pub async fn progress(
+        &self,
+        id: OrchestrationId,
+    ) -> Result<app_models::OrchestrationProgress, AppError> {
+        let session = self.get_orchestration(id).await?;
+        Ok(crate::build_orchestration_progress(&session))
+    }
+
+    /// Mark in-flight sessions as Interrupted after process restart (fail-closed).
+    ///
+    /// # Errors
+    ///
+    /// Returns storage errors only.
+    pub async fn reconcile_after_restart(&self) -> Result<u64, AppError> {
+        let rows = self
+            .runtime
+            .storage()
+            .list_active_orchestrations()
+            .await
+            .unwrap_or_default();
+        let mut n = 0u64;
+        for mut session in rows {
+            session.status = OrchestrationStatus::Interrupted;
+            session.updated_at = Utc::now();
+            session.completed_at = Some(Utc::now());
+            if session.result_summary.is_none() {
+                session.result_summary = Some(
+                    "多角色协作被应用重启中断。可在执行板点击「继续」或重试失败阶段。".to_owned(),
+                );
+            }
+            for stage in &mut session.plan.stages {
+                if matches!(
+                    stage.status,
+                    OrchestrationStageStatus::Pending | OrchestrationStageStatus::Running
+                ) {
+                    stage.status = OrchestrationStageStatus::Failed;
+                    stage.error_message =
+                        Some("Interrupted by application restart".to_owned());
+                }
+            }
+            self.store_session(&session).await;
+            let _ = self
+                .runtime
+                .storage()
+                .update_run_status(session.parent_run_id, AgentRunStatus::Interrupted)
+                .await;
+            n += 1;
+        }
+        Ok(n)
+    }
+
+    /// Continue an Interrupted / Partial / Failed session by retrying failed stages.
+    ///
+    /// # Errors
+    ///
+    /// Returns permission denied when the session is not continuable.
+    pub async fn continue_orchestration(
+        &self,
+        id: OrchestrationId,
+    ) -> Result<Orchestration, AppError> {
+        let session = self.get_orchestration(id).await?;
+        if !session.status.is_continuable() {
+            return Err(AppError::PermissionDenied {
+                reason: format!(
+                    "orchestration status {} is not continuable",
+                    session.status.as_str()
+                ),
+            });
+        }
+        let failed_ids: Vec<String> = session
+            .plan
+            .stages
+            .iter()
+            .filter(|s| {
+                matches!(
+                    s.status,
+                    OrchestrationStageStatus::Failed | OrchestrationStageStatus::Cancelled
+                )
+            })
+            .map(|s| s.id.clone())
+            .collect();
+        if failed_ids.is_empty() {
+            // No stage graph failures — re-run adaptive closed loop from task text.
+            return self
+                .start_orchestration_with_workflow(
+                    session.workspace_id,
+                    session.thread_id,
+                    &session.task,
+                    session.plan.workflow_id.as_deref(),
+                )
+                .await;
+        }
+        let mut last = session;
+        for stage_id in failed_ids {
+            last = self.retry_stage(last.id, &stage_id).await?;
+            if last.status == OrchestrationStatus::Cancelled {
+                break;
+            }
+        }
+        Ok(last)
+    }
+
+    /// Retry a failed stage by re-running it and refreshing the result summary.
+    ///
+    /// # Errors
+    ///
+    /// Returns permission denied when the stage is not retryable.
+    pub async fn retry_stage(
+        &self,
+        id: OrchestrationId,
+        stage_id: &str,
+    ) -> Result<Orchestration, AppError> {
+        let mut session = self.get_orchestration(id).await?;
+        if matches!(
+            session.status,
+            OrchestrationStatus::Running | OrchestrationStatus::Planning
+        ) {
+            return Err(AppError::PermissionDenied {
+                reason: "cannot retry while orchestration is still running".to_owned(),
+            });
+        }
+        let stage_idx = session
+            .plan
+            .stages
+            .iter()
+            .position(|s| s.id == stage_id)
+            .ok_or_else(|| AppError::NotFound {
+                resource: format!("orchestration stage {stage_id}"),
+            })?;
+        let stage = session.plan.stages[stage_idx].clone();
+        if !matches!(
+            stage.status,
+            OrchestrationStageStatus::Failed | OrchestrationStageStatus::Cancelled
+        ) {
+            return Err(AppError::PermissionDenied {
+                reason: format!("stage `{stage_id}` is not failed/cancelled"),
+            });
+        }
+        let attempts = stage
+            .tasks
+            .iter()
+            .map(|t| t.attempt)
+            .max()
+            .unwrap_or(1);
+        if attempts >= 3 {
+            return Err(AppError::PermissionDenied {
+                reason: "max retries (2) exceeded for this stage".to_owned(),
+            });
+        }
+
+        session.status = OrchestrationStatus::Running;
+        session.completed_at = None;
+        session.updated_at = Utc::now();
+        self.store_session(&session).await;
+
+        let task = session.task.clone();
+        let upstream_text =
+            assemble_reduce_upstream(&session.plan.stages, &stage.depends_on);
+        let upstream_payload =
+            primary_upstream_control_payload(&session.plan.stages, &stage.depends_on);
+
+        let (mut rebuilt, mut new_subs) = match stage.kind {
+            OrchestrationStageKind::Single | OrchestrationStageKind::Reduce => {
+                if stage.kind == OrchestrationStageKind::Reduce {
+                    self.run_reduce_stage(&session, &stage, &task, &upstream_text)
+                        .await?
+                } else {
+                    self.run_single_stage(
+                        &session,
+                        &stage,
+                        &task,
+                        &upstream_payload,
+                        &upstream_text,
+                    )
+                    .await?
+                }
+            }
+            OrchestrationStageKind::Foreach => {
+                self.run_foreach_stage(&session, &stage, &task, &upstream_payload, &upstream_text)
+                    .await?
+            }
+            OrchestrationStageKind::Loop => {
+                return Err(AppError::PermissionDenied {
+                    reason: "loop stage retry is not supported; re-run the workflow".to_owned(),
+                });
+            }
+        };
+
+        for t in &mut rebuilt.tasks {
+            t.attempt = attempts.saturating_add(1);
+        }
+        session.plan.stages[stage_idx] = rebuilt;
+        session.plan.subagents.append(&mut new_subs);
+
+        let all_ok = session.plan.stages.iter().all(|s| {
+            matches!(
+                s.status,
+                OrchestrationStageStatus::Completed | OrchestrationStageStatus::Skipped
+            )
+        });
+        let any_ok = session
+            .plan
+            .stages
+            .iter()
+            .any(|s| s.status == OrchestrationStageStatus::Completed);
+        let any_failed = session.plan.stages.iter().any(|s| {
+            matches!(
+                s.status,
+                OrchestrationStageStatus::Failed | OrchestrationStageStatus::Cancelled
+            )
+        });
+        let final_status = if all_ok {
+            OrchestrationStatus::Completed
+        } else if any_ok && any_failed {
+            OrchestrationStatus::PartialCompleted
+        } else if any_failed {
+            OrchestrationStatus::Failed
+        } else {
+            OrchestrationStatus::Completed
+        };
+
+        let summary = self
+            .orchestrator
+            .synthesize(&session.plan.subagents)
+            .await
+            .unwrap_or_else(|_| "多角色协作（含重试）已完成。".to_owned());
+        let outcome = ExecutionOutcome {
+            success: matches!(
+                final_status,
+                OrchestrationStatus::Completed | OrchestrationStatus::PartialCompleted
+            ),
+            summary: Some(format!(
+                "{summary}\n\n---\nRetried stage `{stage_id}` (attempt {}).",
+                attempts + 1
+            )),
+            status: final_status,
+        };
+        let plan = session.plan.clone();
+        Ok(self
+            .finalize_orchestration(session, &plan, &task, outcome)
+            .await)
     }
 
 }

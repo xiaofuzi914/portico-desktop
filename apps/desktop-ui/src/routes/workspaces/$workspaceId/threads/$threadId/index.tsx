@@ -26,6 +26,10 @@ import { useTranslation } from "@/lib/i18n-react";
 import { ConversationComposer } from "@/features/agent-client/conversation-composer";
 import { ConversationTimeline } from "@/features/agent-client/conversation-timeline";
 import {
+  sendOptionsFromControl,
+  type ThinkingControlState,
+} from "@/features/agent-client/model-thinking-prefs";
+import {
   ExecutionBoard,
   hasActiveExecution,
 } from "@/features/agent-client/execution-board";
@@ -255,12 +259,25 @@ function ThreadPage() {
     setRestoreDraft({ text, nonce: restoreNonceRef.current });
   }, []);
 
+  const thinkingRef = useRef<ThinkingControlState | null>(null);
+  const onThinkingChange = useCallback((state: ThinkingControlState) => {
+    thinkingRef.current = state;
+  }, []);
+
   const submit = useMutation({
     mutationFn: async (content: string) => {
       const text = content.trim();
       if (!text) throw new Error("Message is empty");
+      const thinkingOpts = thinkingRef.current
+        ? sendOptionsFromControl(thinkingRef.current)
+        : {};
+      const sendOpts = {
+        clientRequestId: crypto.randomUUID(),
+        thinkingMode: thinkingOpts.thinkingMode,
+        reasoningEffort: thinkingOpts.reasoningEffort,
+      };
       try {
-        const run = await sendMessage(threadId, text, crypto.randomUUID());
+        const run = await sendMessage(threadId, text, sendOpts);
         void maybeAutoTitleThread(queryClient, workspaceId, threadId, text);
         return run;
       } catch (err) {
@@ -268,7 +285,10 @@ function ThreadPage() {
         // Stuck Queued/Running turn blocks all sends — clear and retry once.
         if (msg.includes("RUN_ALREADY_ACTIVE")) {
           await clearBlockingTurns();
-          const run = await sendMessage(threadId, text, crypto.randomUUID());
+          const run = await sendMessage(threadId, text, {
+            ...sendOpts,
+            clientRequestId: crypto.randomUUID(),
+          });
           void maybeAutoTitleThread(queryClient, workspaceId, threadId, text);
           return run;
         }
@@ -347,35 +367,47 @@ function ThreadPage() {
    * 划词发散：child session + mind-map edge + first user question.
    * focusText seeds context/title; question is the first User message on the child.
    */
+  const branchInFlightRef = useRef(false);
   const branchSession = useMutation({
     mutationFn: async (args: { focusText: string; question: string }) => {
       const focus = args.focusText.trim();
       const question = args.question.trim();
       if (!focus || !question) throw new Error("focus and question required");
-
-      const child = await branchThreadFromContext(
-        workspaceId,
-        threadId,
-        null,
-        focus,
-      );
-      // First question on the child so the branch is immediately active.
-      const run = await sendMessage(child.id, question, crypto.randomUUID());
-      void maybeAutoTitleThread(queryClient, workspaceId, child.id, question);
-
-      // Rebuild session cards so the parent → child edge appears immediately.
-      try {
-        const canvas = await getOrCreateProjectCanvas(workspaceId);
-        const snap = await extractCanvasInsights(canvas.id);
-        queryClient.setQueryData(["canvas-snapshot", canvas.id], snap);
-      } catch {
-        /* best-effort; next mind-map open will auto-sync */
+      if (branchInFlightRef.current) {
+        throw new Error("BRANCH_ALREADY_IN_FLIGHT");
       }
-      return { child, run };
+      branchInFlightRef.current = true;
+      try {
+        const child = await branchThreadFromContext(
+          workspaceId,
+          threadId,
+          null,
+          focus,
+        );
+        // First question on the child so the branch is immediately active.
+        // Backend already inherited the parent's active model onto the child thread.
+        const run = await sendMessage(child.id, question, crypto.randomUUID());
+        void maybeAutoTitleThread(queryClient, workspaceId, child.id, question);
+
+        // Rebuild session cards so the parent → child edge appears immediately.
+        try {
+          const canvas = await getOrCreateProjectCanvas(workspaceId);
+          const snap = await extractCanvasInsights(canvas.id);
+          queryClient.setQueryData(["canvas-snapshot", canvas.id], snap);
+        } catch {
+          /* best-effort; next mind-map open will auto-sync */
+        }
+        return { child, run };
+      } finally {
+        branchInFlightRef.current = false;
+      }
     },
     onSuccess: async ({ child, run }) => {
       await queryClient.invalidateQueries({ queryKey: workspaceKeys.threads(workspaceId) });
       await queryClient.invalidateQueries({ queryKey: ["project-canvas", workspaceId] });
+      // Prefetch child messages so the first paint is not empty + stale.
+      void queryClient.invalidateQueries({ queryKey: ["messages", child.id] });
+      void queryClient.invalidateQueries({ queryKey: ["runs", child.id] });
       void navigate({
         to: "/workspaces/$workspaceId/threads/$threadId",
         params: { workspaceId, threadId: child.id },
@@ -666,6 +698,7 @@ function ThreadPage() {
               onSubmit={async (content) => {
                 await submit.mutateAsync(content);
               }}
+              onThinkingChange={onThinkingChange}
               isSubmitting={submit.isPending}
               sessionBusy={runIsActive}
               restoreDraft={restoreDraft}

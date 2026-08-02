@@ -51,7 +51,7 @@ export function SidebarProjectActions({ compact = false }: SidebarProjectActions
         className={
           compact
             ? "hover:bg-sidebar-accent hover:text-foreground text-muted-foreground flex h-8 w-8 items-center justify-center rounded-md transition-colors"
-            : "hover:bg-sidebar-accent hover:text-foreground text-muted-foreground flex h-6 w-6 items-center justify-center rounded-md transition-colors"
+            : "hover:bg-sidebar-accent hover:text-foreground text-muted-foreground flex h-7 w-7 items-center justify-center rounded-md transition-colors"
         }
         aria-label={t("projects.addProject")}
         title={t("projects.addProject")}

@@ -903,6 +903,15 @@ pub struct RunModelSnapshot {
     pub model_name: String,
     pub provider_config_updated_at: chrono::DateTime<chrono::Utc>,
     pub created_at: chrono::DateTime<chrono::Utc>,
+    /// Why this model was chosen (e.g. `tier:fast@deepseek`, `inherit_active`).
+    #[serde(default)]
+    pub selection_reason: Option<String>,
+    /// Effective thinking mode for this run (DeepSeek V4 dual-mode, etc.).
+    #[serde(default)]
+    pub thinking_mode: Option<String>,
+    /// True when the runtime disabled thinking after a tool-loop failure.
+    #[serde(default)]
+    pub thinking_degraded: bool,
 }
 
 /// App-level usage budget guard.
@@ -1126,6 +1135,221 @@ impl std::fmt::Display for BuiltInAgent {
     }
 }
 
+/// Preferred model speed/quality tier for multi-agent stage selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS, Default)]
+#[ts(export)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelTier {
+    Fast,
+    #[default]
+    Balanced,
+    Strong,
+}
+
+impl ModelTier {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Fast => "fast",
+            Self::Balanced => "balanced",
+            Self::Strong => "strong",
+        }
+    }
+}
+
+impl TryFrom<&str> for ModelTier {
+    type Error = AppError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "fast" => Ok(Self::Fast),
+            "balanced" => Ok(Self::Balanced),
+            "strong" => Ok(Self::Strong),
+            _ => Err(AppError::Internal {
+                message: format!("unknown model tier: {value}"),
+            }),
+        }
+    }
+}
+
+/// DeepSeek-style dual thinking mode for a run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS, Default)]
+#[ts(export)]
+#[serde(rename_all = "snake_case")]
+pub enum ThinkingMode {
+    Off,
+    On,
+    #[default]
+    Auto,
+}
+
+impl ThinkingMode {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::On => "on",
+            Self::Auto => "auto",
+        }
+    }
+
+    /// Resolve Auto into a concrete on/off using role/tier heuristics.
+    #[must_use]
+    pub const fn resolve(self, prefer_thinking: bool) -> Self {
+        match self {
+            Self::Auto => {
+                if prefer_thinking {
+                    Self::On
+                } else {
+                    Self::Off
+                }
+            }
+            other => other,
+        }
+    }
+}
+
+impl TryFrom<&str> for ThinkingMode {
+    type Error = AppError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "off" => Ok(Self::Off),
+            "on" => Ok(Self::On),
+            "auto" => Ok(Self::Auto),
+            _ => Err(AppError::Internal {
+                message: format!("unknown thinking mode: {value}"),
+            }),
+        }
+    }
+}
+
+/// Whether write tools should prefer/require a worktree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS, Default)]
+#[ts(export)]
+#[serde(rename_all = "snake_case")]
+pub enum WriteIsolation {
+    #[default]
+    None,
+    PreferWorktree,
+    RequireWorktree,
+}
+
+impl WriteIsolation {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::PreferWorktree => "prefer_worktree",
+            Self::RequireWorktree => "require_worktree",
+        }
+    }
+}
+
+/// Retry class for a failed stage/subagent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS, Default)]
+#[ts(export)]
+#[serde(rename_all = "snake_case")]
+pub enum RetryClass {
+    #[default]
+    Transient,
+    IdempotentOnly,
+    Never,
+}
+
+impl RetryClass {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Transient => "transient",
+            Self::IdempotentOnly => "idempotent_only",
+            Self::Never => "never",
+        }
+    }
+}
+
+/// Per-run execution envelope shared by single-agent overrides and multi-agent roles.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RunExecutionSpec {
+    /// Role name (explorer, worker, …) or `default` for single-agent.
+    pub role: String,
+    /// Product tool names the model may call (`fs_read`, `git`, …).
+    pub allowed_tools: Vec<String>,
+    /// Preferred model tier within the active provider family.
+    pub model_tier: ModelTier,
+    /// Thinking mode preference.
+    pub thinking_mode: ThinkingMode,
+    /// Optional OpenAI/Codex-style reasoning effort (`low` | `medium` | `high`).
+    #[serde(default)]
+    pub reasoning_effort: Option<String>,
+    /// Hard wall-clock budget for this sub-run (milliseconds).
+    pub timeout_ms: u64,
+    /// Soft warning budget (milliseconds); optional.
+    #[serde(default)]
+    pub soft_timeout_ms: Option<u64>,
+    /// Max tool loop steps for this run.
+    pub max_tool_steps: u32,
+    /// How retries should be treated after failure.
+    pub retry_class: RetryClass,
+    /// Write isolation policy for mutating roles.
+    pub write_isolation: WriteIsolation,
+}
+
+impl RunExecutionSpec {
+    /// Full single-agent path: all durable builtins + no role restriction.
+    #[must_use]
+    pub fn single_agent_default() -> Self {
+        Self {
+            role: "default".to_owned(),
+            allowed_tools: vec![
+                "fs_list".to_owned(),
+                "fs_read".to_owned(),
+                "fs_search".to_owned(),
+                "fs_write".to_owned(),
+                "fs_edit".to_owned(),
+                "git".to_owned(),
+                "git:write".to_owned(),
+                "web_fetch".to_owned(),
+                "web_search".to_owned(),
+                "shell_exec".to_owned(),
+            ],
+            model_tier: ModelTier::Balanced,
+            thinking_mode: ThinkingMode::Auto,
+            reasoning_effort: None,
+            timeout_ms: 300_000,
+            soft_timeout_ms: Some(240_000),
+            max_tool_steps: 16,
+            retry_class: RetryClass::Transient,
+            write_isolation: WriteIsolation::None,
+        }
+    }
+
+    /// Whether the role may use write-capable tools.
+    #[must_use]
+    pub fn allows_writes(&self) -> bool {
+        self.allowed_tools.iter().any(|t| {
+            matches!(
+                t.as_str(),
+                "fs_write" | "fs_edit" | "shell_exec" | "git:write"
+            )
+        })
+    }
+
+    /// Whether a product tool name is permitted (supports `git` / `git:write` tags).
+    #[must_use]
+    pub fn allows_tool(&self, tool_name: &str) -> bool {
+        if self.allowed_tools.iter().any(|t| t == tool_name) {
+            return true;
+        }
+        // `git` grants read-oriented git tool advertising; write actions need `git:write`.
+        if tool_name == "git" {
+            return self.allowed_tools.iter().any(|t| t == "git" || t == "git:write");
+        }
+        false
+    }
+}
+
 /// Definition of an agent that can be registered with the orchestrator.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
@@ -1136,12 +1360,28 @@ pub struct AgentDefinition {
     pub description: String,
     /// System instructions provided to the agent.
     pub system_instructions: String,
-    /// Names of tools the agent is allowed to use.
+    /// Names of tools the agent is allowed to use (product tool ids).
     pub allowed_tools: Vec<String>,
-    /// Default model selection policy.
+    /// Default model selection policy string (`fast` / `balanced` / `strong` / legacy).
     pub default_model_policy: String,
     /// Default permission scope for the agent.
     pub default_permission_scope: PermissionScope,
+    /// Preferred model tier for multi-agent stage selection.
+    #[serde(default)]
+    pub model_tier: ModelTier,
+    /// Default thinking mode for this role.
+    #[serde(default)]
+    pub thinking_default: ThinkingMode,
+    /// Hard timeout class in milliseconds for sub-runs of this role.
+    #[serde(default = "default_role_timeout_ms")]
+    pub timeout_ms: u64,
+    /// Write isolation preference.
+    #[serde(default)]
+    pub write_isolation: WriteIsolation,
+}
+
+fn default_role_timeout_ms() -> u64 {
+    180_000
 }
 
 /// A single subagent run managed by the orchestrator.
@@ -1164,6 +1404,12 @@ pub struct SubagentRun {
     pub created_at: chrono::DateTime<chrono::Utc>,
     /// Completion timestamp.
     pub completed_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// How many times this subagent unit has been retried.
+    #[serde(default)]
+    pub retry_count: u32,
+    /// Last machine-readable error code (`SUBAGENT_TIMEOUT`, `ROLE_TOOL_DENIED`, …).
+    #[serde(default)]
+    pub last_error_code: Option<String>,
 }
 
 /// Kind of multi-agent stage in a durable stage graph (pi-workflow-inspired).
@@ -1237,6 +1483,16 @@ pub struct OrchestrationStageTask {
     /// Structured payload for downstream stages (JSON string).
     #[serde(default)]
     pub output_payload: Option<String>,
+    /// Attempt count (1 = first try).
+    #[serde(default = "default_attempt_one")]
+    pub attempt: u32,
+    /// Last error code for this task.
+    #[serde(default)]
+    pub last_error_code: Option<String>,
+}
+
+fn default_attempt_one() -> u32 {
+    1
 }
 
 /// One stage in a multi-stage orchestration graph.
@@ -1276,6 +1532,9 @@ pub struct OrchestrationStage {
     pub output_payload: Option<String>,
     #[serde(default)]
     pub error_message: Option<String>,
+    /// Frozen execution envelope for this stage (tools + model + budget).
+    #[serde(default)]
+    pub execution_spec: Option<RunExecutionSpec>,
 }
 
 /// Identifier for a user/app-editable multi-stage workflow template.
@@ -1480,6 +1739,10 @@ pub enum OrchestrationStatus {
     Planning,
     Running,
     Completed,
+    /// Some stages failed but usable partial results exist.
+    PartialCompleted,
+    /// App restart or process death while the session was active.
+    Interrupted,
     Failed,
     Cancelled,
 }
@@ -1492,9 +1755,33 @@ impl OrchestrationStatus {
             Self::Planning => "Planning",
             Self::Running => "Running",
             Self::Completed => "Completed",
+            Self::PartialCompleted => "PartialCompleted",
+            Self::Interrupted => "Interrupted",
             Self::Failed => "Failed",
             Self::Cancelled => "Cancelled",
         }
+    }
+
+    /// Whether the orchestration is finished (success, partial, fail, cancel, or interrupt).
+    #[must_use]
+    pub const fn is_terminal(self) -> bool {
+        matches!(
+            self,
+            Self::Completed
+                | Self::PartialCompleted
+                | Self::Interrupted
+                | Self::Failed
+                | Self::Cancelled
+        )
+    }
+
+    /// Whether the user can continue / retry from this status.
+    #[must_use]
+    pub const fn is_continuable(self) -> bool {
+        matches!(
+            self,
+            Self::PartialCompleted | Self::Interrupted | Self::Failed
+        )
     }
 }
 
@@ -1506,6 +1793,8 @@ impl TryFrom<&str> for OrchestrationStatus {
             "Planning" => Ok(Self::Planning),
             "Running" => Ok(Self::Running),
             "Completed" => Ok(Self::Completed),
+            "PartialCompleted" => Ok(Self::PartialCompleted),
+            "Interrupted" => Ok(Self::Interrupted),
             "Failed" => Ok(Self::Failed),
             "Cancelled" => Ok(Self::Cancelled),
             _ => Err(AppError::Internal {
@@ -1513,6 +1802,41 @@ impl TryFrom<&str> for OrchestrationStatus {
             }),
         }
     }
+}
+
+/// Progressive disclosure progress for a multi-agent session (UI polling).
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct OrchestrationStageProgress {
+    pub id: String,
+    pub title: String,
+    pub agent_name: String,
+    pub status: String,
+    pub model_tier: Option<String>,
+    pub thinking_mode: Option<String>,
+    pub attempt: u32,
+    pub error_code: Option<String>,
+    pub error_message: Option<String>,
+    pub tasks_completed: u32,
+    pub tasks_total: u32,
+    pub can_retry: bool,
+    pub allowed_tools: Vec<String>,
+}
+
+/// Aggregate progress for one orchestration session.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct OrchestrationProgress {
+    pub id: OrchestrationId,
+    pub status: OrchestrationStatus,
+    /// 0–100 coarse progress from completed stage tasks.
+    pub percent: u32,
+    pub current_stage_id: Option<String>,
+    pub stages: Vec<OrchestrationStageProgress>,
+    pub can_retry_stage_ids: Vec<String>,
+    pub can_continue: bool,
+    pub result_summary: Option<String>,
+    pub soft_timeout_warned: bool,
 }
 
 /// Durable multi-agent orchestration session.

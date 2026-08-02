@@ -8,14 +8,8 @@ use app_runtime::PorticoRuntimeHandle;
 use chrono::Utc;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::time::timeout;
 
 use crate::AgentRegistry;
-
-/// Default timeout for an individual subagent run.
-/// Keep in the same ballpark as `DEFAULT_RUN_TIMEOUT` (300s): tool-using
-/// explorers on real projects routinely need >60s with remote models.
-const SUBAGENT_TIMEOUT: Duration = Duration::from_secs(240);
 
 /// Coordinates subagent planning, execution, and synthesis.
 #[derive(Clone)]
@@ -81,6 +75,8 @@ impl Orchestrator {
                 output_summary: None,
                 created_at: Utc::now(),
                 completed_at: None,
+                retry_count: 0,
+                last_error_code: None,
             };
             self.runtime.storage().create_subagent(&subagent).await?;
             subagents.push(subagent);
@@ -243,42 +239,144 @@ async fn run_subagent(
     let child = runtime.start_run(parent.workspace_id, parent.thread_id).await?;
     storage.update_subagent_child_run(subagent.id, child.id).await?;
 
+    let spec = crate::spec_for_role_name(&subagent.agent_name);
+    ensure_write_isolation(runtime.as_ref(), &parent, &spec).await?;
+
+    let hard_timeout = Duration::from_millis(spec.timeout_ms.max(30_000));
+    let soft_timeout = Duration::from_millis(
+        spec.soft_timeout_ms
+            .unwrap_or(spec.timeout_ms.saturating_mul(3) / 4)
+            .max(15_000)
+            .min(spec.timeout_ms.saturating_sub(5_000).max(15_000)),
+    );
+    runtime.bind_run_execution_spec(child.id, spec);
+
     // Keep the prompt tight: role name + task. Long system dumps waste context
     // and slow tool-using explorers on remote models.
     let prompt = compact_subagent_prompt(&subagent);
     let work = runtime.submit_message(child.id, &prompt);
-    let outcome = match timeout(SUBAGENT_TIMEOUT, work).await {
-        Ok(Ok(())) => {
-            let child_run = runtime.get_run(child.id).await?;
-            let summary = summarize_run(&runtime, child.id).await?;
-            (child_run.status, summary)
-        }
-        Ok(Err(err)) => {
-            // submit_message already marks the child Failed; mirror that.
-            (AgentRunStatus::Failed, Some(user_facing_subagent_error(&err)))
-        }
-        Err(_) => {
-            let _ = runtime.cancel_run(child.id).await;
-            // Ensure the child does not linger as Running/Cancelled-without-reason.
-            let _ = runtime
-                .storage()
-                .update_run_status(child.id, AgentRunStatus::Failed)
-                .await;
-            (
-                AgentRunStatus::Failed,
-                Some(format!(
-                    "子 Agent「{}」超时（{} 秒）。可缩短问题，或改用单次「对话」模式。",
-                    subagent.agent_name,
-                    SUBAGENT_TIMEOUT.as_secs()
-                )),
-            )
+    tokio::pin!(work);
+    let mut error_code: Option<String> = None;
+    let mut soft_warned = false;
+    let soft_sleep = tokio::time::sleep(soft_timeout);
+    tokio::pin!(soft_sleep);
+    let hard_sleep = tokio::time::sleep(hard_timeout);
+    tokio::pin!(hard_sleep);
+
+    let outcome = loop {
+        tokio::select! {
+            biased;
+            result = &mut work => {
+                break match result {
+                    Ok(()) => {
+                        let child_run = runtime.get_run(child.id).await?;
+                        let mut summary = summarize_run(&runtime, child.id).await?;
+                        if soft_warned {
+                            if let Some(s) = &mut summary {
+                                s.push_str("\n\n（注意：本角色接近软超时预算，已自动续跑至硬上限。）");
+                            }
+                        }
+                        // Persist thinking degrade flag if the tool loop recorded it.
+                        if let Ok(events) = storage.list_run_events(child.id).await {
+                            if events.iter().any(|e| e.event_type == "thinking.degraded") {
+                                let _ = runtime
+                                    .registry()
+                                    .mark_run_thinking_degraded(child.id, "off")
+                                    .await;
+                            }
+                        }
+                        (child_run.status, summary)
+                    }
+                    Err(err) => {
+                        error_code = Some(classify_subagent_error(&err));
+                        (AgentRunStatus::Failed, Some(user_facing_subagent_error(&err)))
+                    }
+                };
+            }
+            () = &mut soft_sleep, if !soft_warned => {
+                soft_warned = true;
+                // Soft budget hit: keep waiting until hard timeout (one automatic extension).
+            }
+            () = &mut hard_sleep => {
+                error_code = Some("SUBAGENT_TIMEOUT".to_owned());
+                let _ = runtime.cancel_run(child.id).await;
+                let _ = runtime
+                    .storage()
+                    .update_run_status(child.id, AgentRunStatus::Failed)
+                    .await;
+                break (
+                    AgentRunStatus::Failed,
+                    Some(format!(
+                        "子 Agent「{}」超时（硬上限 {} 秒{}）。可缩短问题、重试此步，或改用单次「对话」模式。",
+                        subagent.agent_name,
+                        hard_timeout.as_secs(),
+                        if soft_warned { "；此前已触发软超时续跑" } else { "" }
+                    )),
+                );
+            }
         }
     };
 
     storage
         .update_subagent_status(subagent.id, outcome.0, outcome.1.as_deref())
         .await?;
-    storage.get_subagent(subagent.id).await
+    let mut loaded = storage.get_subagent(subagent.id).await?;
+    if let Some(code) = error_code {
+        loaded.last_error_code = Some(code);
+    }
+    Ok(loaded)
+}
+
+async fn ensure_write_isolation(
+    runtime: &PorticoRuntimeHandle,
+    parent: &app_models::AgentRun,
+    spec: &app_models::RunExecutionSpec,
+) -> Result<(), AppError> {
+    use app_models::WriteIsolation;
+    if !matches!(
+        spec.write_isolation,
+        WriteIsolation::PreferWorktree | WriteIsolation::RequireWorktree
+    ) || !spec.allows_writes()
+    {
+        return Ok(());
+    }
+    let worktrees = runtime
+        .worktree_manager()
+        .list_worktrees(parent.workspace_id)
+        .await
+        .unwrap_or_default();
+    if !worktrees.is_empty() {
+        return Ok(());
+    }
+    match runtime
+        .worktree_manager()
+        .create_worktree(parent.workspace_id, parent.thread_id, "default")
+        .await
+    {
+        Ok(_) => Ok(()),
+        Err(err) if matches!(spec.write_isolation, WriteIsolation::RequireWorktree) => {
+            Err(AppError::PermissionDenied {
+                reason: format!(
+                    "WORKTREE_REQUIRED: role `{}` cannot write without an isolated worktree ({err})",
+                    spec.role
+                ),
+            })
+        }
+        Err(_) => Ok(()), // PreferWorktree: best-effort
+    }
+}
+
+fn classify_subagent_error(err: &AppError) -> String {
+    let raw = err.to_string().to_ascii_lowercase();
+    if raw.contains("timeout") {
+        "PROVIDER_TIMEOUT".to_owned()
+    } else if raw.contains("role_tool_denied") {
+        "ROLE_TOOL_DENIED".to_owned()
+    } else if raw.contains("provider") {
+        "PROVIDER_ERROR".to_owned()
+    } else {
+        "SUBAGENT_FAILED".to_owned()
+    }
 }
 
 fn compact_subagent_prompt(subagent: &SubagentRun) -> String {
@@ -442,7 +540,15 @@ fn is_write_agent(def: &AgentDefinition) -> bool {
 fn is_write_tool(tool: &str) -> bool {
     matches!(
         tool,
-        "filesystem.write" | "terminal.execute" | "git.commit" | "git.stage" | "mcp.invoke.write"
+        "fs_write"
+            | "fs_edit"
+            | "shell_exec"
+            | "git:write"
+            | "filesystem.write"
+            | "terminal.execute"
+            | "git.commit"
+            | "git.stage"
+            | "mcp.invoke.write"
     )
 }
 

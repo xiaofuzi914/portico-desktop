@@ -9,14 +9,21 @@ pub mod agent_registry;
 pub mod canvas_extract;
 pub mod canvas_goal;
 pub mod canvas_layout;
+pub mod execution_spec;
 pub mod memory_plan;
 pub mod orchestration_service;
 pub mod orchestrator;
 pub mod ports;
+pub mod progress;
 pub mod scheduler;
 pub mod stage_graph;
 
 pub use agent_registry::AgentRegistry;
+pub use execution_spec::{
+    deepseek_model_candidates, moonshot_model_candidates, needs_worktree, openai_model_candidates,
+    resolve_thinking, spec_for_agent, spec_for_role_name, spec_from_definition,
+    thinking_prompt_directive,
+};
 pub use canvas_extract::{
     ExtractedInsight, ExtractedThreadCluster, SessionCard, branch_title_from_focus,
     build_branch_context_seed_with_focus, extract_session_cards,
@@ -33,6 +40,7 @@ pub use canvas_layout::{
 };
 pub use orchestration_service::OrchestrationService;
 pub use orchestrator::Orchestrator;
+pub use progress::build_orchestration_progress;
 pub use ports::{
     NoopPatternSink, NoopPatternSource, PatternRecallQuery, PatternSink, PatternSource,
 };

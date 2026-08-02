@@ -50,6 +50,7 @@ fn base_stage(
     prompt: String,
     depends_on: Vec<String>,
 ) -> OrchestrationStage {
+    let execution_spec = Some(crate::spec_for_role_name(agent));
     OrchestrationStage {
         id: id.to_owned(),
         kind,
@@ -66,6 +67,7 @@ fn base_stage(
         tasks: vec![],
         output_payload: None,
         error_message: None,
+        execution_spec,
     }
 }
 
@@ -629,6 +631,8 @@ pub fn expand_foreach_tasks(
                 subagent_id: None,
                 output_summary: None,
                 output_payload: Some(item.to_string()),
+                attempt: 1,
+                last_error_code: None,
             }
         })
         .collect()
@@ -887,6 +891,14 @@ pub fn coalesce_orchestration_status(
     use app_models::OrchestrationStatus;
     if already == OrchestrationStatus::Cancelled || outcome == OrchestrationStatus::Cancelled {
         OrchestrationStatus::Cancelled
+    } else if already == OrchestrationStatus::Interrupted
+        && matches!(
+            outcome,
+            OrchestrationStatus::Running | OrchestrationStatus::Planning
+        )
+    {
+        // Do not revive Interrupted into Running without an explicit continue.
+        OrchestrationStatus::Interrupted
     } else {
         outcome
     }

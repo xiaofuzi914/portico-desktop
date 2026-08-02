@@ -1,12 +1,15 @@
-export const DEFAULT_INSPECTOR_WIDTH = 480;
-export const MIN_INSPECTOR_WIDTH = 320;
-export const MAX_INSPECTOR_WIDTH = 720;
-export const MIN_MAIN_WIDTH = 360;
+/** Compact inspector so the center workspace stays the visual focus. */
+export const DEFAULT_INSPECTOR_WIDTH = 320;
+export const MIN_INSPECTOR_WIDTH = 280;
+export const MAX_INSPECTOR_WIDTH = 480;
+/** Prefer a generous main pane over a wide inspector. */
+export const MIN_MAIN_WIDTH = 420;
 export const DEFAULT_SIDEBAR_WIDTH = 264;
 export const COLLAPSED_SIDEBAR_WIDTH = 56;
 
 const sidebarCollapsedStorageKey = "portico.shell.sidebar.collapsed";
-const inspectorWidthStorageKey = "portico.shell.inspector.width";
+/** v2: narrower product default; ignore legacy wide widths stored under v1. */
+const inspectorWidthStorageKey = "portico.shell.inspector.width.v2";
 
 export function readSidebarCollapsed(): boolean {
   if (typeof window === "undefined") return false;

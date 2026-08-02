@@ -49,6 +49,8 @@ pub fn build_memory_conditioned_plan(
             output_summary: None,
             created_at: Utc::now(),
             completed_at: None,
+            retry_count: 0,
+            last_error_code: None,
         });
     }
 

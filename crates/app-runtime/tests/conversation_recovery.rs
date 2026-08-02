@@ -71,6 +71,9 @@ impl AgentExecutorResolver for CountingResolver {
                 model_name: "test".to_owned(),
                 provider_config_updated_at: now,
                 created_at: now,
+                selection_reason: None,
+                thinking_mode: None,
+                thinking_degraded: false,
             },
         })
     }

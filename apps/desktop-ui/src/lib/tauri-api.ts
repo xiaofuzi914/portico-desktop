@@ -366,15 +366,29 @@ export function submitMessage(runId: AgentRunId, content: string): Promise<void>
   return invokeCommand<void>("submit_message", { runId, content });
 }
 
+export type SendMessageOptions = {
+  clientRequestId?: string;
+  /** DeepSeek-style: off | on | auto */
+  thinkingMode?: "off" | "on" | "auto" | null;
+  /** OpenAI/Codex-style: low | medium | high */
+  reasoningEffort?: "low" | "medium" | "high" | null;
+};
+
 export function sendMessage(
   threadId: ThreadId,
   content: string,
-  clientRequestId?: string,
+  clientRequestIdOrOptions?: string | SendMessageOptions,
 ): Promise<AgentRun> {
+  const options: SendMessageOptions =
+    typeof clientRequestIdOrOptions === "string" || clientRequestIdOrOptions === undefined
+      ? { clientRequestId: clientRequestIdOrOptions }
+      : clientRequestIdOrOptions;
   return invokeCommand<AgentRun>("send_message", {
     threadId,
     content,
-    clientRequestId: clientRequestId ?? null,
+    clientRequestId: options.clientRequestId ?? null,
+    thinkingMode: options.thinkingMode ?? null,
+    reasoningEffort: options.reasoningEffort ?? null,
   });
 }
 
@@ -914,6 +928,28 @@ export function listThreadOrchestrations(threadId: ThreadId): Promise<Orchestrat
 
 export function cancelOrchestration(orchestrationId: OrchestrationId): Promise<Orchestration> {
   return invokeCommand<Orchestration>("cancel_orchestration", { orchestrationId });
+}
+
+export function retryOrchestrationStage(
+  orchestrationId: OrchestrationId,
+  stageId: string,
+): Promise<Orchestration> {
+  return invokeCommand<Orchestration>("retry_orchestration_stage", {
+    orchestrationId,
+    stageId,
+  });
+}
+
+export function getOrchestrationProgress(
+  orchestrationId: OrchestrationId,
+): Promise<import("./schemas").OrchestrationProgress> {
+  return invokeCommand("get_orchestration_progress", { orchestrationId });
+}
+
+export function continueOrchestration(
+  orchestrationId: OrchestrationId,
+): Promise<Orchestration> {
+  return invokeCommand<Orchestration>("continue_orchestration", { orchestrationId });
 }
 
 export function muteWorkflowPattern(patternId: WorkflowPatternId): Promise<void> {

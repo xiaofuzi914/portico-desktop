@@ -47,7 +47,7 @@ async fn import_cli_auth_and_configure(
             message: format!("store CLI auth secret failed: {e}"),
         })?;
 
-    let provider = state
+    let mut provider = state
         .runtime
         .registry()
         .create_provider(
@@ -58,15 +58,38 @@ async fn import_cli_auth_and_configure(
         )
         .await?;
 
-    // Seed recommended models for this kind (same as UI presets).
-    let models = default_models_for_kind(imported.kind);
+    // Attach ChatGPT-Account-ID (and any other CLI headers) after create.
+    if !imported.default_headers.is_empty()
+        || imported.base_url.is_some() && provider.base_url != imported.base_url
+    {
+        provider.default_headers = imported.default_headers.clone();
+        if let Some(ref url) = imported.base_url {
+            provider.base_url = Some(url.clone());
+        }
+        provider.updated_at = chrono::Utc::now();
+        state
+            .runtime
+            .registry()
+            .update_provider(provider.clone())
+            .await?;
+    }
+
+    // Prefer CLI-specific model seeds (e.g. Codex ChatGPT models) over generic presets.
+    let models: Vec<(String, String)> = if imported.suggested_models.is_empty() {
+        default_models_for_kind(imported.kind)
+            .into_iter()
+            .map(|(n, d)| (n.to_owned(), d.to_owned()))
+            .collect()
+    } else {
+        imported.suggested_models.clone()
+    };
     let mut first_model_id = None;
     for (model_name, display_name) in models {
         let caps = default_text_capabilities();
         match state
             .runtime
             .registry()
-            .add_model(provider.id, model_name, display_name, caps)
+            .add_model(provider.id, &model_name, &display_name, caps)
             .await
         {
             Ok(m) => {
@@ -81,7 +104,7 @@ async fn import_cli_auth_and_configure(
     }
 
     if let Some(model_id) = first_model_id {
-        // Best-effort health probe; session tokens may target different gateways.
+        // Best-effort health probe; ChatGPT Codex sessions use a special gateway.
         let _ = autoagents_adapter::check_provider_health(
             state.runtime.registry().clone(),
             state.secret_store.clone(),
@@ -102,7 +125,8 @@ async fn import_cli_auth_and_configure(
             .await;
     }
 
-    Ok(provider)
+    // Re-load so the UI gets persisted headers / base_url.
+    state.runtime.registry().get_provider(provider.id).await
 }
 
 fn default_text_capabilities() -> ModelCapability {

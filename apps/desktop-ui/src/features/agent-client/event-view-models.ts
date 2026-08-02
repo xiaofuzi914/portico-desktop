@@ -30,19 +30,61 @@ function messageRoleRank(role: Message["role"] | undefined): number {
  * @param index 0-based index in the server-ordered list (created_at ASC, id ASC).
  *               Used as a stable sequence so same-second User/Assistant never swap.
  */
+/**
+ * System rows are overloaded: branch context seeds, tool-approval notes, and
+ * real run failures. Only treat failure-shaped text as errors so 开子会话
+ * context is not shown as a red "Run failed" bubble before the first answer.
+ */
+function classifySystemMessage(content: string): {
+  kind: ConversationBlockKind;
+  title: string;
+  tone: ConversationBlockTone;
+} {
+  const trimmed = content.trim();
+  const lower = trimmed.toLowerCase();
+  const isFailure =
+    lower.startsWith("run failed:") ||
+    lower.startsWith("run failed：") ||
+    lower.includes("provider_unavailable") ||
+    lower.includes("provider_selection") ||
+    /^error[:：]/i.test(trimmed);
+
+  if (isFailure) {
+    return { kind: "error", title: "Run failed", tone: "danger" };
+  }
+
+  // Branch context seed (【从会话…发散】) and other injected notes.
+  if (
+    trimmed.startsWith("【从会话") ||
+    trimmed.startsWith("【会话上下文") ||
+    lower.includes("parent session") ||
+    lower.includes("父会话") ||
+    lower.includes("划词发散")
+  ) {
+    return { kind: "status", title: "Context", tone: "muted" };
+  }
+
+  return { kind: "status", title: "System", tone: "muted" };
+}
+
 export function mapMessageToBlock(message: Message, index = 0): ConversationBlock {
   const isUser = message.role === "User";
   const isSystem = message.role === "System";
   // Prefer list order over Date.parse alone — SQLite timestamps often share the
   // same second for user+assistant of one turn, which used to invert the chat.
   const sequence = index * 10 + messageRoleRank(message.role);
+  const systemMeta = isSystem ? classifySystemMessage(message.content) : null;
   return {
     id: `message-${message.id}`,
     sequence,
-    kind: isSystem ? "error" : "message",
-    title: isUser ? "You" : message.role === "Assistant" ? "Assistant" : "Run failed",
+    kind: systemMeta?.kind ?? "message",
+    title: isUser
+      ? "You"
+      : message.role === "Assistant"
+        ? "Assistant"
+        : (systemMeta?.title ?? "System"),
     body: message.content,
-    tone: isSystem ? "danger" : isUser ? "default" : "muted",
+    tone: systemMeta?.tone ?? (isUser ? "default" : "muted"),
     role: isSystem ? undefined : isUser ? "user" : "assistant",
     createdAt: message.created_at,
     raw: {

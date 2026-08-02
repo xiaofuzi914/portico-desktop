@@ -116,6 +116,57 @@ pub struct BundledWorkflowDto {
     pub summary: String,
 }
 
+/// Retry a failed orchestration stage (does not re-run completed stages).
+#[tauri::command]
+pub async fn retry_orchestration_stage(
+    state: State<'_, AppState>,
+    orchestration_id: OrchestrationId,
+    stage_id: String,
+) -> Result<ApiResponse<Orchestration>, String> {
+    Ok(
+        match state
+            .orchestration
+            .retry_stage(orchestration_id, &stage_id)
+            .await
+        {
+            Ok(session) => ApiResponse::ok(session),
+            Err(err) => ApiResponse::err(err.to_string()),
+        },
+    )
+}
+
+/// Progressive progress snapshot for UI polling.
+#[tauri::command]
+pub async fn get_orchestration_progress(
+    state: State<'_, AppState>,
+    orchestration_id: OrchestrationId,
+) -> Result<ApiResponse<app_models::OrchestrationProgress>, String> {
+    Ok(
+        match state.orchestration.progress(orchestration_id).await {
+            Ok(progress) => ApiResponse::ok(progress),
+            Err(err) => ApiResponse::err(err.to_string()),
+        },
+    )
+}
+
+/// Continue an Interrupted / Partial / Failed multi-agent session.
+#[tauri::command]
+pub async fn continue_orchestration(
+    state: State<'_, AppState>,
+    orchestration_id: OrchestrationId,
+) -> Result<ApiResponse<Orchestration>, String> {
+    Ok(
+        match state
+            .orchestration
+            .continue_orchestration(orchestration_id)
+            .await
+        {
+            Ok(session) => ApiResponse::ok(session),
+            Err(err) => ApiResponse::err(err.to_string()),
+        },
+    )
+}
+
 /// Get an orchestration session by id.
 ///
 /// # Errors

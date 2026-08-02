@@ -6,6 +6,7 @@ describe("navigation model", () => {
     const sections = buildNavigationSections();
 
     expect(sections.map((section) => section.id)).toEqual(["capabilities", "operations"]);
+    expect(sections.every((section) => section.icon)).toBe(true);
     expect(sections[0]?.links.map((link) => link.to)).toEqual([
       "/models",
       "/memory",

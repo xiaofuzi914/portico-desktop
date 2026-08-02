@@ -119,6 +119,48 @@ impl PorticoToolRegistry {
         let mut tools = self.tools.write().expect("registry lock poisoned");
         tools.retain(|name, tool| predicate(name, tool));
     }
+
+    /// Clone a filtered registry view for a multi-agent role allowlist.
+    ///
+    /// `git:write` is a capability tag (not advertised as a separate tool).
+    /// MCP tools are never included unless listed by exact name.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal lock is poisoned.
+    #[must_use]
+    pub fn filtered_for_allowlist(&self, allowed: &[String]) -> Self {
+        let allow: HashMap<&str, ()> = allowed
+            .iter()
+            .filter(|name| *name != "git:write")
+            .map(|name| (name.as_str(), ()))
+            .collect();
+        let allow_git = allowed.iter().any(|t| t == "git" || t == "git:write");
+        let source = self.tools.read().expect("registry lock poisoned");
+        let mut filtered = HashMap::new();
+        for (name, tool) in source.iter() {
+            let ok = if name == "git" {
+                allow_git
+            } else {
+                allow.contains_key(name.as_str())
+            };
+            if ok {
+                filtered.insert(name.clone(), Arc::clone(tool));
+            }
+        }
+        Self {
+            tools: Arc::new(RwLock::new(filtered)),
+        }
+    }
+
+    /// List registered tool names (for tests / diagnostics).
+    #[must_use]
+    pub fn tool_names(&self) -> Vec<String> {
+        let tools = self.tools.read().expect("registry lock poisoned");
+        let mut names: Vec<_> = tools.keys().cloned().collect();
+        names.sort();
+        names
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -380,6 +422,25 @@ mod tests {
 
         registry.retain(|name, _| name != "git");
         assert_eq!(registry.llm_tools().len(), 8);
+    }
+
+    #[test]
+    fn filtered_allowlist_hides_write_tools_for_explorer() {
+        let registry = PorticoToolRegistry::new();
+        registry.register_safe_builtin_definitions();
+        let filtered = registry.filtered_for_allowlist(&[
+            "fs_list".to_owned(),
+            "fs_read".to_owned(),
+            "fs_search".to_owned(),
+            "git".to_owned(),
+            "web_search".to_owned(),
+            "web_fetch".to_owned(),
+        ]);
+        let names = filtered.tool_names();
+        assert!(names.contains(&"fs_read".to_owned()));
+        assert!(names.contains(&"git".to_owned()));
+        assert!(!names.contains(&"fs_write".to_owned()));
+        assert!(!names.contains(&"shell_exec".to_owned()));
     }
 
     #[tokio::test]

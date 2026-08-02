@@ -1,4 +1,4 @@
-import { Bot, Brain, History, Puzzle, Server } from "lucide-react";
+import { Activity, Bot, Brain, History, Puzzle, Server, Sparkles } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
 export interface NavigationLink {
@@ -10,6 +10,8 @@ export interface NavigationLink {
 export interface NavigationSection {
   id: "capabilities" | "operations";
   labelKey: string;
+  /** Section header icon — same weight as 项目 / 会话. */
+  icon: LucideIcon;
   links: NavigationLink[];
 }
 
@@ -18,6 +20,7 @@ export function buildNavigationSections(): NavigationSection[] {
     {
       id: "capabilities",
       labelKey: "nav.capabilities",
+      icon: Sparkles,
       links: [
         { to: "/models", labelKey: "nav.models", icon: Bot },
         { to: "/memory", labelKey: "nav.memory", icon: Brain },
@@ -28,6 +31,7 @@ export function buildNavigationSections(): NavigationSection[] {
     {
       id: "operations",
       labelKey: "nav.operations",
+      icon: Activity,
       links: [{ to: "/audit", labelKey: "nav.audit", icon: History }],
     },
   ];

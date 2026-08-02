@@ -162,6 +162,9 @@ export const runModelSnapshotSchema = z.object({
   model_name: z.string(),
   provider_config_updated_at: z.string().datetime(),
   created_at: z.string().datetime(),
+  selection_reason: z.string().nullable().optional(),
+  thinking_mode: z.string().nullable().optional(),
+  thinking_degraded: z.boolean().optional(),
 });
 export type RunModelSnapshot = z.infer<typeof runModelSnapshotSchema>;
 
@@ -655,6 +658,35 @@ export const builtInAgentSchema = z.enum([
 ]);
 export type BuiltInAgent = z.infer<typeof builtInAgentSchema>;
 
+export const modelTierSchema = z.enum(["fast", "balanced", "strong"]);
+export type ModelTier = z.infer<typeof modelTierSchema>;
+
+export const thinkingModeSchema = z.enum(["off", "on", "auto"]);
+export type ThinkingMode = z.infer<typeof thinkingModeSchema>;
+
+export const writeIsolationSchema = z.enum(["none", "prefer_worktree", "require_worktree"]);
+export type WriteIsolation = z.infer<typeof writeIsolationSchema>;
+
+export const retryClassSchema = z.enum(["transient", "idempotent_only", "never"]);
+export type RetryClass = z.infer<typeof retryClassSchema>;
+
+export const reasoningEffortSchema = z.enum(["low", "medium", "high"]);
+export type ReasoningEffort = z.infer<typeof reasoningEffortSchema>;
+
+export const runExecutionSpecSchema = z.object({
+  role: z.string(),
+  allowed_tools: z.array(z.string()),
+  model_tier: modelTierSchema.default("balanced"),
+  thinking_mode: thinkingModeSchema.default("auto"),
+  reasoning_effort: reasoningEffortSchema.nullable().optional(),
+  timeout_ms: z.number().int().nonnegative(),
+  soft_timeout_ms: z.number().int().nonnegative().nullable().optional(),
+  max_tool_steps: z.number().int().nonnegative(),
+  retry_class: retryClassSchema.default("transient"),
+  write_isolation: writeIsolationSchema.default("none"),
+});
+export type RunExecutionSpec = z.infer<typeof runExecutionSpecSchema>;
+
 export const agentDefinitionSchema = z.object({
   name: z.string().min(1),
   description: z.string(),
@@ -662,6 +694,10 @@ export const agentDefinitionSchema = z.object({
   allowed_tools: z.array(z.string()),
   default_model_policy: z.string(),
   default_permission_scope: permissionScopeSchema,
+  model_tier: modelTierSchema.optional(),
+  thinking_default: thinkingModeSchema.optional(),
+  timeout_ms: z.number().int().nonnegative().optional(),
+  write_isolation: writeIsolationSchema.optional(),
 });
 export type AgentDefinition = z.infer<typeof agentDefinitionSchema>;
 
@@ -674,6 +710,8 @@ export const subagentRunSchema = z.object({
   output_summary: z.string().nullable(),
   created_at: z.string().datetime(),
   completed_at: z.string().datetime().nullable(),
+  retry_count: z.number().int().nonnegative().optional(),
+  last_error_code: z.string().nullable().optional(),
 });
 export type SubagentRun = z.infer<typeof subagentRunSchema>;
 
@@ -735,6 +773,8 @@ export const orchestrationStageTaskSchema = z.object({
   subagent_id: agentRunIdSchema.nullable().optional(),
   output_summary: z.string().nullable().optional(),
   output_payload: z.string().nullable().optional(),
+  attempt: z.number().int().nonnegative().optional(),
+  last_error_code: z.string().nullable().optional(),
 });
 export type OrchestrationStageTask = z.infer<typeof orchestrationStageTaskSchema>;
 
@@ -754,6 +794,7 @@ export const orchestrationStageSchema = z.object({
   tasks: z.array(orchestrationStageTaskSchema).default([]),
   output_payload: z.string().nullable().optional(),
   error_message: z.string().nullable().optional(),
+  execution_spec: runExecutionSpecSchema.nullable().optional(),
 });
 export type OrchestrationStage = z.infer<typeof orchestrationStageSchema>;
 
@@ -798,10 +839,42 @@ export const orchestrationStatusSchema = z.enum([
   "Planning",
   "Running",
   "Completed",
+  "PartialCompleted",
+  "Interrupted",
   "Failed",
   "Cancelled",
 ]);
 export type OrchestrationStatus = z.infer<typeof orchestrationStatusSchema>;
+
+export const orchestrationStageProgressSchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  agent_name: z.string(),
+  status: z.string(),
+  model_tier: z.string().nullable().optional(),
+  thinking_mode: z.string().nullable().optional(),
+  attempt: z.number().int().nonnegative(),
+  error_code: z.string().nullable().optional(),
+  error_message: z.string().nullable().optional(),
+  tasks_completed: z.number().int().nonnegative(),
+  tasks_total: z.number().int().nonnegative(),
+  can_retry: z.boolean(),
+  allowed_tools: z.array(z.string()).default([]),
+});
+export type OrchestrationStageProgress = z.infer<typeof orchestrationStageProgressSchema>;
+
+export const orchestrationProgressSchema = z.object({
+  id: orchestrationIdSchema,
+  status: orchestrationStatusSchema,
+  percent: z.number().int().min(0).max(100),
+  current_stage_id: z.string().nullable().optional(),
+  stages: z.array(orchestrationStageProgressSchema).default([]),
+  can_retry_stage_ids: z.array(z.string()).default([]),
+  can_continue: z.boolean(),
+  result_summary: z.string().nullable().optional(),
+  soft_timeout_warned: z.boolean().default(false),
+});
+export type OrchestrationProgress = z.infer<typeof orchestrationProgressSchema>;
 
 export const orchestrationSchema = z.object({
   id: orchestrationIdSchema,

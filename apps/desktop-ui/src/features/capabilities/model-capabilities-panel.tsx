@@ -221,6 +221,7 @@ export function ModelCapabilitiesPanel() {
       void queryClient.invalidateQueries({ queryKey: ["provider-health"] });
       setSelectedProviderId(config.id);
       setCliImportOpen(false);
+      setCliSourcesError(null);
     },
   });
 
@@ -524,12 +525,19 @@ export function ModelCapabilitiesPanel() {
                         {src.path}
                       </p>
                       {src.available ? (
-                        <p className="text-muted-foreground mt-1 text-[11px]">
-                          {t("capabilities.cliAuth.preview")}:{" "}
-                          <span className="font-mono">{src.preview}</span>
-                          {" · "}
-                          {src.auth_mode}
-                        </p>
+                        <div className="text-muted-foreground mt-1 space-y-0.5 text-[11px]">
+                          <p>
+                            {t("capabilities.cliAuth.preview")}:{" "}
+                            <span className="font-mono">{src.preview}</span>
+                            {" · "}
+                            {src.auth_mode}
+                          </p>
+                          {src.hint ? (
+                            <p className="leading-snug text-emerald-700 dark:text-emerald-400">
+                              {src.hint}
+                            </p>
+                          ) : null}
+                        </div>
                       ) : (
                         <p className="text-muted-foreground mt-1 text-[11px] leading-snug">
                           {src.hint ?? t("capabilities.cliAuth.unavailable")}
@@ -552,6 +560,16 @@ export function ModelCapabilitiesPanel() {
                   </div>
                 ))
               )}
+              {importCliMutation.isError ? (
+                <ErrorAlert
+                  title={t("capabilities.cliAuth.importFailed")}
+                  message={
+                    importCliMutation.error instanceof Error
+                      ? importCliMutation.error.message
+                      : String(importCliMutation.error)
+                  }
+                />
+              ) : null}
             </div>
 
             <div className="mt-4 flex flex-wrap items-center justify-between gap-2">

@@ -60,12 +60,27 @@ Orchestration is a **first-class execution path for hard tasks**, not a lab feat
   (AGENTS.md, non-sensitive memories, RAG excerpts).
 - `rebuild_rag_index` scans the workspace tree from disk (not re-embed of empty store).
 - Memory UI copy: habits support real agent work (single + multi-role), not “experiments only”.
-- Safe / product tools (model-callable):
+- Safe / product tools (model-callable, **single-agent** path):
   - `fs_list`, `fs_read`, `fs_search`, `fs_edit`, `fs_write`
   - `git` — `status`/`diff` free; `add`/`commit` **Ask** approval
   - `shell_exec` — project shell after **Ask** approval (command denylist still applies)
   - `web_search`, `web_fetch` — public HTTP(S); localhost/private blocked
   - **MCP** — tools from 能力中心 after refresh; write tools **Ask**
+- **Multi-agent role tool hard isolation** (`RunExecutionSpec`):
+  - Each role advertises only its allowlist; gate returns `ROLE_TOOL_DENIED` otherwise
+  - explorer / reviewer / planner: read-only (`fs_*` read, `git` read, web as configured)
+  - worker / doc-writer: write tools + optional `git:write` / `shell_exec`; worktree preferred/required
+  - MCP tools are **not** injected into multi-agent roles by default
+- **DeepSeek / model tier**:
+  - Same provider family: explorer/research → Fast (`deepseek-v4-flash`); reduce/worker/review → Strong (`deepseek-v4-pro`)
+  - Thinking mode Off/On/Auto via prompt directive + snapshot metadata
+- **Reliability**:
+  - Per-role soft timeout (warn + auto-extend once) then hard timeout
+  - failed stage → `PartialCompleted` when partial results exist
+  - `retry_orchestration_stage` re-runs only the failed stage (max 2 retries)
+  - App restart → active multi-agent sessions become `Interrupted`; UI **Continue** / `continue_orchestration`
+  - Thinking On/Auto failure → one-shot degrade to Off + `thinking.degraded` event / snapshot flag
+  - `get_orchestration_progress` returns percent + stage badges + can_retry list
 - Still not agent tools: interactive Browser Use page, Skills invoke, Automations scheduler, native desktop automation.
 - Multi-agent sessions are **durable** in SQLite `orchestrations`.
 

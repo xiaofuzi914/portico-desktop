@@ -28,13 +28,16 @@ import {
   listMessages,
   listRunEvents,
   listRuns,
+  continueOrchestration,
   listThreadOrchestrations,
+  retryOrchestrationStage,
 } from "@/lib/tauri-api";
 import type {
   AgentRun,
   AgentRunId,
   Message,
   Orchestration,
+  OrchestrationId,
   RunEvent,
   ThreadId,
 } from "@/lib/schemas";
@@ -66,6 +69,9 @@ function statusTone(status: string): string {
   switch (status) {
     case "Completed":
       return "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border-emerald-500/30";
+    case "PartialCompleted":
+    case "Interrupted":
+      return "bg-amber-500/15 text-amber-800 dark:text-amber-300 border-amber-500/30";
     case "Running":
     case "Queued":
     case "Planning":
@@ -84,6 +90,8 @@ function statusTone(status: string): string {
 function StatusIcon({ status }: { status: string }) {
   const cls = "h-3.5 w-3.5 shrink-0";
   if (status === "Completed") return <CheckCircle2 className={cn(cls, "text-emerald-600")} />;
+  if (status === "PartialCompleted")
+    return <CheckCircle2 className={cn(cls, "text-amber-600")} />;
   if (isActive(status) && status !== "Pending")
     return <Loader2 className={cn(cls, "text-sky-600 animate-spin")} />;
   if (status === "WaitingApproval" || status === "Paused")
@@ -286,6 +294,23 @@ export function ExecutionBoard({
     mutationFn: (runId: AgentRunId) => cancelRun(runId),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["runs", threadId] });
+    },
+  });
+  const retryStage = useMutation({
+    mutationFn: (args: { orchestrationId: OrchestrationId; stageId: string }) =>
+      retryOrchestrationStage(args.orchestrationId, args.stageId),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["orchestrations", threadId] });
+      await queryClient.invalidateQueries({ queryKey: ["runs", threadId] });
+      await queryClient.invalidateQueries({ queryKey: ["messages", threadId] });
+    },
+  });
+  const continueOrch = useMutation({
+    mutationFn: (id: OrchestrationId) => continueOrchestration(id),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["orchestrations", threadId] });
+      await queryClient.invalidateQueries({ queryKey: ["runs", threadId] });
+      await queryClient.invalidateQueries({ queryKey: ["messages", threadId] });
     },
   });
 
@@ -507,6 +532,21 @@ export function ExecutionBoard({
                           {t("agent.stop")}
                         </Button>
                       ) : null}
+                      {selected?.kind === "orchestration" &&
+                      (detail.status === "Interrupted" ||
+                        detail.status === "PartialCompleted" ||
+                        detail.status === "Failed") ? (
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="default"
+                          className="h-8"
+                          disabled={continueOrch.isPending}
+                          onClick={() => continueOrch.mutate(selected.orchestration.id)}
+                        >
+                          {t("execution.continueSession")}
+                        </Button>
+                      ) : null}
                     </div>
                   </div>
                   <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
@@ -591,6 +631,8 @@ export function ExecutionBoard({
                                 </div>
                                 <p className="text-muted-foreground mt-0.5 text-[11px]">
                                   {stage.agentName}
+                                  {stage.modelTier ? ` · ${stage.modelTier}` : null}
+                                  {stage.thinkingMode ? ` · 💭${stage.thinkingMode}` : null}
                                   {stage.kind === "loop" && stage.maxIterations
                                     ? ` · ${t("execution.loopRound")
                                         .replace(
@@ -614,6 +656,30 @@ export function ExecutionBoard({
                               <div className="bg-muted/20 border-t px-3 py-2">
                                 {stage.errorMessage ? (
                                   <p className="text-destructive mb-2 text-xs">{stage.errorMessage}</p>
+                                ) : null}
+                                {stage.allowedTools.length > 0 ? (
+                                  <p className="text-muted-foreground mb-2 text-[10px]">
+                                    tools: {stage.allowedTools.slice(0, 8).join(", ")}
+                                    {stage.allowedTools.length > 8 ? "…" : ""}
+                                  </p>
+                                ) : null}
+                                {stage.canRetry && selected?.kind === "orchestration" ? (
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    variant="outline"
+                                    className="mb-2 h-7 text-xs"
+                                    disabled={retryStage.isPending}
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      retryStage.mutate({
+                                        orchestrationId: selected.orchestration.id,
+                                        stageId: stage.id,
+                                      });
+                                    }}
+                                  >
+                                    {t("execution.retryStage")}
+                                  </Button>
                                 ) : null}
                                 {stage.tasks.length === 0 ? (
                                   <p className="text-muted-foreground text-xs">

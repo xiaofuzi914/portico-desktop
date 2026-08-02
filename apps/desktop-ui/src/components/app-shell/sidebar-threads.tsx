@@ -4,13 +4,14 @@ import {
   Archive,
   ChevronDown,
   ChevronRight,
+  CornerDownRight,
   MessageSquare,
   Pencil,
   Plus,
   RotateCcw,
   Trash2,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
@@ -31,6 +32,11 @@ import {
   SIDEBAR_THREAD_ACTIVE_CLASS,
   SIDEBAR_THREAD_LINK_CLASS,
 } from "./sidebar-thread-styles";
+import {
+  buildSessionTreeRows,
+  expandAncestorsForActive,
+  type SessionTreeNode,
+} from "./sidebar-session-tree";
 import { cn } from "@/lib/utils";
 
 interface SidebarThreadsProps {
@@ -45,6 +51,8 @@ type ContextMenuState = Readonly<{
   archived: boolean;
 }>;
 
+const DEPTH_PAD_PX = 12;
+
 export function SidebarThreads({ workspaceId }: SidebarThreadsProps) {
   const { t } = useTranslation();
   const navigate = useNavigate();
@@ -58,6 +66,7 @@ export function SidebarThreads({ workspaceId }: SidebarThreadsProps) {
   const [draft, setDraft] = useState("");
   const [menu, setMenu] = useState<ContextMenuState | null>(null);
   const [archiveOpen, setArchiveOpen] = useState(false);
+  const [collapsedIds, setCollapsedIds] = useState<Set<string>>(() => new Set());
   const [pendingArchive, setPendingArchive] = useState<Readonly<{
     threadId: ThreadId;
     title: string;
@@ -76,6 +85,22 @@ export function SidebarThreads({ workspaceId }: SidebarThreadsProps) {
     queryKey: workspaceKeys.archivedThreads(workspaceId),
     queryFn: () => listArchivedThreads(workspaceId),
   });
+
+  // Keep the active child visible: expand collapsed ancestors when navigating.
+  useEffect(() => {
+    if (!threads?.length || !activeThreadId) return;
+    setCollapsedIds((prev) => expandAncestorsForActive(threads, activeThreadId, prev));
+  }, [threads, activeThreadId]);
+
+  const treeRows = useMemo(
+    () => buildSessionTreeRows(threads ?? [], collapsedIds),
+    [threads, collapsedIds],
+  );
+
+  const archivedTreeRows = useMemo(
+    () => buildSessionTreeRows(archivedQuery.data ?? [], new Set()),
+    [archivedQuery.data],
+  );
 
   const create = useMutation({
     mutationFn: () => createThread(workspaceId, t("thread.defaultTitle")),
@@ -227,6 +252,171 @@ export function SidebarThreads({ workspaceId }: SidebarThreadsProps) {
     });
   }
 
+  function toggleCollapse(id: ThreadId, event: React.MouseEvent) {
+    event.preventDefault();
+    event.stopPropagation();
+    setCollapsedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function rowIcon(node: SessionTreeNode, archived: boolean) {
+    if (archived && !node.isBranch) {
+      return <Archive className="text-muted-foreground h-3.5 w-3.5 shrink-0 opacity-70" aria-hidden />;
+    }
+    if (node.isBranch) {
+      return (
+        <CornerDownRight
+          className="text-muted-foreground h-3.5 w-3.5 shrink-0 opacity-75"
+          aria-hidden
+        />
+      );
+    }
+    return <MessageSquare className="h-3.5 w-3.5 shrink-0" aria-hidden />;
+  }
+
+  /**
+   * Row chrome: [chevron 16px][depth pad][icon][title][badge]
+   * Chevron sits in-flow (not absolute) so it never overlaps the session icon.
+   */
+  function renderTreeRow(node: SessionTreeNode, options: { archived: boolean }) {
+    const { thread, depth, childCount, isBranch } = node;
+    const collapsed = collapsedIds.has(thread.id);
+    const showToggle = !options.archived && childCount > 0;
+    const depthPad = depth * DEPTH_PAD_PX;
+
+    const leading = (
+      <>
+        <span className="flex h-5 w-4 shrink-0 items-center justify-center">
+          {showToggle ? (
+            <button
+              type="button"
+              className="text-muted-foreground hover:text-foreground hover:bg-muted/80 flex h-5 w-4 items-center justify-center rounded"
+              aria-expanded={!collapsed}
+              aria-label={
+                collapsed ? t("sidebar.expandChildren") : t("sidebar.collapseChildren")
+              }
+              title={
+                collapsed
+                  ? t("sidebar.expandChildren")
+                  : t("sidebar.childCount").replace("{n}", String(childCount))
+              }
+              onClick={(event) => toggleCollapse(thread.id, event)}
+            >
+              {collapsed ? (
+                <ChevronRight className="h-3.5 w-3.5" />
+              ) : (
+                <ChevronDown className="h-3.5 w-3.5" />
+              )}
+            </button>
+          ) : null}
+        </span>
+        {depthPad > 0 ? <span className="shrink-0" style={{ width: depthPad }} aria-hidden /> : null}
+        {rowIcon(node, options.archived)}
+      </>
+    );
+
+    if (editingId === thread.id) {
+      return (
+        <div className={cn(SIDEBAR_THREAD_LINK_CLASS, "cursor-text gap-1.5")}>
+          {leading}
+          <input
+            ref={editInputRef}
+            value={draft}
+            maxLength={80}
+            disabled={rename.isPending}
+            aria-label={t("thread.editTitle")}
+            className="border-input bg-background text-foreground focus-visible:ring-ring h-6 min-w-0 flex-1 rounded border px-1 text-xs outline-none focus-visible:ring-1"
+            onChange={(event) => setDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                commitEdit(thread.id, thread.title);
+              }
+              if (event.key === "Escape") {
+                event.preventDefault();
+                cancelEdit();
+              }
+            }}
+            onBlur={() => commitEdit(thread.id, thread.title)}
+            onClick={(event) => event.stopPropagation()}
+            onContextMenu={(event) => event.preventDefault()}
+          />
+        </div>
+      );
+    }
+
+    // Archived: double-click opens (read) the session; restore/purge via right-click.
+    if (options.archived) {
+      const isActiveArchived = activeThreadId === thread.id;
+      return (
+        <div
+          role="treeitem"
+          className={cn(
+            SIDEBAR_THREAD_LINK_CLASS,
+            "text-muted-foreground w-full cursor-pointer gap-1.5 opacity-80 select-none",
+            isActiveArchived && SIDEBAR_THREAD_ACTIVE_CLASS,
+          )}
+          title={
+            isBranch
+              ? `${t("sidebar.branchSession")} · ${t("thread.archiveItemHint")}`
+              : t("thread.archiveItemHint")
+          }
+          onContextMenu={(event) =>
+            openContextMenu(event, thread.id, thread.title, true)
+          }
+          onDoubleClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            void navigate({
+              to: "/workspaces/$workspaceId/threads/$threadId",
+              params: { workspaceId, threadId: thread.id },
+              search: { view: "chat" },
+            });
+          }}
+        >
+          {leading}
+          <span className="min-w-0 flex-1 truncate text-left">{thread.title}</span>
+        </div>
+      );
+    }
+
+    return (
+      <Link
+        to="/workspaces/$workspaceId/threads/$threadId"
+        params={{ workspaceId, threadId: thread.id }}
+        className={cn(SIDEBAR_THREAD_LINK_CLASS, "w-full gap-1.5")}
+        activeProps={{
+          className: cn(SIDEBAR_THREAD_ACTIVE_CLASS, "w-full gap-1.5"),
+        }}
+        title={
+          isBranch
+            ? `${t("sidebar.branchSession")} · ${t("thread.editTitleHint")}`
+            : t("thread.editTitleHint")
+        }
+        onContextMenu={(event) =>
+          openContextMenu(event, thread.id, thread.title, false)
+        }
+        onDoubleClick={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          beginEdit(thread.id, thread.title);
+        }}
+      >
+        {leading}
+        <span className="min-w-0 flex-1 truncate">{thread.title}</span>
+        {childCount > 0 && collapsed ? (
+          <span className="text-muted-foreground bg-muted/80 shrink-0 rounded px-1 text-[10px] tabular-nums">
+            {childCount}
+          </span>
+        ) : null}
+      </Link>
+    );
+  }
+
   const actionError =
     archive.error ?? restore.error ?? purge.error ?? create.error ?? rename.error;
   const archived = archivedQuery.data ?? [];
@@ -250,58 +440,19 @@ export function SidebarThreads({ workspaceId }: SidebarThreadsProps) {
 
       {isLoading ? (
         <p className="text-muted-foreground px-2 py-0.5 text-xs">{t("sidebar.loadingThreads")}</p>
-      ) : threads?.length ? (
-        <ul className="flex flex-col gap-0.5">
-          {threads.map((thread) => (
-            <li key={thread.id} className="min-w-0">
-              {editingId === thread.id ? (
-                <div className={cn(SIDEBAR_THREAD_LINK_CLASS, "cursor-text")}>
-                  <MessageSquare className="h-3.5 w-3.5 shrink-0" />
-                  <input
-                    ref={editInputRef}
-                    value={draft}
-                    maxLength={80}
-                    disabled={rename.isPending}
-                    aria-label={t("thread.editTitle")}
-                    className="border-input bg-background text-foreground focus-visible:ring-ring h-6 min-w-0 flex-1 rounded border px-1 text-xs outline-none focus-visible:ring-1"
-                    onChange={(event) => setDraft(event.target.value)}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter") {
-                        event.preventDefault();
-                        commitEdit(thread.id, thread.title);
-                      }
-                      if (event.key === "Escape") {
-                        event.preventDefault();
-                        cancelEdit();
-                      }
-                    }}
-                    onBlur={() => commitEdit(thread.id, thread.title)}
-                    onClick={(event) => event.stopPropagation()}
-                    onContextMenu={(event) => event.preventDefault()}
-                  />
-                </div>
-              ) : (
-                <Link
-                  to="/workspaces/$workspaceId/threads/$threadId"
-                  params={{ workspaceId, threadId: thread.id }}
-                  className={SIDEBAR_THREAD_LINK_CLASS}
-                  activeProps={{
-                    className: SIDEBAR_THREAD_ACTIVE_CLASS,
-                  }}
-                  title={t("thread.editTitleHint")}
-                  onContextMenu={(event) =>
-                    openContextMenu(event, thread.id, thread.title, false)
-                  }
-                  onDoubleClick={(event) => {
-                    event.preventDefault();
-                    event.stopPropagation();
-                    beginEdit(thread.id, thread.title);
-                  }}
-                >
-                  <MessageSquare className="h-3.5 w-3.5 shrink-0" />
-                  <span className="min-w-0 flex-1 truncate">{thread.title}</span>
-                </Link>
-              )}
+      ) : treeRows.length ? (
+        <ul className="flex flex-col gap-0.5" role="tree" aria-label={t("nav.threads")}>
+          {treeRows.map((node) => (
+            <li
+              key={node.thread.id}
+              className="min-w-0"
+              role="treeitem"
+              aria-level={node.depth + 1}
+              aria-expanded={
+                node.childCount > 0 ? !collapsedIds.has(node.thread.id) : undefined
+              }
+            >
+              {renderTreeRow(node, { archived: false })}
             </li>
           ))}
         </ul>
@@ -309,7 +460,7 @@ export function SidebarThreads({ workspaceId }: SidebarThreadsProps) {
         <p className="text-muted-foreground px-2 py-0.5 text-xs">{t("sidebar.noThreads")}</p>
       )}
 
-      {/* Compact archive: one-line toggle, list only when expanded */}
+      {/* Compact archive: tree when expanded; restore only via right-click menu */}
       <div className="border-border/50 mt-1.5 shrink-0 border-t pt-1.5">
         <button
           type="button"
@@ -353,26 +504,19 @@ export function SidebarThreads({ workspaceId }: SidebarThreadsProps) {
                 {t("thread.archiveEmpty")}
               </p>
             ) : (
-              <ul className="flex max-h-40 flex-col gap-0.5 overflow-y-auto">
-                {archived.map((thread) => (
-                  <li key={thread.id} className="min-w-0">
-                    <button
-                      type="button"
-                      className={cn(
-                        SIDEBAR_THREAD_LINK_CLASS,
-                        "text-muted-foreground w-full opacity-80",
-                      )}
-                      title={t("thread.archiveItemHint")}
-                      onContextMenu={(event) =>
-                        openContextMenu(event, thread.id, thread.title, true)
-                      }
-                      onClick={() => restore.mutate(thread.id)}
-                    >
-                      <Archive className="h-3.5 w-3.5 shrink-0 opacity-60" />
-                      <span className="min-w-0 flex-1 truncate text-left">
-                        {thread.title}
-                      </span>
-                    </button>
+              <ul
+                className="flex max-h-48 flex-col gap-0.5 overflow-y-auto"
+                role="tree"
+                aria-label={t("thread.archive")}
+              >
+                {archivedTreeRows.map((node) => (
+                  <li
+                    key={node.thread.id}
+                    className="min-w-0"
+                    role="treeitem"
+                    aria-level={node.depth + 1}
+                  >
+                    {renderTreeRow(node, { archived: true })}
                   </li>
                 ))}
               </ul>

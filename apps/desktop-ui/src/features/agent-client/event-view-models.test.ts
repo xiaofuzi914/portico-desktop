@@ -89,6 +89,24 @@ describe("event view models", () => {
     });
   });
 
+  it("renders branch context seeds as muted context, not run failures", () => {
+    const message: Message = {
+      id: "message-ctx" as Message["id"],
+      thread_id: "thread-1" as Message["thread_id"],
+      run_id: null,
+      role: "System",
+      content: "【从会话「父会话」划词发散】\n用户选中的关注点：\n「session」\n\n父会话摘要：…",
+      client_request_id: null,
+      created_at: "2026-07-07T00:00:00.000Z",
+    };
+
+    expect(mapMessageToBlock(message)).toMatchObject({
+      kind: "status",
+      title: "Context",
+      tone: "muted",
+    });
+  });
+
   it.each([
     ["User", "You", "default"],
     ["Assistant", "Assistant", "muted"],

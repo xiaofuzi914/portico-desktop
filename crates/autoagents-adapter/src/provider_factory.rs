@@ -2,11 +2,14 @@
 
 use crate::{AutoAgentsExecutor, tool_adapter::PorticoToolRegistry};
 use app_models::{
-    AgentRunId, AppError, ModelId, ProviderConfig, ProviderHealth, ProviderHealthStatus,
-    ProviderId, ProviderKind, RunModelSnapshot, ThreadId, WorkspaceId,
+    AgentRunId, AppError, ModelId, ModelInfo, ModelTier, ProviderConfig, ProviderHealth,
+    ProviderHealthStatus, ProviderId, ProviderKind, RunExecutionSpec, RunModelSnapshot,
+    ThinkingMode, ThreadId, WorkspaceId,
 };
 use app_runtime::ModelProviderRegistry;
-use app_runtime::{AgentExecutor, AgentExecutorResolver, ResolvedAgentExecutor};
+use app_runtime::{
+    AgentExecutor, AgentExecutorResolver, ResolvedAgentExecutor, RunExecutionSpecStore,
+};
 use app_security::SecretStore;
 use autoagents_llm::{LLMProvider, backends::openai, builder::LLMBuilder};
 use std::sync::Arc;
@@ -36,6 +39,7 @@ const fn default_model_for_kind(kind: ProviderKind) -> &'static str {
 const fn default_base_url_for_kind(kind: ProviderKind) -> Option<&'static str> {
     match kind {
         ProviderKind::Moonshot => Some("https://api.moonshot.cn/v1"),
+        // Official docs use https://api.deepseek.com (OpenAI-compatible client appends paths).
         ProviderKind::DeepSeek => Some("https://api.deepseek.com"),
         ProviderKind::Xai => Some("https://api.x.ai/v1"),
         ProviderKind::Groq => Some("https://api.groq.com/openai/v1"),
@@ -50,6 +54,88 @@ const fn default_base_url_for_kind(kind: ProviderKind) -> Option<&'static str> {
         | ProviderKind::Google
         | ProviderKind::AzureOpenAI => None,
     }
+}
+
+/// Normalize common provider base URL mistakes (trailing slash, optional /v1).
+#[must_use]
+pub fn normalize_provider_base_url(kind: ProviderKind, base_url: Option<String>) -> Option<String> {
+    let Some(raw) = base_url.filter(|s| !s.trim().is_empty()) else {
+        return default_base_url_for_kind(kind).map(str::to_owned);
+    };
+    let trimmed = raw.trim().trim_end_matches('/').to_owned();
+    if kind == ProviderKind::DeepSeek {
+        // Accept both api.deepseek.com and api.deepseek.com/v1.
+        if trimmed.eq_ignore_ascii_case("https://api.deepseek.com/v1")
+            || trimmed.eq_ignore_ascii_case("https://api.deepseek.com")
+        {
+            return Some("https://api.deepseek.com".to_owned());
+        }
+    }
+    Some(trimmed)
+}
+
+fn tier_candidates(kind: ProviderKind, tier: ModelTier) -> &'static [&'static str] {
+    match (kind, tier) {
+        (ProviderKind::DeepSeek, ModelTier::Fast) => &["deepseek-v4-flash", "deepseek-chat"],
+        (ProviderKind::DeepSeek, ModelTier::Strong) => {
+            &["deepseek-v4-pro", "deepseek-reasoner", "deepseek-chat"]
+        }
+        (ProviderKind::Moonshot, ModelTier::Fast) => {
+            &["kimi-k2-turbo-preview", "moonshot-v1-8k"]
+        }
+        (ProviderKind::Moonshot, ModelTier::Strong) => {
+            &["kimi-k2-0711-preview", "moonshot-v1-128k"]
+        }
+        (ProviderKind::OpenAI, ModelTier::Fast) => &["gpt-4.1-mini", "gpt-4.1-nano", "gpt-4o-mini"],
+        (ProviderKind::OpenAI, ModelTier::Strong) => &["gpt-4.1", "gpt-4o"],
+        (ProviderKind::Xai, ModelTier::Fast) => &["grok-3-mini"],
+        (ProviderKind::Xai, ModelTier::Strong) => &["grok-3"],
+        _ => &[],
+    }
+}
+
+fn resolve_thinking_for_spec(spec: &RunExecutionSpec) -> ThinkingMode {
+    let prefer = matches!(
+        (spec.model_tier, spec.role.as_str()),
+        (ModelTier::Strong, _)
+            | (_, "planner" | "reviewer" | "security-reviewer" | "reduce" | "synthesizer")
+    ) && !matches!(spec.role.as_str(), "explorer" | "tester");
+    spec.thinking_mode.resolve(prefer)
+}
+
+async fn pick_model_for_tier(
+    registry: &dyn ModelProviderRegistry,
+    provider: &ProviderConfig,
+    active: &ModelInfo,
+    tier: ModelTier,
+) -> Result<(ModelInfo, String), AppError> {
+    if matches!(tier, ModelTier::Balanced) {
+        return Ok((active.clone(), "inherit_active".to_owned()));
+    }
+    let candidates = tier_candidates(provider.kind, tier);
+    if candidates.is_empty() {
+        return Ok((
+            active.clone(),
+            format!("tier_fallback_active:{}", tier.as_str()),
+        ));
+    }
+    let models = registry.list_models(Some(provider.id)).await?;
+    for name in candidates {
+        if let Some(found) = models.iter().find(|m| m.model_name == *name) {
+            return Ok((
+                found.clone(),
+                format!("tier:{}@{}", tier.as_str(), provider.kind.as_str()),
+            ));
+        }
+    }
+    // Prefer candidate name even if not registered (provider may still accept it).
+    let mut synthetic = active.clone();
+    synthetic.model_name = candidates[0].to_owned();
+    synthetic.display_name = candidates[0].to_owned();
+    Ok((
+        synthetic,
+        format!("tier_name:{}@{}", tier.as_str(), candidates[0]),
+    ))
 }
 
 const fn is_openai_compatible(kind: ProviderKind) -> bool {
@@ -96,10 +182,25 @@ fn resolve_api_key(
     })
 }
 
+fn parse_reasoning_effort(
+    raw: Option<&str>,
+) -> Option<autoagents_llm::chat::ReasoningEffort> {
+    match raw.map(str::trim).map(str::to_ascii_lowercase).as_deref() {
+        Some("low") => Some(autoagents_llm::chat::ReasoningEffort::Low),
+        Some("medium") => Some(autoagents_llm::chat::ReasoningEffort::Medium),
+        Some("high") | Some("xhigh") | Some("max") | Some("ultra") => {
+            // AutoAgents only exposes low/medium/high; map stronger tiers to high.
+            Some(autoagents_llm::chat::ReasoningEffort::High)
+        }
+        _ => None,
+    }
+}
+
 fn build_openai_compatible_provider(
     config: &ProviderConfig,
     model_name: Option<&str>,
     api_key: &str,
+    reasoning_effort: Option<&str>,
 ) -> Result<Arc<dyn LLMProvider>, AppError> {
     // Floor at 60s so legacy 30s configs still work for tool-using agents even
     // before migration runs; prefer the configured value when higher.
@@ -130,8 +231,19 @@ fn build_openai_compatible_provider(
         builder = builder.model(default_model_for_kind(config.kind));
     }
 
+    let base_url = normalize_provider_base_url(config.kind, base_url);
     if let Some(url) = base_url {
         builder = builder.base_url(url);
+    }
+
+    // Codex / GPT-5 Responses path honors reasoning_effort; harmless for others.
+    if matches!(
+        config.kind,
+        ProviderKind::OpenAI | ProviderKind::OpenRouter | ProviderKind::AzureOpenAI
+    ) {
+        if let Some(effort) = parse_reasoning_effort(reasoning_effort) {
+            builder = builder.reasoning_effort(effort);
+        }
     }
 
     let provider = builder.build().map_err(|e| AppError::Internal {
@@ -152,9 +264,19 @@ pub fn build_llm_provider(
     model_name: Option<&str>,
     secret_store: &dyn SecretStore,
 ) -> Result<Arc<dyn LLMProvider>, AppError> {
+    build_llm_provider_with_options(config, model_name, secret_store, None)
+}
+
+/// Build an LLM provider with optional run-level options (reasoning effort, …).
+pub fn build_llm_provider_with_options(
+    config: &ProviderConfig,
+    model_name: Option<&str>,
+    secret_store: &dyn SecretStore,
+    reasoning_effort: Option<&str>,
+) -> Result<Arc<dyn LLMProvider>, AppError> {
     if is_openai_compatible(config.kind) {
         let api_key = resolve_api_key(config, secret_store)?;
-        return build_openai_compatible_provider(config, model_name, &api_key);
+        return build_openai_compatible_provider(config, model_name, &api_key, reasoning_effort);
     }
 
     let timeout_seconds = (config.timeout_ms / 1000).max(60);
@@ -201,6 +323,52 @@ pub fn build_llm_provider(
         | ProviderKind::Ollama
         | ProviderKind::Custom => unreachable!("openai-compatible providers are handled above"),
     }
+}
+
+/// ChatGPT Codex backend (`chatgpt.com/backend-api/codex`) requires `stream: true`
+/// on `/responses`, so the generic non-streaming health chat probe always fails.
+/// Probe the lightweight models list instead when the provider is configured for it.
+fn is_codex_chatgpt_gateway(base_url: Option<&str>) -> bool {
+    base_url
+        .map(|u| {
+            let lower = u.trim().trim_end_matches('/').to_ascii_lowercase();
+            lower.contains("chatgpt.com/backend-api/codex")
+        })
+        .unwrap_or(false)
+}
+
+async fn probe_codex_chatgpt_gateway(
+    api_key: &str,
+    base_url: &str,
+    account_id: Option<&str>,
+    timeout_duration: Duration,
+) -> Result<(), AppError> {
+    let root = base_url.trim().trim_end_matches('/');
+    let url = format!("{root}/models?client_version=1.0.0");
+    let client = reqwest::Client::builder()
+        .timeout(timeout_duration)
+        .build()
+        .map_err(|e| AppError::Internal {
+            message: format!("PROVIDER_HEALTH_FAILED: build http client: {e}"),
+        })?;
+    let mut req = client.get(&url).bearer_auth(api_key);
+    if let Some(account) = account_id.filter(|s| !s.is_empty()) {
+        req = req.header("ChatGPT-Account-ID", account);
+    }
+    let response = req.send().await.map_err(|e| AppError::Internal {
+        message: format!("PROVIDER_HEALTH_FAILED: codex models probe: {e}"),
+    })?;
+    let status = response.status();
+    if status.is_success() {
+        return Ok(());
+    }
+    let body = response.text().await.unwrap_or_default();
+    let snippet: String = body.chars().take(180).collect();
+    Err(AppError::Internal {
+        message: format!(
+            "PROVIDER_HEALTH_FAILED: codex models probe HTTP {status}: {snippet}"
+        ),
+    })
 }
 
 async fn probe_llm_provider(
@@ -358,30 +526,62 @@ pub async fn check_provider_health(
             reason: "health-check model does not belong to provider".to_owned(),
         });
     }
-    let health = match build_llm_provider(
-        &provider_config,
-        Some(model.model_name.as_str()),
-        secret_store.as_ref(),
-    ) {
-        Ok(provider) => {
-            let configured_timeout = Duration::from_millis(provider_config.timeout_ms);
-            let probe_timeout = PROVIDER_HEALTH_TIMEOUT
-                .min(configured_timeout)
-                .saturating_sub(Duration::from_millis(100))
-                .max(Duration::from_millis(100));
-            match probe_llm_provider(provider.as_ref(), &model.model_name, probe_timeout).await {
-                Ok(()) => ProviderHealth {
-                    provider_id,
-                    model_id,
-                    status: ProviderHealthStatus::Ready,
-                    error_code: None,
-                    message: Some("Provider and model are ready.".to_owned()),
-                    checked_at: chrono::Utc::now(),
-                },
-                Err(error) => safe_health_failure(provider_id, model_id, &error),
+    let configured_timeout = Duration::from_millis(provider_config.timeout_ms);
+    let probe_timeout = PROVIDER_HEALTH_TIMEOUT
+        .min(configured_timeout)
+        .saturating_sub(Duration::from_millis(100))
+        .max(Duration::from_millis(100));
+
+    // Codex ChatGPT OAuth uses a Responses gateway that rejects non-streaming
+    // chat. Health-check via the models endpoint instead of provider.chat.
+    let health = if is_codex_chatgpt_gateway(provider_config.base_url.as_deref()) {
+        match resolve_api_key(&provider_config, secret_store.as_ref()) {
+            Ok(api_key) => {
+                let account = provider_config
+                    .default_headers
+                    .get("ChatGPT-Account-ID")
+                    .map(String::as_str);
+                let base = provider_config
+                    .base_url
+                    .as_deref()
+                    .unwrap_or("https://chatgpt.com/backend-api/codex");
+                match probe_codex_chatgpt_gateway(&api_key, base, account, probe_timeout).await {
+                    Ok(()) => ProviderHealth {
+                        provider_id,
+                        model_id,
+                        status: ProviderHealthStatus::Ready,
+                        error_code: None,
+                        message: Some(
+                            "Codex ChatGPT session is reachable (models list OK).".to_owned(),
+                        ),
+                        checked_at: chrono::Utc::now(),
+                    },
+                    Err(error) => safe_health_failure(provider_id, model_id, &error),
+                }
             }
+            Err(error) => safe_health_failure(provider_id, model_id, &error),
         }
-        Err(error) => safe_health_failure(provider_id, model_id, &error),
+    } else {
+        match build_llm_provider(
+            &provider_config,
+            Some(model.model_name.as_str()),
+            secret_store.as_ref(),
+        ) {
+            Ok(provider) => {
+                match probe_llm_provider(provider.as_ref(), &model.model_name, probe_timeout).await {
+                    Ok(()) => ProviderHealth {
+                        provider_id,
+                        model_id,
+                        status: ProviderHealthStatus::Ready,
+                        error_code: None,
+                        message: Some("Provider and model are ready.".to_owned()),
+                        checked_at: chrono::Utc::now(),
+                    },
+                    Err(error) => safe_health_failure(provider_id, model_id, &error),
+                }
+            }
+            Err(error) => safe_health_failure(provider_id, model_id, &error),
+        }
     };
     registry.record_provider_health(health.clone()).await?;
     Ok(health)
@@ -393,6 +593,7 @@ pub struct RegistryExecutorResolver {
     tools: Arc<PorticoToolRegistry>,
     secret_store: Arc<dyn SecretStore>,
     security: Option<Arc<app_runtime::SecurityContext>>,
+    run_specs: Option<Arc<RunExecutionSpecStore>>,
 }
 
 impl RegistryExecutorResolver {
@@ -407,6 +608,7 @@ impl RegistryExecutorResolver {
             tools,
             secret_store,
             security: None,
+            run_specs: None,
         }
     }
 
@@ -414,6 +616,13 @@ impl RegistryExecutorResolver {
     #[must_use]
     pub fn with_security(mut self, security: Arc<app_runtime::SecurityContext>) -> Self {
         self.security = Some(security);
+        self
+    }
+
+    /// Bind multi-agent / role execution specs (tool allowlist + model tier).
+    #[must_use]
+    pub fn with_run_specs(mut self, store: Arc<RunExecutionSpecStore>) -> Self {
+        self.run_specs = Some(store);
         self
     }
 }
@@ -426,27 +635,75 @@ impl AgentExecutorResolver for RegistryExecutorResolver {
         thread_id: ThreadId,
         run_id: AgentRunId,
     ) -> Result<ResolvedAgentExecutor, AppError> {
+        let role_spec = self
+            .run_specs
+            .as_ref()
+            .and_then(|store| store.take(run_id));
+
         let selection = self.registry.resolve_active_model(workspace_id, thread_id).await?;
         let provider = self.registry.get_provider(selection.provider_id).await?;
-        let model = self.registry.get_model(selection.model_id).await?;
-        // If the user already configured credentials, do not hard-block the run only because
-        // they never clicked "Test connection" (or the cached check expired / was invalidated).
-        // Re-probe automatically and persist the result.
+        let active_model = self.registry.get_model(selection.model_id).await?;
+
+        let (model, selection_reason, thinking_mode) = if let Some(spec) = &role_spec {
+            let (picked, reason) =
+                pick_model_for_tier(self.registry.as_ref(), &provider, &active_model, spec.model_tier)
+                    .await?;
+            let thinking = resolve_thinking_for_spec(spec);
+            (picked, reason, thinking)
+        } else {
+            (
+                active_model.clone(),
+                "inherit_active".to_owned(),
+                ThinkingMode::Auto,
+            )
+        };
+
+        // Health-check against the active registered model id when possible.
+        let health_model_id = if model.id == active_model.id {
+            model.id
+        } else {
+            // Synthetic tier pick may not be in DB; probe active credentials via active model.
+            active_model.id
+        };
         ensure_provider_ready_for_run(
             Arc::clone(&self.registry),
             Arc::clone(&self.secret_store),
             provider.id,
-            model.id,
+            health_model_id,
         )
         .await?;
-        let llm = build_llm_provider(
+
+        let reasoning = role_spec
+            .as_ref()
+            .and_then(|s| s.reasoning_effort.as_deref());
+        let llm = build_llm_provider_with_options(
             &provider,
             Some(model.model_name.as_str()),
             self.secret_store.as_ref(),
+            reasoning,
         )?;
-        let mut executor = AutoAgentsExecutor::new(llm, Arc::clone(&self.tools));
+
+        let tools = if let Some(spec) = &role_spec {
+            Arc::new(self.tools.filtered_for_allowlist(&spec.allowed_tools))
+        } else {
+            Arc::clone(&self.tools)
+        };
+
+        let mut executor = AutoAgentsExecutor::new(llm, tools);
         if let Some(security) = &self.security {
             executor = executor.with_security(security.clone());
+        }
+        if let Some(spec) = role_spec {
+            executor = executor.with_role_spec(spec, thinking_mode);
+        } else {
+            // No role envelope: still honor resolved thinking for single-agent defaults.
+            executor = executor.with_role_spec(
+                RunExecutionSpec {
+                    thinking_mode,
+                    ..RunExecutionSpec::single_agent_default()
+                },
+                thinking_mode,
+            );
         }
         let executor = Arc::new(executor) as Arc<dyn AgentExecutor>;
         Ok(ResolvedAgentExecutor {
@@ -459,6 +716,9 @@ impl AgentExecutorResolver for RegistryExecutorResolver {
                 model_name: model.model_name,
                 provider_config_updated_at: provider.updated_at,
                 created_at: chrono::Utc::now(),
+                selection_reason: Some(selection_reason),
+                thinking_mode: Some(thinking_mode.as_str().to_owned()),
+                thinking_degraded: false,
             },
         })
     }

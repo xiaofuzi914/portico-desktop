@@ -23,6 +23,11 @@ import {
   readSidebarCollapsed,
   writeSidebarCollapsed,
 } from "./shell-layout-state";
+import {
+  SIDEBAR_LEAF_ACTIVE_CLASS,
+  SIDEBAR_LEAF_CLASS,
+  SIDEBAR_SECTION_TITLE_CLASS,
+} from "./sidebar-density";
 
 export function AppSidebar() {
   const params = useParams({ strict: false }) as { workspaceId?: string };
@@ -85,8 +90,8 @@ export function AppSidebar() {
 
       <div
         className={cn(
-          "flex flex-1 flex-col overflow-y-auto py-3",
-          collapsed ? "items-center px-1.5" : "px-3",
+          "flex min-h-0 flex-1 flex-col",
+          collapsed ? "items-center overflow-y-auto px-1.5 py-2" : "px-2.5 py-2",
         )}
       >
         {collapsed ? (
@@ -95,7 +100,7 @@ export function AppSidebar() {
               <SidebarProjectActions compact />
               <SidebarProjects activeWorkspaceId={workspaceId} compact />
             </div>
-            <div className="mt-auto flex flex-col items-center gap-1 pt-4">
+            <div className="mt-auto flex flex-col items-center gap-1 pt-3">
               <button
                 type="button"
                 className="text-muted-foreground hover:bg-sidebar-accent hover:text-foreground focus-visible:ring-ring flex h-8 w-8 items-center justify-center rounded-md focus-visible:ring-2 focus-visible:outline-none"
@@ -109,42 +114,41 @@ export function AppSidebar() {
             </div>
           </>
         ) : (
-          <>
-            {/*
-              Top block shrinks/scrolls if long; bottom nav stays compact.
-              Avoid stretching session/archive rows into the mt-auto gap.
-            */}
-            <div className="flex min-h-0 flex-1 flex-col gap-5">
-              <div className="min-h-0 shrink-0 space-y-5 overflow-y-auto">
-                <SidebarSection
-                  icon={Folder}
-                  title={t("nav.projects")}
-                  action={<SidebarProjectActions />}
-                >
-                  <SidebarProjects activeWorkspaceId={workspaceId} />
+          /*
+            Top: projects + threads (scroll when long).
+            Bottom: capabilities / operations / settings — compact, not stretched by empty space.
+          */
+          <div className="flex min-h-0 flex-1 flex-col">
+            <div className="min-h-0 flex-1 space-y-3 overflow-y-auto pb-2">
+              <SidebarSection
+                icon={Folder}
+                title={t("nav.projects")}
+                action={<SidebarProjectActions />}
+              >
+                <SidebarProjects activeWorkspaceId={workspaceId} />
+              </SidebarSection>
+
+              {workspaceId && (
+                <SidebarSection icon={MessageSquare} title={t("nav.threads")}>
+                  <SidebarThreads workspaceId={workspaceId} />
                 </SidebarSection>
-
-                {workspaceId && (
-                  <SidebarSection icon={MessageSquare} title={t("nav.threads")}>
-                    <SidebarThreads workspaceId={workspaceId} />
-                  </SidebarSection>
-                )}
-              </div>
-
-              <div className="mt-auto shrink-0 space-y-2 border-t pt-3">
-                {navigationSections.map((section) => (
-                  <CollapsibleLinkGroup
-                    key={section.id}
-                    title={t(section.labelKey)}
-                    links={section.links}
-                  />
-                ))}
-                <NavLink to="/settings" icon={Settings}>
-                  {t("common.settings")}
-                </NavLink>
-              </div>
+              )}
             </div>
-          </>
+
+            <div className="mt-auto shrink-0 space-y-0.5 border-t border-border/60 pt-2">
+              {navigationSections.map((section) => (
+                <CollapsibleLinkGroup
+                  key={section.id}
+                  icon={section.icon}
+                  title={t(section.labelKey)}
+                  links={section.links}
+                />
+              ))}
+              <NavLink to="/settings" icon={Settings}>
+                {t("common.settings")}
+              </NavLink>
+            </div>
+          </div>
         )}
       </div>
     </aside>
@@ -163,23 +167,25 @@ function SidebarSection({
   children: React.ReactNode;
 }) {
   return (
-    <div className="space-y-2">
-      <div className="flex h-7 items-center justify-between gap-2 px-2">
-        <div className="text-muted-foreground flex min-w-0 items-center gap-2 text-[11px] font-semibold tracking-wide uppercase">
-          <Icon className="h-3.5 w-3.5 shrink-0" />
+    <div className="space-y-0.5">
+      <div className="flex h-8 items-center justify-between gap-1 px-1.5">
+        <div className={cn(SIDEBAR_SECTION_TITLE_CLASS, "min-w-0 flex-1 gap-2")}>
+          <Icon className="h-4 w-4 shrink-0 opacity-80" />
           <span className="min-w-0 truncate">{title}</span>
         </div>
-        {action}
+        {action ? <div className="flex h-7 w-7 shrink-0 items-center justify-center">{action}</div> : null}
       </div>
-      {children}
+      <div className="pl-0.5">{children}</div>
     </div>
   );
 }
 
 function CollapsibleLinkGroup({
+  icon: Icon,
   title,
   links,
 }: {
+  icon: LucideIcon;
   title: string;
   links: { to: string; labelKey: string; icon: LucideIcon }[];
 }) {
@@ -187,11 +193,19 @@ function CollapsibleLinkGroup({
 
   return (
     <details className="group">
-      <summary className="text-muted-foreground hover:text-foreground flex h-8 cursor-pointer list-none items-center justify-between rounded-md px-2 text-[11px] font-semibold tracking-wide uppercase">
-        <span>{title}</span>
-        <ChevronRight className="h-3.5 w-3.5 transition-transform group-open:rotate-90" />
+      <summary
+        className={cn(
+          SIDEBAR_SECTION_TITLE_CLASS,
+          "hover:bg-sidebar-accent/60 hover:text-foreground cursor-pointer list-none justify-between rounded-md px-1.5 [&::-webkit-details-marker]:hidden",
+        )}
+      >
+        <span className="flex min-w-0 items-center gap-2">
+          <Icon className="h-4 w-4 shrink-0 opacity-80" />
+          <span className="min-w-0 truncate">{title}</span>
+        </span>
+        <ChevronRight className="text-muted-foreground h-3.5 w-3.5 shrink-0 transition-transform group-open:rotate-90" />
       </summary>
-      <ul className="mt-1 space-y-0.5 pb-2">
+      <ul className="mt-0.5 space-y-0.5 pb-1 pl-0.5">
         {links.map((link) => (
           <li key={link.to}>
             <NavLink to={link.to} icon={link.icon}>
@@ -216,15 +230,13 @@ function NavLink({
   return (
     <Link
       to={to}
-      className="text-muted-foreground hover:bg-sidebar-accent hover:text-foreground group flex h-8 items-center gap-2 rounded-md px-2 text-sm transition-colors"
+      className={SIDEBAR_LEAF_CLASS}
       activeProps={{
-        className:
-          "flex h-8 items-center gap-2 rounded-md px-2 text-sm bg-sidebar-accent font-medium text-foreground",
+        className: SIDEBAR_LEAF_ACTIVE_CLASS,
       }}
     >
-      <Icon className="h-4 w-4 shrink-0" />
+      <Icon className="h-3.5 w-3.5 shrink-0" />
       <span className="min-w-0 flex-1 truncate">{children}</span>
-      <ChevronRight className="h-3.5 w-3.5 opacity-0 transition-opacity group-hover:opacity-60" />
     </Link>
   );
 }

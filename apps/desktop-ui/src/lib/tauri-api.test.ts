@@ -167,6 +167,8 @@ describe("tauri-api transport contract", () => {
       threadId,
       content: "second turn",
       clientRequestId: "request-2",
+      thinkingMode: null,
+      reasoningEffort: null,
     });
 
     mockOk([]);

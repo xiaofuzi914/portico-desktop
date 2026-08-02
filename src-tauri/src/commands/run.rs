@@ -53,11 +53,19 @@ pub async fn send_message(
     thread_id: ThreadId,
     content: String,
     client_request_id: Option<String>,
+    thinking_mode: Option<String>,
+    reasoning_effort: Option<String>,
 ) -> Result<ApiResponse<AgentRun>, String> {
     Ok(
         match state
             .runtime
-            .send_message(thread_id, &content, client_request_id.as_deref())
+            .send_message_with_options(
+                thread_id,
+                &content,
+                client_request_id.as_deref(),
+                thinking_mode.as_deref(),
+                reasoning_effort.as_deref(),
+            )
             .await
         {
             Ok(run) => ApiResponse::ok(run),

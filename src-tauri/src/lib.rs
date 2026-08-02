@@ -226,15 +226,6 @@ pub fn run() {
                 let tools = Arc::new(PorticoToolRegistry::new());
                 tools.register_safe_builtin_definitions();
 
-                let executor_resolver = Arc::new(
-                    RegistryExecutorResolver::new(
-                        registry.clone(),
-                        Arc::clone(&tools),
-                        secret_store.clone(),
-                    )
-                    .with_security(security.clone()),
-                );
-
                 let embedding =
                     embedding_setup::build_embedding_provider(registry.clone(), &secret_store)
                         .await?;
@@ -242,13 +233,23 @@ pub fn run() {
                 let runtime = PorticoRuntimeHandle::new(
                     storage,
                     event_bus,
-                    registry,
+                    registry.clone(),
                     None,
                     Some(embedding),
                 )
                 .await?
-                .with_security(security.clone())
-                .with_executor_resolver(executor_resolver);
+                .with_security(security.clone());
+
+                let executor_resolver = Arc::new(
+                    RegistryExecutorResolver::new(
+                        registry,
+                        Arc::clone(&tools),
+                        secret_store.clone(),
+                    )
+                    .with_security(security.clone())
+                    .with_run_specs(runtime.run_spec_store()),
+                );
+                let runtime = runtime.with_executor_resolver(executor_resolver);
                 runtime.recover_tool_execution().await?;
 
                 // Do not discover or spawn configured MCP servers during startup.
@@ -277,6 +278,8 @@ pub fn run() {
                 OrchestrationService::new(Arc::new(runtime.clone()), AgentRegistry::new())
                     .with_pattern_ports(pattern_source, pattern_sink),
             );
+            // Multi-agent sessions left Running/Planning after a crash become Interrupted.
+            let _ = tauri::async_runtime::block_on(orchestration.reconcile_after_restart());
             let notification_center = Arc::new(NotificationCenter::new(runtime.storage().clone()));
 
             let notification_center_for_bridge = notification_center.clone();
@@ -470,6 +473,9 @@ pub fn run() {
             commands::orchestrator::list_workflow_patterns,
             commands::orchestrator::preview_orchestration_plan,
             commands::orchestrator::start_orchestration,
+            commands::orchestrator::retry_orchestration_stage,
+            commands::orchestrator::get_orchestration_progress,
+            commands::orchestrator::continue_orchestration,
             commands::orchestrator::list_bundled_workflows,
             commands::orchestrator::list_workflow_templates,
             commands::orchestrator::save_workflow_template,

@@ -1,13 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Bot, Folder, MessageSquare, Pencil } from "lucide-react";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { Folder, MessageSquare, Pencil } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import { listThreads, listWorkspaces, updateThreadTitle } from "@/lib/tauri-api";
 import { cn } from "@/lib/utils";
 import type { AgentRunId, AgentRunStatus, ThreadId, WorkspaceId } from "@/lib/schemas";
 import { useTranslation } from "@/lib/i18n-react";
 import { workspaceKeys } from "@/lib/query-keys";
 import { typography } from "@/components/ui/typography";
-import { ThreadModelSelector } from "./thread-model-selector";
 
 interface ThreadHeaderProps {
   workspaceId: WorkspaceId;
@@ -189,11 +188,6 @@ export function ThreadHeader({ workspaceId, threadId, runId, status }: ThreadHea
 
       <div className="hidden shrink-0 items-center gap-2 lg:flex">
         {status && <RunStatusBadge status={status} />}
-        <MetaPill
-          icon={Bot}
-          label={t("agent.model")}
-          value={<ThreadModelSelector workspaceId={workspaceId} threadId={threadId} />}
-        />
         {runId && (
           <span className="text-muted-foreground bg-muted/40 max-w-32 truncate rounded-md border px-2 py-1 font-mono text-xs">
             {runId}
@@ -201,23 +195,5 @@ export function ThreadHeader({ workspaceId, threadId, runId, status }: ThreadHea
         )}
       </div>
     </header>
-  );
-}
-
-function MetaPill({
-  icon: Icon,
-  label,
-  value,
-}: {
-  icon: typeof Bot;
-  label: string;
-  value: ReactNode;
-}) {
-  return (
-    <span className="text-muted-foreground bg-muted/30 flex h-7 items-center gap-1 rounded-md border px-2 text-xs">
-      <Icon className="h-3.5 w-3.5" />
-      <span>{label}:</span>
-      <span className="text-foreground max-w-56 truncate">{value}</span>
-    </span>
   );
 }

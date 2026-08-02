@@ -1,7 +1,10 @@
 //! Product-owned durable model/tool loop backed by `AutoAgents` LLM providers.
 
 use crate::tool_adapter::PorticoToolRegistry;
-use app_models::{AgentRunId, AppError, ThreadId, ToolInvocationStatus, WorkspaceId};
+use app_models::{
+    AgentRunId, AppError, RunExecutionSpec, ThinkingMode, ThreadId, ToolInvocationStatus,
+    WorkspaceId,
+};
 use app_runtime::{
     AgentExecutionOutcome, AgentExecutor, ApprovalBroker, EventBus, PolicyGate,
     PreparedToolRequest, RuntimeEvent, SafeToolExecutor, Storage, ToolGateOutcome,
@@ -36,6 +39,9 @@ pub struct AutoAgentsExecutor {
     llm: Arc<dyn LLMProvider>,
     tools: Arc<PorticoToolRegistry>,
     security: Arc<SecurityContext>,
+    /// When set, only these tools may be advertised/executed (multi-agent roles).
+    role_spec: Option<RunExecutionSpec>,
+    thinking_mode: ThinkingMode,
 }
 
 impl AutoAgentsExecutor {
@@ -51,6 +57,8 @@ impl AutoAgentsExecutor {
                 Arc::new(app_security::DefaultNetworkPolicy::new()),
                 Arc::new(app_security::MemoryAuditLogger::new()),
             )),
+            role_spec: None,
+            thinking_mode: ThinkingMode::Auto,
         }
     }
 
@@ -59,6 +67,56 @@ impl AutoAgentsExecutor {
     pub fn with_security(mut self, security: Arc<SecurityContext>) -> Self {
         self.security = security;
         self
+    }
+
+    /// Restrict tools and apply thinking directive for a multi-agent role run.
+    #[must_use]
+    pub fn with_role_spec(mut self, spec: RunExecutionSpec, thinking: ThinkingMode) -> Self {
+        self.role_spec = Some(spec);
+        self.thinking_mode = thinking;
+        self
+    }
+
+    fn enforce_role_tool(&self, tool_name: &str, arguments: &Value) -> Result<(), AppError> {
+        let Some(spec) = &self.role_spec else {
+            return Ok(());
+        };
+        if tool_name == "git" {
+            let sub = arguments
+                .get("subcommand")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let write_action = matches!(sub, "add" | "commit");
+            if write_action {
+                if !spec.allowed_tools.iter().any(|t| t == "git:write") {
+                    return Err(AppError::PermissionDenied {
+                        reason: format!(
+                            "ROLE_TOOL_DENIED: role `{}` cannot use git write ({sub})",
+                            spec.role
+                        ),
+                    });
+                }
+                return Ok(());
+            }
+            if !spec.allows_tool("git") {
+                return Err(AppError::PermissionDenied {
+                    reason: format!(
+                        "ROLE_TOOL_DENIED: role `{}` cannot use tool `{tool_name}`",
+                        spec.role
+                    ),
+                });
+            }
+            return Ok(());
+        }
+        if !spec.allows_tool(tool_name) {
+            return Err(AppError::PermissionDenied {
+                reason: format!(
+                    "ROLE_TOOL_DENIED: role `{}` cannot use tool `{tool_name}`",
+                    spec.role
+                ),
+            });
+        }
+        Ok(())
     }
 }
 
@@ -81,19 +139,27 @@ impl AgentExecutor for AutoAgentsExecutor {
         let gate = PolicyGate::new(storage.clone(), self.security.clone());
         let broker = ApprovalBroker::new(storage.clone());
         let safe_executor = SafeToolExecutor::new(gate.clone());
-        let mut messages = load_messages(storage.as_ref(), run_id, message).await?;
+        let mut effective_thinking = self.thinking_mode;
+        let mut thinking_degraded = false;
+        let mut messages =
+            load_messages_with_thinking(storage.as_ref(), run_id, message, effective_thinking)
+                .await?;
         hydrate_completed_invocations(storage.as_ref(), run_id, &mut messages).await?;
         let tools = self.tools.llm_tools();
+        let max_steps = self
+            .role_spec
+            .as_ref()
+            .map_or(MAX_TOOL_STEPS, |s| i64::from(s.max_tool_steps).max(1));
         // Timeline sequence continues across approval resume.
         let mut seq = next_event_sequence(storage.as_ref(), run_id).await;
 
-        for step in 0..MAX_TOOL_STEPS {
+        for step in 0..max_steps {
             if token.is_cancelled() {
                 return Ok(AgentExecutionOutcome::Completed(String::new()));
             }
             save_messages(storage.as_ref(), run_id, &messages, step).await?;
             let llm_started = Instant::now();
-            let (text, calls, usage) = stream_or_complete_chat(
+            let chat_result = stream_or_complete_chat(
                 self.llm.as_ref(),
                 &messages,
                 &tools,
@@ -102,7 +168,53 @@ impl AgentExecutor for AutoAgentsExecutor {
                 event_bus.as_ref(),
                 &token,
             )
-            .await?;
+            .await;
+            let (text, calls, usage) = match chat_result {
+                Ok(v) => v,
+                Err(error)
+                    if !thinking_degraded
+                        && matches!(effective_thinking, ThinkingMode::On | ThinkingMode::Auto)
+                        && is_thinking_related_failure(&error) =>
+                {
+                    // One-shot degrade: turn thinking off and retry this step.
+                    thinking_degraded = true;
+                    effective_thinking = ThinkingMode::Off;
+                    // Best-effort: surface degrade on durable snapshot.
+                    // (Registry is not injected here; runner/snapshot may already exist.)
+                    let _ = storage
+                        .append_event(
+                            run_id,
+                            thread_id,
+                            seq,
+                            "thinking.degraded",
+                            json!({
+                                "from": self.thinking_mode.as_str(),
+                                "to": "off",
+                                "reason": error.to_string(),
+                            }),
+                        )
+                        .await;
+                    seq += 1;
+                    // Rewrite first user message prefix if present.
+                    if let Some(first) = messages.first_mut() {
+                        first.content = apply_thinking_prefix(
+                            &strip_thinking_prefix(&first.content),
+                            ThinkingMode::Off,
+                        );
+                    }
+                    stream_or_complete_chat(
+                        self.llm.as_ref(),
+                        &messages,
+                        &tools,
+                        run_id,
+                        thread_id,
+                        event_bus.as_ref(),
+                        &token,
+                    )
+                    .await?
+                }
+                Err(error) => return Err(error),
+            };
             let llm_duration_ms = elapsed_ms(llm_started);
             if let Some(usage) = usage {
                 let _ = storage
@@ -175,6 +287,24 @@ impl AgentExecutor for AutoAgentsExecutor {
                         timestamp: chrono::Utc::now(),
                     })
                     .await?;
+                if let Err(error) = self.enforce_role_tool(&call.function.name, &arguments) {
+                    let result = tool_error_result(error.to_string());
+                    record_tool_exchange(
+                        storage.as_ref(),
+                        run_id,
+                        thread_id,
+                        &mut seq,
+                        step,
+                        &call,
+                        arguments,
+                        &result,
+                        None,
+                        0,
+                    )
+                    .await;
+                    messages.push(tool_result_message(&call, &result)?);
+                    continue;
+                }
                 let prepared = match prepared_request(&call, arguments.clone(), &self.tools) {
                     Ok(prepared) => prepared,
                     Err(error) => {
@@ -388,6 +518,64 @@ async fn load_messages(
         }
         None => Ok(vec![ChatMessage::user().content(message).build()]),
     }
+}
+
+async fn load_messages_with_thinking(
+    storage: &dyn Storage,
+    run_id: AgentRunId,
+    message: &str,
+    thinking: ThinkingMode,
+) -> Result<Vec<ChatMessage>, AppError> {
+    let prefixed = apply_thinking_prefix(message, thinking);
+    load_messages(storage, run_id, &prefixed).await
+}
+
+fn thinking_prefix(mode: ThinkingMode) -> &'static str {
+    match mode {
+        ThinkingMode::On => {
+            "[Thinking: ON] Reason carefully before answering. Prefer thorough analysis.\n\n"
+        }
+        ThinkingMode::Off => {
+            "[Thinking: OFF] Respond directly and concisely. Skip extended chain-of-thought.\n\n"
+        }
+        ThinkingMode::Auto => "",
+    }
+}
+
+fn apply_thinking_prefix(message: &str, mode: ThinkingMode) -> String {
+    let prefix = thinking_prefix(mode);
+    if prefix.is_empty() {
+        message.to_owned()
+    } else if message.starts_with("[Thinking:") {
+        format!("{prefix}{}", strip_thinking_prefix(message))
+    } else {
+        format!("{prefix}{message}")
+    }
+}
+
+fn strip_thinking_prefix(message: &str) -> String {
+    let mut rest = message;
+    for p in [
+        "[Thinking: ON] Reason carefully before answering. Prefer thorough analysis.\n\n",
+        "[Thinking: OFF] Respond directly and concisely. Skip extended chain-of-thought.\n\n",
+    ] {
+        if let Some(stripped) = rest.strip_prefix(p) {
+            rest = stripped;
+        }
+    }
+    rest.to_owned()
+}
+
+fn is_thinking_related_failure(error: &AppError) -> bool {
+    let raw = error.to_string().to_ascii_lowercase();
+    raw.contains("thinking")
+        || raw.contains("reasoning")
+        || raw.contains("tool")
+        || raw.contains("timeout")
+        || raw.contains("invalid")
+        || raw.contains("400")
+        || raw.contains("unstable")
+        || raw.contains("content_filter")
 }
 
 async fn save_messages(

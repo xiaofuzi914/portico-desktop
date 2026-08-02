@@ -50,6 +50,12 @@ export type BoardStageView = {
   maxIterations: number | null;
   /** Loop: body stage ids. */
   bodyStageIds: string[];
+  /** Model tier / thinking from execution_spec when present. */
+  modelTier: string | null;
+  thinkingMode: string | null;
+  allowedTools: string[];
+  canRetry: boolean;
+  attempt: number;
 };
 
 export type BoardTaskView = {
@@ -144,7 +150,9 @@ export function filterBoardList(
     if (filter === "multi") return item.kind === "orchestration";
     if (filter === "single") return item.kind === "run";
     if (filter === "active") return isActive(item.status);
-    if (filter === "failed") return item.status === "Failed";
+    if (filter === "failed") {
+      return item.status === "Failed" || item.status === "PartialCompleted";
+    }
     return true;
   });
 }
@@ -162,6 +170,8 @@ function mapTask(t: OrchestrationStageTask): BoardTaskView {
 function mapStage(s: OrchestrationStage): BoardStageView {
   const tasks = (s.tasks ?? []).map(mapTask);
   const completedTasks = tasks.filter((t) => t.status === "Completed").length;
+  const attempt = Math.max(1, ...(s.tasks ?? []).map((t) => t.attempt ?? 1));
+  const spec = s.execution_spec;
   return {
     id: s.id,
     kind: s.kind,
@@ -176,6 +186,14 @@ function mapStage(s: OrchestrationStage): BoardStageView {
     currentIteration: s.current_iteration ?? null,
     maxIterations: s.max_iterations ?? null,
     bodyStageIds: s.body_stage_ids ?? [],
+    modelTier: spec?.model_tier ?? null,
+    thinkingMode: spec?.thinking_mode ?? null,
+    allowedTools: spec?.allowed_tools ?? [],
+    canRetry:
+      (s.status === "Failed" || s.status === "Cancelled") &&
+      s.kind !== "loop" &&
+      attempt < 3,
+    attempt,
   };
 }
 
@@ -236,8 +254,8 @@ export function boardStats(items: BoardListItem[]): {
   for (const item of items) {
     if (item.kind === "orchestration") multi += 1;
     if (isActive(item.status)) active += 1;
-    if (item.status === "Completed") completed += 1;
-    if (item.status === "Failed") failed += 1;
+    if (item.status === "Completed" || item.status === "PartialCompleted") completed += 1;
+    if (item.status === "Failed" || item.status === "PartialCompleted") failed += 1;
   }
   return { total: items.length, active, multi, completed, failed };
 }
