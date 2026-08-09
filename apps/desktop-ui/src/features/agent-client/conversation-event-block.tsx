@@ -16,7 +16,7 @@ import { Button } from "@/components/ui/button";
 import { formatDateTime } from "@/lib/formatters";
 import { useTranslation } from "@/lib/i18n-react";
 import { cn } from "@/lib/utils";
-import type { ArtifactPreview, WorkspaceId } from "@/lib/schemas";
+import type { AgentRunId, ArtifactPreview, WorkspaceId } from "@/lib/schemas";
 import { previewWorkspaceMarkdown } from "@/lib/tauri-api";
 import { MarkdownPreviewDialog } from "@/features/markdown-provider/markdown-preview-dialog";
 import type {
@@ -24,6 +24,7 @@ import type {
   ConversationBlockKind,
   ConversationBlockTone,
 } from "./event-view-models";
+import { MessageFeedback } from "@/features/memory/message-feedback";
 import { MessageFileChanges } from "./message-file-changes";
 import { isPreviewablePath } from "./message-file-refs";
 
@@ -38,6 +39,8 @@ interface ConversationEventBlockProps {
   isRunning?: boolean;
   /** Canvas deep-link: highlight this message block. */
   isHighlighted?: boolean;
+  /** Terminal run — show feedback under assistant message. */
+  runIsTerminal?: boolean;
 }
 
 function toneClasses(tone: ConversationBlockTone): string {
@@ -89,6 +92,7 @@ export function ConversationEventBlock({
   retryDisabled = false,
   isRunning = false,
   isHighlighted = false,
+  runIsTerminal = false,
 }: ConversationEventBlockProps) {
   const { t } = useTranslation();
   const [inlinePreview, setInlinePreview] = useState<ArtifactPreview | null>(null);
@@ -167,6 +171,13 @@ export function ConversationEventBlock({
               runId={runId}
               messageText={displayBody}
             />
+          ) : null}
+          {isAssistantBubble &&
+          runIsTerminal &&
+          !isRunning &&
+          runId &&
+          runId !== ("unknown" as AgentRunId) ? (
+            <MessageFeedback runId={runId as AgentRunId} />
           ) : null}
           <div
             className={cn(

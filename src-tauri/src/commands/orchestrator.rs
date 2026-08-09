@@ -259,6 +259,75 @@ pub async fn mute_workflow_pattern(
     })
 }
 
+/// Accept a Suggested workflow pattern (immediately Active).
+#[tauri::command]
+pub async fn accept_workflow_pattern(
+    state: State<'_, AppState>,
+    pattern_id: app_models::WorkflowPatternId,
+) -> Result<ApiResponse<app_models::WorkflowPattern>, String> {
+    let Some(store) = state.pattern_store.as_ref() else {
+        return Ok(ApiResponse::err(
+            "pattern store is not available in this build".to_owned(),
+        ));
+    };
+    Ok(match store.accept_pattern(pattern_id).await {
+        Ok(pattern) => ApiResponse::ok(pattern),
+        Err(err) => ApiResponse::err(err.to_string()),
+    })
+}
+
+/// Reject a workflow pattern (fingerprint suppressed).
+#[tauri::command]
+pub async fn reject_workflow_pattern(
+    state: State<'_, AppState>,
+    pattern_id: app_models::WorkflowPatternId,
+) -> Result<ApiResponse<app_models::WorkflowPattern>, String> {
+    let Some(store) = state.pattern_store.as_ref() else {
+        return Ok(ApiResponse::err(
+            "pattern store is not available in this build".to_owned(),
+        ));
+    };
+    Ok(match store.reject_pattern(pattern_id).await {
+        Ok(pattern) => ApiResponse::ok(pattern),
+        Err(err) => ApiResponse::err(err.to_string()),
+    })
+}
+
+/// Edit a workflow pattern (name, roles, triggers, …).
+#[tauri::command]
+pub async fn edit_workflow_pattern(
+    state: State<'_, AppState>,
+    pattern_id: app_models::WorkflowPatternId,
+    patch: app_models::WorkflowPatternPatch,
+) -> Result<ApiResponse<app_models::WorkflowPattern>, String> {
+    let Some(store) = state.pattern_store.as_ref() else {
+        return Ok(ApiResponse::err(
+            "pattern store is not available in this build".to_owned(),
+        ));
+    };
+    Ok(match store.edit_pattern(pattern_id, patch).await {
+        Ok(pattern) => ApiResponse::ok(pattern),
+        Err(err) => ApiResponse::err(err.to_string()),
+    })
+}
+
+/// Evidence summary for a workflow pattern.
+#[tauri::command]
+pub async fn list_workflow_pattern_evidence(
+    state: State<'_, AppState>,
+    pattern_id: app_models::WorkflowPatternId,
+) -> Result<ApiResponse<app_models::WorkflowPatternEvidence>, String> {
+    let Some(store) = state.pattern_store.as_ref() else {
+        return Ok(ApiResponse::err(
+            "pattern store is not available in this build".to_owned(),
+        ));
+    };
+    Ok(match store.list_pattern_evidence(pattern_id).await {
+        Ok(evidence) => ApiResponse::ok(evidence),
+        Err(err) => ApiResponse::err(err.to_string()),
+    })
+}
+
 /// List editable workflow templates (seeds bundled catalog on first call).
 #[tauri::command]
 pub async fn list_workflow_templates(

@@ -22,6 +22,7 @@ uuid = { workspace = true }
 tracing = { workspace = true }
 reqwest = { workspace = true }
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
+sha2 = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }

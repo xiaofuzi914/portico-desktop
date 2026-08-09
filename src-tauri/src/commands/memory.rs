@@ -1,8 +1,10 @@
-//! Memory, instruction, context, and RAG commands.
+//! Memory, instruction, context, RAG, and learning-loop commands.
 
 use app_models::{
-    ContextSummary, FeatureCapabilities, InstructionFile, MemoryId, MemoryItem, MemoryScope,
-    RagChunk, ThreadId, WorkspaceId,
+    CandidateStatus, ContextSummary, FeatureCapabilities, InstructionFile, LearningDataExport,
+    LearningOverview, LearningQueueStatus, MemoryCandidate, MemoryCandidateId, MemoryId,
+    MemoryItem, MemoryScope, PrivacySettings, RagChunk, RagIndexStatus, RagRefreshResult,
+    RunContextSnapshot, RunFeedback, RunFeedbackRating, RunLearningSummary, ThreadId, WorkspaceId,
 };
 use tauri::State;
 
@@ -209,6 +211,309 @@ pub async fn rebuild_rag_index(
             .await
         {
             Ok(count) => ApiResponse::ok(count),
+            Err(err) => ApiResponse::err(err.to_string()),
+        },
+    )
+}
+
+/// List memory candidates awaiting review (or filtered by status).
+#[tauri::command]
+pub async fn list_memory_candidates(
+    state: State<'_, AppState>,
+    status: Option<CandidateStatus>,
+    workspace_id: Option<WorkspaceId>,
+) -> Result<ApiResponse<Vec<MemoryCandidate>>, String> {
+    let Some(learning) = state.runtime.learning() else {
+        return Ok(ApiResponse::err(
+            "learning coordinator is not available".to_owned(),
+        ));
+    };
+    Ok(
+        match learning.candidates().list(status, workspace_id, 100).await {
+            Ok(items) => ApiResponse::ok(items),
+            Err(err) => ApiResponse::err(err.to_string()),
+        },
+    )
+}
+
+/// Accept a memory candidate into long-term memory (optionally after edit).
+#[tauri::command]
+pub async fn accept_memory_candidate(
+    state: State<'_, AppState>,
+    candidate_id: MemoryCandidateId,
+    edited_value: Option<String>,
+    scope: Option<MemoryScope>,
+    sensitive: Option<bool>,
+) -> Result<ApiResponse<MemoryItem>, String> {
+    let Some(learning) = state.runtime.learning() else {
+        return Ok(ApiResponse::err(
+            "learning coordinator is not available".to_owned(),
+        ));
+    };
+    Ok(
+        match learning
+            .accept_memory_candidate(
+                candidate_id,
+                edited_value,
+                scope,
+                sensitive,
+                state.runtime.memory_manager().as_ref(),
+            )
+            .await
+        {
+            Ok((_candidate, memory)) => ApiResponse::ok(memory),
+            Err(err) => ApiResponse::err(err.to_string()),
+        },
+    )
+}
+
+/// Reject a memory candidate (fingerprint suppressed for re-proposal).
+#[tauri::command]
+pub async fn reject_memory_candidate(
+    state: State<'_, AppState>,
+    candidate_id: MemoryCandidateId,
+) -> Result<ApiResponse<()>, String> {
+    let Some(learning) = state.runtime.learning() else {
+        return Ok(ApiResponse::err(
+            "learning coordinator is not available".to_owned(),
+        ));
+    };
+    Ok(match learning.candidates().reject(candidate_id).await {
+        Ok(_) => ApiResponse::ok(()),
+        Err(err) => ApiResponse::err(err.to_string()),
+    })
+}
+
+/// Expire a memory candidate without accepting it.
+#[tauri::command]
+pub async fn expire_memory_candidate(
+    state: State<'_, AppState>,
+    candidate_id: MemoryCandidateId,
+) -> Result<ApiResponse<()>, String> {
+    let Some(learning) = state.runtime.learning() else {
+        return Ok(ApiResponse::err(
+            "learning coordinator is not available".to_owned(),
+        ));
+    };
+    Ok(match learning.candidates().expire(candidate_id).await {
+        Ok(_) => ApiResponse::ok(()),
+        Err(err) => ApiResponse::err(err.to_string()),
+    })
+}
+
+/// Submit thumbs-up / thumbs-down feedback for a finished run.
+#[tauri::command]
+pub async fn submit_run_feedback(
+    state: State<'_, AppState>,
+    run_id: app_models::AgentRunId,
+    rating: RunFeedbackRating,
+    comment: Option<String>,
+) -> Result<ApiResponse<RunFeedback>, String> {
+    let Some(learning) = state.runtime.learning() else {
+        return Ok(ApiResponse::err(
+            "learning coordinator is not available".to_owned(),
+        ));
+    };
+    Ok(
+        match learning.submit_run_feedback(run_id, rating, comment).await {
+            Ok(fb) => ApiResponse::ok(fb),
+            Err(err) => ApiResponse::err(err.to_string()),
+        },
+    )
+}
+
+/// Learning summary for a run (experience, candidates, policy snapshot).
+#[tauri::command]
+pub async fn get_run_learning_summary(
+    state: State<'_, AppState>,
+    run_id: app_models::AgentRunId,
+) -> Result<ApiResponse<RunLearningSummary>, String> {
+    let Some(learning) = state.runtime.learning() else {
+        return Ok(ApiResponse::err(
+            "learning coordinator is not available".to_owned(),
+        ));
+    };
+    Ok(match learning.get_run_learning_summary(run_id).await {
+        Ok(summary) => ApiResponse::ok(summary),
+        Err(err) => ApiResponse::err(err.to_string()),
+    })
+}
+
+/// Learning background queue depth (diagnostics).
+#[tauri::command]
+pub async fn get_learning_queue_status(
+    state: State<'_, AppState>,
+) -> Result<ApiResponse<LearningQueueStatus>, String> {
+    let Some(learning) = state.runtime.learning() else {
+        return Ok(ApiResponse::ok(LearningQueueStatus {
+            queued: 0,
+            running: 0,
+            failed: 0,
+            completed_recent: 0,
+        }));
+    };
+    Ok(match learning.get_learning_queue_status().await {
+        Ok(status) => ApiResponse::ok(status),
+        Err(err) => ApiResponse::err(err.to_string()),
+    })
+}
+
+/// Memory Center overview stats.
+#[tauri::command]
+pub async fn get_learning_overview(
+    state: State<'_, AppState>,
+) -> Result<ApiResponse<LearningOverview>, String> {
+    let Some(learning) = state.runtime.learning() else {
+        return Ok(ApiResponse::err(
+            "learning coordinator is not available".to_owned(),
+        ));
+    };
+    // Production always injects cipher; e2e may not.
+    let encryption_enabled = cfg!(not(feature = "desktop-e2e"));
+    Ok(
+        match learning.get_learning_overview(encryption_enabled).await {
+            Ok(overview) => ApiResponse::ok(overview),
+            Err(err) => ApiResponse::err(err.to_string()),
+        },
+    )
+}
+
+/// Load privacy / learning settings.
+#[tauri::command]
+pub async fn get_privacy_settings(
+    state: State<'_, AppState>,
+) -> Result<ApiResponse<PrivacySettings>, String> {
+    let Some(learning) = state.runtime.learning() else {
+        return Ok(ApiResponse::ok(PrivacySettings::default()));
+    };
+    Ok(match learning.get_privacy_settings().await {
+        Ok(s) => ApiResponse::ok(s),
+        Err(err) => ApiResponse::err(err.to_string()),
+    })
+}
+
+/// Update privacy / learning settings.
+#[tauri::command]
+pub async fn update_privacy_settings(
+    state: State<'_, AppState>,
+    settings: PrivacySettings,
+) -> Result<ApiResponse<PrivacySettings>, String> {
+    let Some(learning) = state.runtime.learning() else {
+        return Ok(ApiResponse::err(
+            "learning coordinator is not available".to_owned(),
+        ));
+    };
+    Ok(match learning.update_privacy_settings(settings).await {
+        Ok(s) => ApiResponse::ok(s),
+        Err(err) => ApiResponse::err(err.to_string()),
+    })
+}
+
+/// Authoritative frozen context snapshot for a finished (or in-progress) run.
+#[tauri::command]
+pub async fn get_run_context_snapshot(
+    state: State<'_, AppState>,
+    run_id: app_models::AgentRunId,
+) -> Result<ApiResponse<RunContextSnapshot>, String> {
+    let Some(learning) = state.runtime.learning() else {
+        return Ok(ApiResponse::err(
+            "learning coordinator is not available".to_owned(),
+        ));
+    };
+    Ok(
+        match learning
+            .get_run_context_snapshot(run_id, state.runtime.memory_manager().as_ref())
+            .await
+        {
+            Ok(snap) => ApiResponse::ok(snap),
+            Err(err) => ApiResponse::err(err.to_string()),
+        },
+    )
+}
+
+/// Export all local learning data as JSON-serializable payload.
+#[tauri::command]
+pub async fn export_learning_data(
+    state: State<'_, AppState>,
+) -> Result<ApiResponse<LearningDataExport>, String> {
+    let Some(learning) = state.runtime.learning() else {
+        return Ok(ApiResponse::err(
+            "learning coordinator is not available".to_owned(),
+        ));
+    };
+    Ok(
+        match learning
+            .export_learning_data(state.runtime.memory_manager().as_ref())
+            .await
+        {
+            Ok(data) => ApiResponse::ok(data),
+            Err(err) => ApiResponse::err(err.to_string()),
+        },
+    )
+}
+
+/// Clear learning data (candidates / memories / patterns / RAG) — not source files.
+#[tauri::command]
+pub async fn clear_learning_data(
+    state: State<'_, AppState>,
+    clear_candidates: bool,
+    clear_memories: bool,
+    clear_patterns: bool,
+    clear_rag: bool,
+) -> Result<ApiResponse<()>, String> {
+    let Some(learning) = state.runtime.learning() else {
+        return Ok(ApiResponse::err(
+            "learning coordinator is not available".to_owned(),
+        ));
+    };
+    Ok(
+        match learning
+            .clear_learning_data(clear_candidates, clear_memories, clear_patterns, clear_rag)
+            .await
+        {
+            Ok(()) => ApiResponse::ok(()),
+            Err(err) => ApiResponse::err(err.to_string()),
+        },
+    )
+}
+
+/// Incremental RAG index status for a workspace.
+#[tauri::command]
+pub async fn get_rag_index_status(
+    state: State<'_, AppState>,
+    workspace_id: WorkspaceId,
+) -> Result<ApiResponse<RagIndexStatus>, String> {
+    Ok(
+        match state
+            .runtime
+            .context_inspector()
+            .get_rag_index_status(workspace_id)
+            .await
+        {
+            Ok(status) => ApiResponse::ok(status),
+            Err(err) => ApiResponse::err(err.to_string()),
+        },
+    )
+}
+
+/// Refresh only changed / deleted RAG documents for a workspace.
+#[tauri::command]
+pub async fn refresh_changed_rag_documents(
+    state: State<'_, AppState>,
+    workspace_id: WorkspaceId,
+) -> Result<ApiResponse<RagRefreshResult>, String> {
+    let workspace = match state.runtime.get_workspace(workspace_id).await {
+        Ok(ws) => ws,
+        Err(err) => return Ok(ApiResponse::err(err.to_string())),
+    };
+    Ok(
+        match state
+            .runtime
+            .context_inspector()
+            .refresh_changed_documents(workspace_id, &workspace.root_path)
+            .await
+        {
+            Ok(result) => ApiResponse::ok(result),
             Err(err) => ApiResponse::err(err.to_string()),
         },
     )

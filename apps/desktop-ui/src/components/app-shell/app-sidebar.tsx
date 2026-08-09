@@ -23,6 +23,7 @@ import {
   readSidebarCollapsed,
   writeSidebarCollapsed,
 } from "./shell-layout-state";
+import { usePendingCandidateCount } from "@/features/memory/memory-center";
 import {
   SIDEBAR_LEAF_ACTIVE_CLASS,
   SIDEBAR_LEAF_CLASS,
@@ -190,6 +191,7 @@ function CollapsibleLinkGroup({
   links: { to: string; labelKey: string; icon: LucideIcon }[];
 }) {
   const { t } = useTranslation();
+  const pendingCandidates = usePendingCandidateCount();
 
   return (
     <details className="group">
@@ -208,7 +210,11 @@ function CollapsibleLinkGroup({
       <ul className="mt-0.5 space-y-0.5 pb-1 pl-0.5">
         {links.map((link) => (
           <li key={link.to}>
-            <NavLink to={link.to} icon={link.icon}>
+            <NavLink
+              to={link.to}
+              icon={link.icon}
+              badge={link.to === "/memory" && pendingCandidates > 0 ? pendingCandidates : undefined}
+            >
               {t(link.labelKey)}
             </NavLink>
           </li>
@@ -222,10 +228,12 @@ function NavLink({
   to,
   icon: Icon,
   children,
+  badge,
 }: {
   to: string;
   icon: LucideIcon;
   children: React.ReactNode;
+  badge?: number;
 }) {
   return (
     <Link
@@ -237,6 +245,11 @@ function NavLink({
     >
       <Icon className="h-3.5 w-3.5 shrink-0" />
       <span className="min-w-0 flex-1 truncate">{children}</span>
+      {badge != null && badge > 0 ? (
+        <span className="bg-primary text-primary-foreground rounded-full px-1.5 py-0.5 text-[10px] font-medium tabular-nums">
+          {badge > 99 ? "99+" : badge}
+        </span>
+      ) : null}
     </Link>
   );
 }

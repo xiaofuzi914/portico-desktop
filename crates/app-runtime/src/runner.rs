@@ -14,12 +14,15 @@ use crate::{
     workspace::WorkspaceManager,
     worktree::WorktreeManager,
 };
-use app_memory::{EmbeddingProvider, MemoryManager, SqliteMemoryManager, SqliteRagStore};
+use crate::learning::LearningCoordinator;
+use app_memory::{
+    EmbeddingProvider, MemoryCipher, MemoryManager, SqliteMemoryManager, SqliteRagStore,
+};
 use app_models::{
     AgentRun, AgentRunId, AgentRunStatus, AppError, ApprovalRequest, ApprovalRequestId,
-    ApprovalRequestStatus, BackgroundTask, BackgroundTaskId, BackgroundTaskStatus, Message,
-    MessageRole, Notification, NotificationCategory, NotificationId, RunEvent, RunExecutionSpec,
-    TaskKind, ThinkingMode, Thread, ThreadId, Workspace, WorkspaceId,
+    ApprovalRequestStatus, BackgroundTask, BackgroundTaskId, BackgroundTaskStatus, ExecutionMode,
+    Message, MessageRole, Notification, NotificationCategory, NotificationId, RunEvent,
+    RunExecutionSpec, TaskKind, ThinkingMode, Thread, ThreadId, Workspace, WorkspaceId,
 };
 use crate::run_spec::RunExecutionSpecStore;
 use app_plugins::{McpClientManager, PluginRegistry, SqlitePluginRegistry};
@@ -282,12 +285,16 @@ pub struct PorticoRuntimeHandle {
     terminal_manager: Option<Arc<TerminalManager>>,
     git_tool: Option<Arc<GitTool>>,
     memory_manager: Arc<dyn MemoryManager>,
+    /// Concrete manager for cipher injection / sensitive migration.
+    sqlite_memory: Arc<SqliteMemoryManager>,
     context_inspector: Arc<ContextInspector>,
     task_queue: BackgroundTaskQueue,
     notification_center: NotificationCenter,
     approval_broker: Arc<ApprovalBroker>,
     safe_tool_executor: Arc<SafeToolExecutor>,
     run_specs: Arc<RunExecutionSpecStore>,
+    /// Optional learning coordinator (ExperienceEvent + candidates). Wired by composition root.
+    learning: Option<Arc<LearningCoordinator>>,
 }
 
 impl PorticoRuntimeHandle {
@@ -329,8 +336,8 @@ impl PorticoRuntimeHandle {
             default_security.clone(),
             Arc::new(StorageRepoRootProvider::new(storage.clone())),
         ));
-        let memory_manager: Arc<dyn MemoryManager> =
-            Arc::new(SqliteMemoryManager::new(storage.pool().clone()));
+        let sqlite_memory = Arc::new(SqliteMemoryManager::new(storage.pool().clone()));
+        let memory_manager: Arc<dyn MemoryManager> = sqlite_memory.clone();
         let rag_store = SqliteRagStore::new(storage.pool().clone());
         let context_inspector = Arc::new(ContextInspector::new(
             memory_manager.clone(),
@@ -361,13 +368,38 @@ impl PorticoRuntimeHandle {
             terminal_manager: Some(terminal_manager),
             git_tool: Some(git_tool),
             memory_manager,
+            sqlite_memory,
             context_inspector,
             task_queue,
             notification_center,
             approval_broker,
             safe_tool_executor,
             run_specs: Arc::new(RunExecutionSpecStore::new()),
+            learning: None,
         })
+    }
+
+    /// Attach the local learning coordinator (ExperienceEvent → candidates).
+    #[must_use]
+    pub fn with_learning(mut self, learning: Arc<LearningCoordinator>) -> Self {
+        self.learning = Some(learning);
+        self
+    }
+
+    /// Borrow the learning coordinator when configured.
+    #[must_use]
+    pub fn learning(&self) -> Option<Arc<LearningCoordinator>> {
+        self.learning.clone()
+    }
+
+    /// Inject AES memory cipher for sensitive long-term storage.
+    pub fn inject_memory_cipher(&self, cipher: Arc<dyn MemoryCipher>) {
+        self.sqlite_memory.set_cipher(cipher);
+    }
+
+    /// Migrate legacy plaintext sensitive memories to ciphertext (best effort).
+    pub async fn migrate_sensitive_memories(&self) -> Result<u64, AppError> {
+        self.sqlite_memory.migrate_sensitive_plaintext().await
     }
 
     /// Shared run-execution-spec store (multi-agent tool/model binding).
@@ -790,9 +822,64 @@ impl PorticoRuntimeHandle {
             let workspace = self.storage.get_workspace(workspace_id).await.ok();
             match workspace {
                 Some(ws) => {
-                    self.context_inspector
-                        .assemble_prompt_context(thread_id, workspace_id, &ws.root_path, content)
-                        .await
+                    // Prefer assembly with attribution so ExperienceEffect can be measured.
+                    let (prompt, summary) = self
+                        .context_inspector
+                        .assemble_prompt_context_with_summary(
+                            run_id,
+                            thread_id,
+                            workspace_id,
+                            &ws.root_path,
+                            content,
+                        )
+                        .await;
+                    if let (Some(learning), Some(summary)) = (self.learning.as_ref(), summary.as_ref())
+                    {
+                        let policy = summary.behavior_policy.clone().unwrap_or_default();
+                        let scores: Vec<_> = summary
+                            .recalled_memory_ids
+                            .iter()
+                            .enumerate()
+                            .map(|(i, id)| (*id, 1.0 - (i as f64) * 0.01))
+                            .collect();
+                        let _ = learning
+                            .save_context_snapshot(
+                                run_id,
+                                &summary.recalled_memory_ids,
+                                &summary.pattern_ids,
+                                &policy,
+                                summary.outbound_manifest.as_ref(),
+                                &scores,
+                            )
+                            .await;
+                    }
+                    // Incremental RAG in the background — never block the user message path.
+                    {
+                        let inspector = self.context_inspector.clone();
+                        let root = ws.root_path.clone();
+                        tokio::spawn(async move {
+                            if let Err(err) =
+                                inspector.refresh_changed_documents(workspace_id, &root).await
+                            {
+                                tracing::debug!(
+                                    error = %err,
+                                    "background incremental RAG refresh failed"
+                                );
+                            }
+                        });
+                    }
+                    if prompt.is_empty() {
+                        self.context_inspector
+                            .assemble_prompt_context(
+                                thread_id,
+                                workspace_id,
+                                &ws.root_path,
+                                content,
+                            )
+                            .await
+                    } else {
+                        prompt
+                    }
                 }
                 None => String::new(),
             }
@@ -1052,6 +1139,8 @@ impl PorticoRuntimeHandle {
     ///
     /// This is a no-op if the run is already in the requested status, which
     /// avoids duplicate events when `cancel_run` races with `submit_message`.
+    ///
+    /// On terminal transitions, best-effort learning is enqueued (never fails the run).
     async fn finalize_run_status(
         &self,
         run_id: AgentRunId,
@@ -1070,6 +1159,20 @@ impl PorticoRuntimeHandle {
                 timestamp: chrono::Utc::now(),
             })
             .await?;
+        if status.is_terminal() {
+            if let Some(learning) = &self.learning {
+                learning
+                    .on_run_terminal(
+                        run_id,
+                        status,
+                        ExecutionMode::SingleAgent,
+                        Vec::new(),
+                        vec!["Default".into()],
+                        None,
+                    )
+                    .await;
+            }
+        }
         Ok(())
     }
 
@@ -1103,6 +1206,18 @@ impl PorticoRuntimeHandle {
                     timestamp: chrono::Utc::now(),
                 })
                 .await?;
+            if let Some(learning) = &self.learning {
+                learning
+                    .on_run_terminal(
+                        run_id,
+                        AgentRunStatus::Cancelled,
+                        ExecutionMode::SingleAgent,
+                        Vec::new(),
+                        vec!["Default".into()],
+                        None,
+                    )
+                    .await;
+            }
             let _ = self.audit(run_audit_event(
                 run.workspace_id,
                 run.thread_id,

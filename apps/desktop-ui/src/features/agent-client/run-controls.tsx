@@ -1,7 +1,10 @@
-import { Pause, Play, RotateCcw, Square } from "lucide-react";
+import { useMutation } from "@tanstack/react-query";
+import { Pause, Play, RotateCcw, Square, ThumbsDown, ThumbsUp } from "lucide-react";
+import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import type { AgentRunId, AgentRunStatus } from "@/lib/schemas";
 import { useTranslation } from "@/lib/i18n-react";
+import { submitRunFeedback } from "@/lib/tauri-api";
 
 interface RunControlsProps {
   runId?: AgentRunId;
@@ -23,6 +26,15 @@ export function RunControls({
   isPending,
 }: RunControlsProps) {
   const { t } = useTranslation();
+  const [feedbackSent, setFeedbackSent] = useState<"Helpful" | "NotHelpful" | null>(null);
+
+  const feedback = useMutation({
+    mutationFn: (rating: "Helpful" | "NotHelpful") => {
+      if (!runId) throw new Error("no run");
+      return submitRunFeedback(runId, rating);
+    },
+    onSuccess: (_data, rating) => setFeedbackSent(rating),
+  });
 
   if (!runId) {
     return (
@@ -59,6 +71,30 @@ export function RunControls({
         <RotateCcw className="h-3.5 w-3.5" />
         {t("agent.resume")}
       </Button>
+      {isTerminal && (
+        <>
+          <Button
+            variant={feedbackSent === "Helpful" ? "default" : "outline"}
+            size="sm"
+            disabled={feedback.isPending || feedbackSent !== null}
+            onClick={() => feedback.mutate("Helpful")}
+            title={t("run.feedback.helpful")}
+          >
+            <ThumbsUp className="h-3.5 w-3.5" />
+            {t("run.feedback.helpful")}
+          </Button>
+          <Button
+            variant={feedbackSent === "NotHelpful" ? "default" : "outline"}
+            size="sm"
+            disabled={feedback.isPending || feedbackSent !== null}
+            onClick={() => feedback.mutate("NotHelpful")}
+            title={t("run.feedback.notHelpful")}
+          >
+            <ThumbsDown className="h-3.5 w-3.5" />
+            {t("run.feedback.notHelpful")}
+          </Button>
+        </>
+      )}
     </div>
   );
 }

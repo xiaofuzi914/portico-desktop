@@ -45,6 +45,9 @@ app-memory = { workspace = true }
 app-workflows = { workspace = true }
 autoagents-adapter = { workspace = true }
 async-trait = { workspace = true }
+aes-gcm = { workspace = true }
+rand = { workspace = true }
+sha2 = { workspace = true }
 tauri-plugin-wdio-webdriver = { version = "=1.2.0", optional = true }
 
 [build-dependencies]

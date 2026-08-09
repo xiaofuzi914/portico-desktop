@@ -1127,11 +1127,24 @@ List paths or paste the final artifact.",
                 workspace_id: session.workspace_id,
                 task: task.to_owned(),
                 success: outcome.success,
-                agent_names,
+                agent_names: agent_names.clone(),
                 pattern_ids: plan.pattern_ids.clone(),
-                result_summary: outcome.summary,
+                result_summary: outcome.summary.clone(),
             })
             .await;
+        // Unified ExperienceEvent path (candidates + outcome evaluation).
+        if let Some(learning) = self.runtime.learning() {
+            learning
+                .on_run_terminal(
+                    session.parent_run_id,
+                    parent_status,
+                    app_models::ExecutionMode::MultiAgent,
+                    plan.pattern_ids.clone(),
+                    agent_names,
+                    outcome.summary.clone(),
+                )
+                .await;
+        }
 
         // Surface summary as a system message on the parent run when possible.
         if let Some(text) = &session.result_summary {

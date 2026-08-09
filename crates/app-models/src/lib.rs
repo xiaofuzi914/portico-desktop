@@ -1007,6 +1007,57 @@ impl TryFrom<&str> for MemoryScope {
     }
 }
 
+/// Semantic kind of a long-lived memory or candidate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub enum MemoryKind {
+    /// User communication / product preference.
+    UserPreference,
+    /// Project or team convention.
+    WorkspaceConvention,
+    /// Stable factual knowledge.
+    StableFact,
+    /// Preferred deliverable format / packaging.
+    DeliveryPreference,
+    /// Preferred tools or tool-use style.
+    ToolPreference,
+    /// Explicit negative constraint ("don't do X").
+    NegativeConstraint,
+}
+
+impl MemoryKind {
+    /// Persistable string form.
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::UserPreference => "UserPreference",
+            Self::WorkspaceConvention => "WorkspaceConvention",
+            Self::StableFact => "StableFact",
+            Self::DeliveryPreference => "DeliveryPreference",
+            Self::ToolPreference => "ToolPreference",
+            Self::NegativeConstraint => "NegativeConstraint",
+        }
+    }
+}
+
+impl TryFrom<&str> for MemoryKind {
+    type Error = AppError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "UserPreference" => Ok(Self::UserPreference),
+            "WorkspaceConvention" => Ok(Self::WorkspaceConvention),
+            "StableFact" => Ok(Self::StableFact),
+            "DeliveryPreference" => Ok(Self::DeliveryPreference),
+            "ToolPreference" => Ok(Self::ToolPreference),
+            "NegativeConstraint" => Ok(Self::NegativeConstraint),
+            _ => Err(AppError::Internal {
+                message: format!("unknown memory kind: {value}"),
+            }),
+        }
+    }
+}
+
 /// A single persisted memory entry.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
@@ -1018,8 +1069,544 @@ pub struct MemoryItem {
     pub key: String,
     pub value: String,
     pub sensitive: bool,
+    /// Optional semantic kind (populated by the learning loop).
+    #[serde(default)]
+    pub kind: Option<MemoryKind>,
+    /// Run that produced this memory (when accepted from a candidate).
+    #[serde(default)]
+    pub source_run_id: Option<AgentRunId>,
+    /// Confidence score in \[0, 1\] when known.
+    #[serde(default)]
+    pub confidence: Option<f64>,
+    /// Last time this memory was injected into a prompt.
+    #[serde(default)]
+    pub last_used_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// Number of times this memory was injected.
+    #[serde(default)]
+    pub use_count: i64,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// Lifecycle of an automatically extracted memory candidate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub enum CandidateStatus {
+    /// Awaiting user review.
+    Proposed,
+    /// Accepted into long-term memory.
+    Accepted,
+    /// Explicitly rejected by the user.
+    Rejected,
+    /// Expired without action.
+    Expired,
+}
+
+impl CandidateStatus {
+    /// Persistable string form.
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Proposed => "Proposed",
+            Self::Accepted => "Accepted",
+            Self::Rejected => "Rejected",
+            Self::Expired => "Expired",
+        }
+    }
+}
+
+impl TryFrom<&str> for CandidateStatus {
+    type Error = AppError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "Proposed" => Ok(Self::Proposed),
+            "Accepted" => Ok(Self::Accepted),
+            "Rejected" => Ok(Self::Rejected),
+            "Expired" => Ok(Self::Expired),
+            _ => Err(AppError::Internal {
+                message: format!("unknown candidate status: {value}"),
+            }),
+        }
+    }
+}
+
+/// Identifier for a memory candidate pending review.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct MemoryCandidateId(pub uuid::Uuid);
+
+impl MemoryCandidateId {
+    /// Create a new random candidate id.
+    #[must_use]
+    pub fn new() -> Self {
+        Self(uuid::Uuid::new_v4())
+    }
+}
+
+impl Default for MemoryCandidateId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Auto-extracted memory proposal that must be accepted before it affects behavior.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct MemoryCandidate {
+    pub id: MemoryCandidateId,
+    pub run_id: AgentRunId,
+    pub workspace_id: Option<WorkspaceId>,
+    pub thread_id: Option<ThreadId>,
+    pub scope: MemoryScope,
+    pub kind: MemoryKind,
+    pub key: String,
+    pub value: String,
+    pub fingerprint: String,
+    pub confidence: f64,
+    pub sensitive: bool,
+    /// Human-readable evidence snippets that justify this candidate.
+    pub evidence: Vec<String>,
+    pub status: CandidateStatus,
+    pub extractor_version: u32,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub reviewed_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// Identifier for a durable experience event derived from a finished run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ExperienceEventId(pub uuid::Uuid);
+
+impl ExperienceEventId {
+    /// Create a new random experience event id.
+    #[must_use]
+    pub fn new() -> Self {
+        Self(uuid::Uuid::new_v4())
+    }
+}
+
+impl Default for ExperienceEventId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// How an agent run was executed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub enum ExecutionMode {
+    /// Single-agent tool loop.
+    SingleAgent,
+    /// Multi-agent orchestration.
+    MultiAgent,
+}
+
+impl ExecutionMode {
+    /// Persistable string form.
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::SingleAgent => "SingleAgent",
+            Self::MultiAgent => "MultiAgent",
+        }
+    }
+}
+
+impl TryFrom<&str> for ExecutionMode {
+    type Error = AppError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "SingleAgent" => Ok(Self::SingleAgent),
+            "MultiAgent" => Ok(Self::MultiAgent),
+            _ => Err(AppError::Internal {
+                message: format!("unknown execution mode: {value}"),
+            }),
+        }
+    }
+}
+
+/// Outcome signal used for learning (broader than technical Completed).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub enum OutcomeSignal {
+    Successful,
+    PartiallySuccessful,
+    Failed,
+    Cancelled,
+    Unknown,
+}
+
+impl OutcomeSignal {
+    /// Persistable string form.
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Successful => "Successful",
+            Self::PartiallySuccessful => "PartiallySuccessful",
+            Self::Failed => "Failed",
+            Self::Cancelled => "Cancelled",
+            Self::Unknown => "Unknown",
+        }
+    }
+
+    /// Whether this outcome may seed positive long-term learning.
+    #[must_use]
+    pub const fn is_positive_evidence(&self) -> bool {
+        matches!(self, Self::Successful | Self::PartiallySuccessful)
+    }
+}
+
+impl TryFrom<&str> for OutcomeSignal {
+    type Error = AppError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "Successful" => Ok(Self::Successful),
+            "PartiallySuccessful" => Ok(Self::PartiallySuccessful),
+            "Failed" => Ok(Self::Failed),
+            "Cancelled" => Ok(Self::Cancelled),
+            "Unknown" => Ok(Self::Unknown),
+            _ => Err(AppError::Internal {
+                message: format!("unknown outcome signal: {value}"),
+            }),
+        }
+    }
+}
+
+/// Compact tool usage summary for experience events.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ToolUsageSummary {
+    pub tool_name: String,
+    pub call_count: u32,
+    pub success_count: u32,
+    pub failure_count: u32,
+}
+
+/// Unified experience event produced when a run reaches a terminal state.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ExperienceEvent {
+    pub id: ExperienceEventId,
+    pub run_id: AgentRunId,
+    pub workspace_id: WorkspaceId,
+    pub thread_id: ThreadId,
+    pub task_text: String,
+    pub task_kind: TaskKind,
+    pub execution_mode: ExecutionMode,
+    pub model_snapshot: Option<RunModelSnapshot>,
+    pub roles: Vec<String>,
+    pub tools_used: Vec<ToolUsageSummary>,
+    pub pattern_ids: Vec<WorkflowPatternId>,
+    pub terminal_status: AgentRunStatus,
+    pub outcome: OutcomeSignal,
+    pub result_summary: Option<String>,
+    pub artifact_paths: Vec<String>,
+    pub schema_version: u32,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// Frozen behavior policy applied to a single agent run (auditable snapshot).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct BehaviorPolicy {
+    pub response_language: Option<String>,
+    pub response_style: Option<String>,
+    pub explore_before_edit: bool,
+    pub run_tests_after_edit: bool,
+    pub preferred_test_commands: Vec<String>,
+    pub preferred_output_format: Option<String>,
+    pub memory_ids: Vec<MemoryId>,
+    pub pattern_ids: Vec<WorkflowPatternId>,
+    /// Negative constraints that must not be violated.
+    #[serde(default)]
+    pub negative_constraints: Vec<String>,
+}
+
+/// Dynamic token budget for prompt assembly.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ContextBudget {
+    pub model_context_tokens: u64,
+    pub reserved_output_tokens: u64,
+    pub reserved_tool_tokens: u64,
+    pub transcript_tokens: u64,
+    pub instruction_tokens: u64,
+    pub memory_tokens: u64,
+    pub rag_tokens: u64,
+}
+
+/// Manifest of data categories leaving the device for a remote provider.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct OutboundContextManifest {
+    pub provider_kind: ProviderKind,
+    pub local_provider: bool,
+    pub message_count: usize,
+    pub memory_ids: Vec<MemoryId>,
+    pub rag_paths: Vec<String>,
+    pub total_bytes: u64,
+    pub sensitive_content_blocked: bool,
+}
+
+/// User feedback rating for a finished run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub enum RunFeedbackRating {
+    Helpful,
+    NotHelpful,
+}
+
+impl RunFeedbackRating {
+    /// Persistable string form.
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Helpful => "Helpful",
+            Self::NotHelpful => "NotHelpful",
+        }
+    }
+}
+
+impl TryFrom<&str> for RunFeedbackRating {
+    type Error = AppError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "Helpful" => Ok(Self::Helpful),
+            "NotHelpful" => Ok(Self::NotHelpful),
+            _ => Err(AppError::Internal {
+                message: format!("unknown run feedback rating: {value}"),
+            }),
+        }
+    }
+}
+
+/// Explicit user feedback attached to a finished run.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RunFeedback {
+    pub run_id: AgentRunId,
+    pub rating: RunFeedbackRating,
+    pub comment: Option<String>,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// Ranked memory hit returned by the recall engine.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct MemoryRecallHit {
+    pub memory: MemoryItem,
+    pub score: f64,
+    pub reasons: Vec<String>,
+}
+
+/// Learning summary for a run (Inspector / experience detail).
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RunLearningSummary {
+    pub run_id: AgentRunId,
+    pub experience: Option<ExperienceEvent>,
+    pub candidates: Vec<MemoryCandidate>,
+    pub feedback: Option<RunFeedback>,
+    pub memory_ids_used: Vec<MemoryId>,
+    pub pattern_ids_used: Vec<WorkflowPatternId>,
+    pub behavior_policy: Option<BehaviorPolicy>,
+    /// Outbound data categories for this run when snapshotted.
+    #[serde(default)]
+    pub outbound_manifest: Option<OutboundContextManifest>,
+    /// Per-memory recall scores recorded at injection time.
+    #[serde(default)]
+    pub recall_scores: Vec<(MemoryId, f64)>,
+}
+
+/// Learning background-queue status for diagnostics.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct LearningQueueStatus {
+    pub queued: u64,
+    pub running: u64,
+    pub failed: u64,
+    pub completed_recent: u64,
+}
+
+/// Disposition of one context item relative to the outbound model request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub enum ContextItemDisposition {
+    Sent,
+    BlockedSensitive,
+    TrimmedByBudget,
+    NotRelevant,
+    DisabledForRun,
+    LocalOnly,
+}
+
+impl ContextItemDisposition {
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Sent => "Sent",
+            Self::BlockedSensitive => "BlockedSensitive",
+            Self::TrimmedByBudget => "TrimmedByBudget",
+            Self::NotRelevant => "NotRelevant",
+            Self::DisabledForRun => "DisabledForRun",
+            Self::LocalOnly => "LocalOnly",
+        }
+    }
+}
+
+/// One attributed context item for Inspector snapshot view.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ContextSnapshotItem {
+    pub kind: String,
+    pub title: String,
+    pub summary: String,
+    pub disposition: ContextItemDisposition,
+    pub reason: Option<String>,
+    pub score: Option<f64>,
+    pub memory_id: Option<MemoryId>,
+    pub pattern_id: Option<WorkflowPatternId>,
+    pub path: Option<String>,
+}
+
+/// Frozen run context snapshot for Inspector (authoritative, not a live re-query).
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RunContextSnapshot {
+    pub run_id: AgentRunId,
+    pub memory_ids: Vec<MemoryId>,
+    pub pattern_ids: Vec<WorkflowPatternId>,
+    pub behavior_policy: Option<BehaviorPolicy>,
+    pub outbound_manifest: Option<OutboundContextManifest>,
+    pub recall_scores: Vec<(MemoryId, f64)>,
+    pub items: Vec<ContextSnapshotItem>,
+    pub learning: Option<RunLearningSummary>,
+}
+
+/// Portable export of local learning data (for backup / user download).
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct LearningDataExport {
+    pub exported_at: chrono::DateTime<chrono::Utc>,
+    pub memories: Vec<MemoryItem>,
+    pub candidates: Vec<MemoryCandidate>,
+    pub patterns: Vec<WorkflowPattern>,
+    pub privacy: PrivacySettings,
+    pub schema_version: u32,
+}
+
+/// Product overview for the Memory Center home tab.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct LearningOverview {
+    pub pending_candidates: u64,
+    pub confirmed_preferences: u64,
+    pub active_patterns: u64,
+    pub suggested_patterns: u64,
+    pub recent_candidate_summaries: Vec<String>,
+    pub recent_memory_keys: Vec<String>,
+    pub learning_queue: LearningQueueStatus,
+    pub sensitive_encryption_enabled: bool,
+    pub local_storage: bool,
+}
+
+/// Privacy / learning product settings (local-first controls).
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct PrivacySettings {
+    pub privacy_mode: PrivacyMode,
+    pub trace_retention: TraceRetentionMode,
+    pub auto_discover_candidates: bool,
+    pub remote_model_extraction: bool,
+    pub auto_promote_patterns: bool,
+    pub auto_promote_threshold: u32,
+}
+
+impl Default for PrivacySettings {
+    fn default() -> Self {
+        Self {
+            privacy_mode: PrivacyMode::LocalStorageCloudInference,
+            trace_retention: TraceRetentionMode::RedactedTrace,
+            auto_discover_candidates: true,
+            remote_model_extraction: false,
+            auto_promote_patterns: true,
+            auto_promote_threshold: 3,
+        }
+    }
+}
+
+/// How far personal data may leave the device.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub enum PrivacyMode {
+    FullyLocal,
+    LocalStorageCloudInference,
+    CloudInferenceAndEmbedding,
+}
+
+impl PrivacyMode {
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::FullyLocal => "FullyLocal",
+            Self::LocalStorageCloudInference => "LocalStorageCloudInference",
+            Self::CloudInferenceAndEmbedding => "CloudInferenceAndEmbedding",
+        }
+    }
+}
+
+impl TryFrom<&str> for PrivacyMode {
+    type Error = AppError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "FullyLocal" => Ok(Self::FullyLocal),
+            "LocalStorageCloudInference" => Ok(Self::LocalStorageCloudInference),
+            "CloudInferenceAndEmbedding" => Ok(Self::CloudInferenceAndEmbedding),
+            _ => Err(AppError::Internal {
+                message: format!("unknown privacy mode: {value}"),
+            }),
+        }
+    }
+}
+
+/// How much of each LLM exchange is retained locally.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub enum TraceRetentionMode {
+    FullLocalTrace,
+    RedactedTrace,
+    MetadataOnly,
+}
+
+impl TraceRetentionMode {
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::FullLocalTrace => "FullLocalTrace",
+            Self::RedactedTrace => "RedactedTrace",
+            Self::MetadataOnly => "MetadataOnly",
+        }
+    }
+}
+
+impl TryFrom<&str> for TraceRetentionMode {
+    type Error = AppError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "FullLocalTrace" => Ok(Self::FullLocalTrace),
+            "RedactedTrace" => Ok(Self::RedactedTrace),
+            "MetadataOnly" => Ok(Self::MetadataOnly),
+            _ => Err(AppError::Internal {
+                message: format!("unknown trace retention mode: {value}"),
+            }),
+        }
+    }
 }
 
 /// Scope at which a permission decision applies.
@@ -1645,6 +2232,8 @@ pub enum WorkflowPatternStatus {
     Suggested,
     /// Explicitly silenced by the user.
     Muted,
+    /// Explicitly rejected; fingerprint should not be re-suggested.
+    Rejected,
 }
 
 impl WorkflowPatternStatus {
@@ -1655,6 +2244,7 @@ impl WorkflowPatternStatus {
             Self::Active => "active",
             Self::Suggested => "suggested",
             Self::Muted => "muted",
+            Self::Rejected => "rejected",
         }
     }
 }
@@ -1667,6 +2257,7 @@ impl TryFrom<&str> for WorkflowPatternStatus {
             "active" => Ok(Self::Active),
             "suggested" => Ok(Self::Suggested),
             "muted" => Ok(Self::Muted),
+            "rejected" => Ok(Self::Rejected),
             _ => Err(AppError::Internal {
                 message: format!("unknown workflow pattern status: {value}"),
             }),
@@ -1696,8 +2287,58 @@ pub struct WorkflowPattern {
     pub failure_count: i64,
     pub last_used_at: Option<chrono::DateTime<chrono::Utc>>,
     pub status: WorkflowPatternStatus,
+    /// Stable fingerprint for deduplicating Suggested patterns.
+    #[serde(default)]
+    pub fingerprint: Option<String>,
+    /// Independent success evidence count (promotion signal).
+    #[serde(default)]
+    pub evidence_count: i64,
+    /// Confidence in \[0, 1\].
+    #[serde(default)]
+    pub confidence: f64,
+    #[serde(default)]
+    pub last_success_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(default)]
+    pub last_failure_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// Coarse tool strategy label (e.g. explore-then-edit).
+    #[serde(default)]
+    pub tool_strategy: String,
+    /// Preferred output kind label.
+    #[serde(default)]
+    pub output_kind: String,
+    /// Task kind label used when computing the fingerprint.
+    #[serde(default)]
+    pub task_kind: String,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// Patch applied when a user edits a workflow pattern.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct WorkflowPatternPatch {
+    pub name: Option<String>,
+    pub summary: Option<String>,
+    pub trigger_text: Option<String>,
+    pub preferred_roles: Option<Vec<String>>,
+    pub collaboration_style: Option<String>,
+    pub tool_strategy: Option<String>,
+    pub output_kind: Option<String>,
+}
+
+/// Evidence row for a workflow pattern (Inspector / accept UI).
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct WorkflowPatternEvidence {
+    pub pattern_id: WorkflowPatternId,
+    pub success_count: i64,
+    pub failure_count: i64,
+    pub evidence_count: i64,
+    pub confidence: f64,
+    pub last_success_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub last_failure_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub last_used_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub status: WorkflowPatternStatus,
 }
 
 /// Lightweight pattern hint returned across module boundaries (no storage coupling).
@@ -2279,6 +2920,105 @@ pub struct RagChunk {
     pub score: f64,
 }
 
+/// Lifecycle of a tracked RAG document in the incremental index.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub enum RagDocumentStatus {
+    Indexed,
+    Stale,
+    NeedsReindex,
+    Failed,
+    Deleted,
+}
+
+impl RagDocumentStatus {
+    /// Persistable string form.
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Indexed => "Indexed",
+            Self::Stale => "Stale",
+            Self::NeedsReindex => "NeedsReindex",
+            Self::Failed => "Failed",
+            Self::Deleted => "Deleted",
+        }
+    }
+}
+
+impl TryFrom<&str> for RagDocumentStatus {
+    type Error = AppError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "Indexed" => Ok(Self::Indexed),
+            "Stale" => Ok(Self::Stale),
+            "NeedsReindex" => Ok(Self::NeedsReindex),
+            "Failed" => Ok(Self::Failed),
+            "Deleted" => Ok(Self::Deleted),
+            _ => Err(AppError::Internal {
+                message: format!("unknown rag document status: {value}"),
+            }),
+        }
+    }
+}
+
+/// Metadata row for one workspace document in the incremental RAG index.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RagDocumentMeta {
+    pub workspace_id: WorkspaceId,
+    pub document_path: String,
+    pub content_hash: String,
+    pub file_size: i64,
+    pub modified_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub embedding_provider_id: String,
+    pub dimension: i64,
+    pub status: RagDocumentStatus,
+    pub indexed_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub last_error: Option<String>,
+}
+
+/// Aggregate RAG index health for a workspace (Inspector / capabilities).
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RagIndexStatus {
+    pub workspace_id: WorkspaceId,
+    pub embedding_provider_id: String,
+    pub dimension: i64,
+    pub indexed: u64,
+    pub stale: u64,
+    pub failed: u64,
+    pub needs_reindex: u64,
+    pub total_documents: u64,
+    pub last_indexed_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// Result of an incremental RAG refresh pass.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RagRefreshResult {
+    pub workspace_id: WorkspaceId,
+    pub scanned: u64,
+    pub added: u64,
+    pub updated: u64,
+    pub removed: u64,
+    pub unchanged: u64,
+    pub failed: u64,
+}
+
+/// Effect metrics for one long-lived experience (memory or pattern).
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ExperienceEffectStats {
+    pub memory_id: Option<MemoryId>,
+    pub pattern_id: Option<WorkflowPatternId>,
+    pub use_count: i64,
+    pub success_count: i64,
+    pub failure_count: i64,
+    pub last_used_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub influenced_run_ids: Vec<AgentRunId>,
+}
+
 /// Summary of everything assembled for a run's prompt context.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
@@ -2290,6 +3030,21 @@ pub struct ContextSummary {
     pub rag_chunks: Vec<RagChunk>,
     pub estimated_tokens: u64,
     pub privacy_flags: Vec<String>,
+    /// Memory ids selected by the recall engine (ordered by score).
+    #[serde(default)]
+    pub recalled_memory_ids: Vec<MemoryId>,
+    /// Active pattern ids conditioning this run.
+    #[serde(default)]
+    pub pattern_ids: Vec<WorkflowPatternId>,
+    /// Frozen behavior policy for this assembly.
+    #[serde(default)]
+    pub behavior_policy: Option<BehaviorPolicy>,
+    /// Optional outbound data manifest for Inspector.
+    #[serde(default)]
+    pub outbound_manifest: Option<OutboundContextManifest>,
+    /// Token budget snapshot when available.
+    #[serde(default)]
+    pub context_budget: Option<ContextBudget>,
 }
 
 /// Backend-authoritative product capability probe (single source of truth for UI).
@@ -2615,6 +3370,8 @@ pub enum TaskKind {
     ThreadWakeup,
     /// A job spawned by an automation.
     ScheduledJob,
+    /// Offline learning from a finished run (ExperienceEvent → candidates).
+    LearnFromRun,
 }
 
 impl TaskKind {
@@ -2626,6 +3383,7 @@ impl TaskKind {
             Self::Routine => "Routine",
             Self::ThreadWakeup => "ThreadWakeup",
             Self::ScheduledJob => "ScheduledJob",
+            Self::LearnFromRun => "LearnFromRun",
         }
     }
 }
@@ -2639,6 +3397,7 @@ impl TryFrom<&str> for TaskKind {
             "Routine" => Ok(Self::Routine),
             "ThreadWakeup" => Ok(Self::ThreadWakeup),
             "ScheduledJob" => Ok(Self::ScheduledJob),
+            "LearnFromRun" => Ok(Self::LearnFromRun),
             _ => Err(AppError::Internal {
                 message: format!("unknown task kind: {value}"),
             }),

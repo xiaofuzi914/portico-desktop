@@ -31,9 +31,15 @@ import type {
   InstructionFile,
   McpServerConfig,
   McpToolInfo,
+  CandidateStatus,
+  LearningQueueStatus,
+  MemoryCandidate,
+  MemoryCandidateId,
   MemoryId,
   MemoryItem,
   MemoryScope,
+  RunFeedback,
+  RunFeedbackRating,
   Message,
   MigrationInfo,
   ModelCapability,
@@ -956,6 +962,14 @@ export function muteWorkflowPattern(patternId: WorkflowPatternId): Promise<void>
   return invokeCommand<void>("mute_workflow_pattern", { patternId });
 }
 
+export function acceptWorkflowPattern(patternId: WorkflowPatternId): Promise<WorkflowPattern> {
+  return invokeCommand<WorkflowPattern>("accept_workflow_pattern", { patternId });
+}
+
+export function rejectWorkflowPattern(patternId: WorkflowPatternId): Promise<WorkflowPattern> {
+  return invokeCommand<WorkflowPattern>("reject_workflow_pattern", { patternId });
+}
+
 export function listWorkflowPatterns(
   scope: MemoryScope,
   workspaceId?: WorkspaceId | null,
@@ -964,6 +978,121 @@ export function listWorkflowPatterns(
     scope,
     workspaceId: workspaceId ?? null,
   });
+}
+
+export function listMemoryCandidates(
+  status?: CandidateStatus | null,
+  workspaceId?: WorkspaceId | null,
+): Promise<MemoryCandidate[]> {
+  return invokeCommand<MemoryCandidate[]>("list_memory_candidates", {
+    status: status ?? null,
+    workspaceId: workspaceId ?? null,
+  });
+}
+
+export function acceptMemoryCandidate(
+  candidateId: MemoryCandidateId,
+  editedValue?: string | null,
+  scope?: MemoryScope | null,
+  sensitive?: boolean | null,
+): Promise<MemoryItem> {
+  return invokeCommand<MemoryItem>("accept_memory_candidate", {
+    candidateId,
+    editedValue: editedValue ?? null,
+    scope: scope ?? null,
+    sensitive: sensitive ?? null,
+  });
+}
+
+export function rejectMemoryCandidate(candidateId: MemoryCandidateId): Promise<void> {
+  return invokeCommand<void>("reject_memory_candidate", { candidateId });
+}
+
+export function expireMemoryCandidate(candidateId: MemoryCandidateId): Promise<void> {
+  return invokeCommand<void>("expire_memory_candidate", { candidateId });
+}
+
+export function submitRunFeedback(
+  runId: AgentRunId,
+  rating: RunFeedbackRating,
+  comment?: string | null,
+): Promise<RunFeedback> {
+  return invokeCommand<RunFeedback>("submit_run_feedback", {
+    runId,
+    rating,
+    comment: comment ?? null,
+  });
+}
+
+export function getLearningQueueStatus(): Promise<LearningQueueStatus> {
+  return invokeCommand<LearningQueueStatus>("get_learning_queue_status");
+}
+
+export function getRagIndexStatus(workspaceId: WorkspaceId): Promise<import("@/lib/schemas").RagIndexStatus> {
+  return invokeCommand("get_rag_index_status", { workspaceId });
+}
+
+export function refreshChangedRagDocuments(
+  workspaceId: WorkspaceId,
+): Promise<import("@/lib/schemas").RagRefreshResult> {
+  return invokeCommand("refresh_changed_rag_documents", { workspaceId });
+}
+
+export function getRunLearningSummary(
+  runId: AgentRunId,
+): Promise<import("@/lib/schemas").RunLearningSummary> {
+  return invokeCommand("get_run_learning_summary", { runId });
+}
+
+export function getLearningOverview(): Promise<import("@/lib/schemas").LearningOverview> {
+  return invokeCommand("get_learning_overview");
+}
+
+export function getPrivacySettings(): Promise<import("@/lib/schemas").PrivacySettings> {
+  return invokeCommand("get_privacy_settings");
+}
+
+export function updatePrivacySettings(
+  settings: import("@/lib/schemas").PrivacySettings,
+): Promise<import("@/lib/schemas").PrivacySettings> {
+  return invokeCommand("update_privacy_settings", { settings });
+}
+
+export function clearLearningData(opts: {
+  clearCandidates?: boolean;
+  clearMemories?: boolean;
+  clearPatterns?: boolean;
+  clearRag?: boolean;
+}): Promise<void> {
+  return invokeCommand("clear_learning_data", {
+    clearCandidates: opts.clearCandidates ?? false,
+    clearMemories: opts.clearMemories ?? false,
+    clearPatterns: opts.clearPatterns ?? false,
+    clearRag: opts.clearRag ?? false,
+  });
+}
+
+export function getRunContextSnapshot(
+  runId: AgentRunId,
+): Promise<import("@/lib/schemas").RunContextSnapshot> {
+  return invokeCommand("get_run_context_snapshot", { runId });
+}
+
+export function exportLearningData(): Promise<import("@/lib/schemas").LearningDataExport> {
+  return invokeCommand("export_learning_data");
+}
+
+export function editWorkflowPattern(
+  patternId: WorkflowPatternId,
+  patch: import("@/lib/schemas").WorkflowPatternPatch,
+): Promise<WorkflowPattern> {
+  return invokeCommand<WorkflowPattern>("edit_workflow_pattern", { patternId, patch });
+}
+
+export function listWorkflowPatternEvidence(
+  patternId: WorkflowPatternId,
+): Promise<import("@/lib/schemas").WorkflowPatternEvidence> {
+  return invokeCommand("list_workflow_pattern_evidence", { patternId });
 }
 
 // Automation commands

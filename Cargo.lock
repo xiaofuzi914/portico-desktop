@@ -185,6 +185,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "sha2",
  "sqlx",
  "tempfile",
  "tokio",
@@ -3943,6 +3944,7 @@ dependencies = [
 name = "portico-tauri"
 version = "0.1.0"
 dependencies = [
+ "aes-gcm",
  "app-memory",
  "app-models",
  "app-runtime",
@@ -3956,8 +3958,10 @@ dependencies = [
  "dirs",
  "human-panic",
  "log",
+ "rand 0.8.6",
  "serde",
  "serde_json",
+ "sha2",
  "sqlx",
  "tauri",
  "tauri-build",

@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { Link } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Bot,
@@ -23,6 +24,7 @@ import { ErrorAlert } from "@/components/ui/error-alert";
 import {
   cancelOrchestration,
   cancelRun,
+  getRunLearningSummary,
   getRunModelSnapshot,
   getRunTokenUsage,
   listMessages,
@@ -32,6 +34,7 @@ import {
   listThreadOrchestrations,
   retryOrchestrationStage,
 } from "@/lib/tauri-api";
+import { learningKeys } from "@/lib/query-keys";
 import type {
   AgentRun,
   AgentRunId,
@@ -283,6 +286,12 @@ export function ExecutionBoard({
       selected && isActive(selected.status) ? 700 : false,
   });
 
+  const learningQuery = useQuery({
+    queryKey: learningKeys.runSummary(detailRunId!),
+    enabled: Boolean(detailRunId) && selected != null && !isActive(selected.status),
+    queryFn: () => getRunLearningSummary(detailRunId!),
+  });
+
   const cancelOrch = useMutation({
     mutationFn: (id: Orchestration["id"]) => cancelOrchestration(id),
     onSuccess: async () => {
@@ -507,6 +516,56 @@ export function ExecutionBoard({
                           {detail.rationale}
                         </p>
                       ) : null}
+                      {learningQuery.data && (
+                        <div className="bg-muted/40 mt-2 space-y-1 rounded-md border px-2.5 py-2 text-[11px]">
+                          <p className="font-semibold tracking-wide uppercase">
+                            {t("execution.learningTitle")}
+                          </p>
+                          {learningQuery.data.behavior_policy && (
+                            <p>
+                              {t("execution.policySummary")}:
+                              {learningQuery.data.behavior_policy.response_language
+                                ? ` ${learningQuery.data.behavior_policy.response_language}`
+                                : ""}
+                              {learningQuery.data.behavior_policy.explore_before_edit
+                                ? ` · ${t("execution.exploreFirst")}`
+                                : ""}
+                              {learningQuery.data.behavior_policy.run_tests_after_edit
+                                ? ` · ${t("execution.runTests")}`
+                                : ""}
+                            </p>
+                          )}
+                          <p>
+                            {t("execution.experienceUsed")}:{" "}
+                            {learningQuery.data.memory_ids_used.length}{" "}
+                            {t("execution.prefsUnit")} ·{" "}
+                            {learningQuery.data.pattern_ids_used.length}{" "}
+                            {t("execution.patternsUnit")}
+                          </p>
+                          {learningQuery.data.experience && (
+                            <p>
+                              {t("execution.outcome")}: {learningQuery.data.experience.outcome}
+                              {learningQuery.data.feedback
+                                ? ` · ${learningQuery.data.feedback.rating}`
+                                : ""}
+                            </p>
+                          )}
+                          {learningQuery.data.candidates.length > 0 && (
+                            <p>
+                              {t("execution.candidatesExtracted")}:{" "}
+                              {learningQuery.data.candidates.length} ·{" "}
+                              <Link to="/memory" className="text-primary underline-offset-2 hover:underline">
+                                {t("execution.viewExperience")}
+                              </Link>
+                            </p>
+                          )}
+                          {learningQuery.data.candidates.length === 0 && (
+                            <p className="text-muted-foreground">
+                              {t("execution.learningIdle")}
+                            </p>
+                          )}
+                        </div>
+                      )}
                     </div>
                     <div className="flex gap-1">
                       {onOpenChat ? (

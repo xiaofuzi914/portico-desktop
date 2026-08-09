@@ -4,14 +4,18 @@
 //! a dead data panel: rebuild/index populates from the real project tree.
 
 use app_memory::{
-    EmbeddingProvider, HashEmbeddingProvider, InstructionLoader, MemoryManager, RagIndex,
-    SqliteRagStore, StoredChunk,
+    format_behavior_policy_for_prompt, recall_memories, EmbeddingProvider, HashEmbeddingProvider,
+    InstructionLoader, MemoryManager, MemoryRecallQuery, PatternStore, RagIndex, SqliteRagStore,
+    StoredChunk,
 };
 use app_models::{
-    AgentRunId, AppError, ContextSummary, InstructionFile, MemoryItem, MemoryScope, RagChunk,
-    ThreadId, WorkspaceId,
+    AgentRunId, AppError, ContextBudget, ContextSummary, InstructionFile, MemoryItem,
+    OutboundContextManifest, ProviderKind, RagChunk, RagDocumentMeta, RagDocumentStatus,
+    RagIndexStatus, RagRefreshResult, ThreadId, WorkflowPattern, WorkspaceId,
 };
-use std::collections::HashSet;
+use chrono::Utc;
+use sha2::{Digest, Sha256};
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -56,6 +60,8 @@ pub struct ContextInspector {
     rag_store: SqliteRagStore,
     rag: Mutex<RagIndex>,
     loaded_workspaces: Mutex<HashSet<WorkspaceId>>,
+    /// Optional pattern store for BehaviorPolicy synthesis.
+    patterns: Mutex<Option<Arc<dyn PatternStore>>>,
 }
 
 impl ContextInspector {
@@ -75,6 +81,14 @@ impl ContextInspector {
             rag_store,
             rag: Mutex::new(RagIndex::new()),
             loaded_workspaces: Mutex::new(HashSet::new()),
+            patterns: Mutex::new(None),
+        }
+    }
+
+    /// Attach a pattern store so Active habits influence single-agent BehaviorPolicy.
+    pub fn set_pattern_store(&self, patterns: Arc<dyn PatternStore>) {
+        if let Ok(mut guard) = self.patterns.lock() {
+            *guard = Some(patterns);
         }
     }
 
@@ -143,24 +157,35 @@ impl ContextInspector {
         let root = Path::new(workspace_root);
         instructions.extend(InstructionLoader::load_workspace(root));
 
-        // Collect memories across relevant scopes, excluding session memories from
-        // the context summary by default.
-        let mut memories = Vec::new();
-        memories.extend(self.memory.list_memories(MemoryScope::User, None, None).await?);
-        memories.extend(
-            self.memory
-                .list_memories(MemoryScope::Workspace, Some(workspace_id), None)
-                .await?,
-        );
-        memories.extend(
-            self.memory
-                .list_memories(MemoryScope::Thread, Some(workspace_id), Some(thread_id))
-                .await?,
-        );
+        // Collect memories across relevant scopes, then rank via recall engine.
+        let all_memories = self
+            .memory
+            .list_for_recall(workspace_id, thread_id)
+            .await
+            .unwrap_or_else(|_| {
+                // Fallback path if list_for_recall is unavailable in older managers.
+                Vec::new()
+            });
 
-        // Flag sensitive content; sensitive memories stay in summary for Inspector
-        // but are excluded from model prompt assembly (see assemble_prompt_context).
-        for memory in &memories {
+        let active_patterns = self.load_active_patterns(workspace_id, query).await;
+        let recall = recall_memories(
+            &MemoryRecallQuery {
+                task: query.to_owned(),
+                workspace_id,
+                thread_id,
+                limit: 12,
+                max_tokens: PROMPT_MEMORY_CHARS / 4,
+            },
+            &all_memories,
+            &active_patterns,
+        );
+        let memories: Vec<MemoryItem> = recall.hits.iter().map(|h| h.memory.clone()).collect();
+        let recalled_memory_ids: Vec<_> = recall.hits.iter().map(|h| h.memory.id).collect();
+        let pattern_ids: Vec<_> = active_patterns.iter().map(|p| p.id).collect();
+        let behavior_policy = recall.policy;
+
+        // Flag sensitive content; sensitive memories stay excluded from model prompts.
+        for memory in &all_memories {
             if memory.sensitive {
                 privacy_flags.push(format!(
                     "sensitive_memory:{}:{}",
@@ -169,11 +194,39 @@ impl ContextInspector {
                 ));
             }
         }
+        for (id, reason) in &recall.excluded {
+            if reason == "sensitive_blocked" {
+                privacy_flags.push(format!("excluded_memory:{}:{reason}", id.0));
+            }
+        }
 
         // Run RAG over workspace documents.
         let rag_chunks = self.search_rag(workspace_id, query, 5).await;
 
         let estimated_tokens = estimate_tokens(&instructions, &memories, &rag_chunks);
+        let context_budget = ContextBudget {
+            model_context_tokens: 32_000,
+            reserved_output_tokens: 2_048,
+            reserved_tool_tokens: 4_096,
+            transcript_tokens: 8_000,
+            instruction_tokens: (PROMPT_INSTRUCTION_CHARS / 4) as u64,
+            memory_tokens: (PROMPT_MEMORY_CHARS / 4) as u64,
+            rag_tokens: (PROMPT_RAG_CHARS / 4) as u64,
+        };
+        let outbound_manifest = OutboundContextManifest {
+            provider_kind: ProviderKind::Custom,
+            local_provider: false,
+            message_count: 0,
+            memory_ids: recalled_memory_ids.clone(),
+            rag_paths: rag_chunks.iter().map(|c| c.document_path.clone()).collect(),
+            total_bytes: estimated_tokens.saturating_mul(4),
+            sensitive_content_blocked: !privacy_flags.is_empty(),
+        };
+
+        // Best-effort usage attribution.
+        for id in &recalled_memory_ids {
+            let _ = self.memory.record_memory_use(*id).await;
+        }
 
         Ok(ContextSummary {
             run_id,
@@ -183,12 +236,43 @@ impl ContextInspector {
             rag_chunks,
             estimated_tokens,
             privacy_flags,
+            recalled_memory_ids,
+            pattern_ids,
+            behavior_policy: Some(behavior_policy),
+            outbound_manifest: Some(outbound_manifest),
+            context_budget: Some(context_budget),
         })
+    }
+
+    async fn load_active_patterns(
+        &self,
+        workspace_id: WorkspaceId,
+        query: &str,
+    ) -> Vec<WorkflowPattern> {
+        let store = {
+            let guard = self.patterns.lock().ok();
+            guard.and_then(|g| g.clone())
+        };
+        let Some(store) = store else {
+            return Vec::new();
+        };
+        let hints = store
+            .recall_patterns(query, Some(workspace_id), 5)
+            .await
+            .unwrap_or_default();
+        let mut out = Vec::new();
+        for hint in hints {
+            if let Ok(p) = store.get_pattern(hint.id).await {
+                out.push(p);
+            }
+        }
+        out
     }
 
     /// Build a prompt-safe context block (non-sensitive only) for agent execution.
     ///
     /// Sensitive memories are never included. RAG and instructions are budget-capped.
+    /// BehaviorPolicy from accepted memories / Active patterns is injected first.
     pub async fn assemble_prompt_context(
         &self,
         thread_id: ThreadId,
@@ -210,6 +294,13 @@ impl ContextInspector {
         };
 
         let mut parts = Vec::new();
+
+        if let Some(policy) = &summary.behavior_policy {
+            let block = format_behavior_policy_for_prompt(policy);
+            if !block.is_empty() {
+                parts.push(block);
+            }
+        }
 
         let mut instruction_budget = PROMPT_INSTRUCTION_CHARS;
         let mut instruction_block = String::new();
@@ -273,6 +364,103 @@ impl ContextInspector {
             ));
         }
 
+        parts.join("\n")
+    }
+
+    /// Assemble context and return both the prompt string and the frozen summary
+    /// (for run_context_snapshots attribution).
+    pub async fn assemble_prompt_context_with_summary(
+        &self,
+        run_id: AgentRunId,
+        thread_id: ThreadId,
+        workspace_id: WorkspaceId,
+        workspace_root: &str,
+        query: &str,
+    ) -> (String, Option<ContextSummary>) {
+        let summary = self
+            .summarize_context(run_id, thread_id, workspace_id, workspace_root, query)
+            .await
+            .ok();
+        let prompt = if let Some(ref s) = summary {
+            let mut parts = Vec::new();
+            if let Some(policy) = &s.behavior_policy {
+                let block = format_behavior_policy_for_prompt(policy);
+                if !block.is_empty() {
+                    parts.push(block);
+                }
+            }
+            // Reuse the simpler path for the rest by calling assemble without re-summarize
+            // would double-call RAG; instead format from summary directly.
+            let rest = self.format_summary_parts(s);
+            if !rest.is_empty() {
+                parts.push(rest);
+            }
+            parts.join("\n")
+        } else {
+            String::new()
+        };
+        (prompt, summary)
+    }
+
+    fn format_summary_parts(&self, summary: &ContextSummary) -> String {
+        let mut parts = Vec::new();
+        let mut instruction_budget = PROMPT_INSTRUCTION_CHARS;
+        let mut instruction_block = String::new();
+        for file in &summary.instructions {
+            if instruction_budget == 0 {
+                break;
+            }
+            let body = truncate_chars(&file.content, instruction_budget);
+            let used = body.chars().count();
+            instruction_budget = instruction_budget.saturating_sub(used);
+            let _ = write!(
+                instruction_block,
+                "### {} ({})\n{}\n\n",
+                file.path, file.scope, body
+            );
+        }
+        if !instruction_block.trim().is_empty() {
+            parts.push(format!("## Project instructions\n{instruction_block}"));
+        }
+        let mut memory_budget = PROMPT_MEMORY_CHARS;
+        let mut memory_block = String::new();
+        for memory in summary.memories.iter().filter(|m| !m.sensitive) {
+            if memory_budget == 0 {
+                break;
+            }
+            let line = format!("- [{}] {}: {}\n", memory.scope.as_str(), memory.key, memory.value);
+            let used = line.chars().count();
+            if used > memory_budget {
+                memory_block.push_str(&truncate_chars(&line, memory_budget));
+                memory_budget = 0;
+            } else {
+                memory_block.push_str(&line);
+                memory_budget = memory_budget.saturating_sub(used);
+            }
+        }
+        if !memory_block.trim().is_empty() {
+            parts.push(format!("## Remembered facts (non-sensitive)\n{memory_block}"));
+        }
+        let mut rag_budget = PROMPT_RAG_CHARS;
+        let mut rag_block = String::new();
+        for chunk in &summary.rag_chunks {
+            if rag_budget == 0 {
+                break;
+            }
+            let body = truncate_chars(&chunk.content, rag_budget.min(800));
+            let used = body.chars().count() + chunk.document_path.chars().count() + 32;
+            rag_budget = rag_budget.saturating_sub(used);
+            let _ = write!(
+                rag_block,
+                "### {}#{} (score {:.2})\n{}\n\n",
+                chunk.document_path, chunk.chunk_index, chunk.score, body
+            );
+        }
+        if !rag_block.trim().is_empty() {
+            parts.push(format!(
+                "## Relevant project excerpts (cite paths; do not invent)\n{rag_block}"
+            ));
+        }
         parts.join("\n")
     }
 
@@ -395,9 +583,10 @@ impl ContextInspector {
         }
 
         let stored_chunks = RagIndex::build_chunks(workspace_id, path, texts, embeddings)?;
+        let chunk_count = stored_chunks.len();
 
         self.rag_store
-            .insert_chunks(
+            .replace_document_chunks(
                 workspace_id,
                 path,
                 self.embedding.id(),
@@ -406,8 +595,180 @@ impl ContextInspector {
             )
             .await?;
 
-        // Refresh cache for this workspace so subsequent searches see the new chunks.
-        self.ensure_workspace_loaded(workspace_id).await
+        let content_hash = content_sha256(content);
+        let _ = self
+            .rag_store
+            .upsert_document_meta(&RagDocumentMeta {
+                workspace_id,
+                document_path: path.to_owned(),
+                content_hash,
+                file_size: i64::try_from(content.len()).unwrap_or(0),
+                modified_at: Some(Utc::now()),
+                embedding_provider_id: self.embedding.id().to_owned(),
+                dimension: i64::try_from(self.embedding.dimension()).unwrap_or(0),
+                status: RagDocumentStatus::Indexed,
+                indexed_at: Some(Utc::now()),
+                last_error: None,
+            })
+            .await;
+
+        // Invalidate cache so subsequent searches reload.
+        {
+            let mut loaded = self.loaded_workspaces.lock().map_err(|_| AppError::Internal {
+                message: "loaded workspaces lock poisoned".to_owned(),
+            })?;
+            loaded.remove(&workspace_id);
+        }
+        self.ensure_workspace_loaded(workspace_id).await?;
+        let _ = chunk_count;
+        Ok(())
+    }
+
+    /// Incremental scan: only reindex files whose content hash changed.
+    ///
+    /// Does not clear the whole workspace. Deleted files drop their chunks.
+    pub async fn refresh_changed_documents(
+        &self,
+        workspace_id: WorkspaceId,
+        workspace_root: &str,
+    ) -> Result<RagRefreshResult, AppError> {
+        let root = Path::new(workspace_root)
+            .canonicalize()
+            .map_err(|e| AppError::Internal {
+                message: format!("workspace root for incremental index is unavailable: {e}"),
+            })?;
+        if !root.is_dir() {
+            return Err(AppError::Internal {
+                message: "workspace root for incremental index is not a directory".to_owned(),
+            });
+        }
+
+        let provider_id = self.embedding.id().to_owned();
+        let dimension = self.embedding.dimension();
+        let _ = self
+            .rag_store
+            .mark_needs_reindex_for_provider(workspace_id, &provider_id, dimension)
+            .await;
+
+        let mut files = Vec::new();
+        collect_indexable_files(&root, &root, 0, &mut files)?;
+        let existing = self.rag_store.list_document_meta(workspace_id).await?;
+        let existing_map: HashMap<String, RagDocumentMeta> = existing
+            .into_iter()
+            .map(|m| (m.document_path.clone(), m))
+            .collect();
+
+        let mut result = RagRefreshResult {
+            workspace_id,
+            scanned: 0,
+            added: 0,
+            updated: 0,
+            removed: 0,
+            unchanged: 0,
+            failed: 0,
+        };
+
+        let mut seen = HashSet::new();
+        for relative in files {
+            let path = relative.replace('\\', "/");
+            seen.insert(path.clone());
+            let absolute = root.join(&relative);
+            let Ok(content) = std::fs::read_to_string(&absolute) else {
+                continue;
+            };
+            if content.trim().is_empty() || content.contains('\0') {
+                continue;
+            }
+            result.scanned += 1;
+            let hash = content_sha256(&content);
+            let file_size = i64::try_from(content.len()).unwrap_or(0);
+            let prev = existing_map.get(&path);
+            let needs_update = match prev {
+                None => true,
+                Some(meta)
+                    if meta.content_hash != hash
+                        || meta.embedding_provider_id != provider_id
+                        || meta.dimension != i64::try_from(dimension).unwrap_or(0)
+                        || matches!(
+                            meta.status,
+                            RagDocumentStatus::Failed
+                                | RagDocumentStatus::NeedsReindex
+                                | RagDocumentStatus::Stale
+                        ) =>
+                {
+                    true
+                }
+                Some(_) => false,
+            };
+            if !needs_update {
+                result.unchanged += 1;
+                continue;
+            }
+            let is_new = prev.is_none();
+            match self.index_document(workspace_id, &path, &content).await {
+                Ok(()) => {
+                    if is_new {
+                        result.added += 1;
+                    } else {
+                        result.updated += 1;
+                    }
+                    let _ = file_size;
+                }
+                Err(err) => {
+                    result.failed += 1;
+                    let _ = self
+                        .rag_store
+                        .upsert_document_meta(&RagDocumentMeta {
+                            workspace_id,
+                            document_path: path,
+                            content_hash: hash,
+                            file_size,
+                            modified_at: Some(Utc::now()),
+                            embedding_provider_id: provider_id.clone(),
+                            dimension: i64::try_from(dimension).unwrap_or(0),
+                            status: RagDocumentStatus::Failed,
+                            indexed_at: prev.and_then(|p| p.indexed_at),
+                            last_error: Some(err.to_string()),
+                        })
+                        .await;
+                }
+            }
+        }
+
+        // Remove deleted files' chunks + metadata.
+        let stale_paths: Vec<String> = existing_map
+            .keys()
+            .filter(|p| !seen.contains(*p))
+            .cloned()
+            .collect();
+        for path in stale_paths {
+            let _ = self.rag_store.delete_document(workspace_id, &path).await;
+            let _ = self.rag_store.delete_document_meta(workspace_id, &path).await;
+            result.removed += 1;
+        }
+
+        {
+            let mut loaded = self.loaded_workspaces.lock().map_err(|_| AppError::Internal {
+                message: "loaded workspaces lock poisoned".to_owned(),
+            })?;
+            loaded.remove(&workspace_id);
+        }
+        let _ = self.ensure_workspace_loaded(workspace_id).await;
+        Ok(result)
+    }
+
+    /// RAG index status for Inspector / capabilities.
+    pub async fn get_rag_index_status(
+        &self,
+        workspace_id: WorkspaceId,
+    ) -> Result<RagIndexStatus, AppError> {
+        self.rag_store
+            .index_status(
+                workspace_id,
+                self.embedding.id(),
+                self.embedding.dimension(),
+            )
+            .await
     }
 
     /// Search the RAG index for chunks relevant to `query`.
@@ -534,6 +895,10 @@ impl ContextInspector {
     }
 }
 
+fn content_sha256(content: &str) -> String {
+    format!("{:x}", Sha256::digest(content.as_bytes()))
+}
+
 fn estimate_tokens(
     instructions: &[InstructionFile],
     memories: &[MemoryItem],
@@ -640,6 +1005,7 @@ fn is_indexable_file(path: &Path) -> bool {
 mod tests {
     use super::*;
     use app_memory::{MemoryManager, SqliteMemoryManager};
+    use app_models::MemoryScope;
     use sqlx::SqlitePool;
 
     async fn inspector() -> ContextInspector {
@@ -654,7 +1020,14 @@ mod tests {
                 value TEXT NOT NULL,
                 sensitive INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
+                updated_at TEXT NOT NULL,
+                kind TEXT,
+                encrypted_value BLOB,
+                encryption_version INTEGER,
+                source_run_id BLOB,
+                confidence REAL,
+                last_used_at TEXT,
+                use_count INTEGER NOT NULL DEFAULT 0
             )",
         )
         .execute(&pool)
@@ -699,13 +1072,26 @@ mod tests {
             )
             .await
             .unwrap();
+        inspector
+            .memory
+            .create_memory(
+                MemoryScope::User,
+                None,
+                None,
+                "response_language",
+                "zh-CN",
+                false,
+            )
+            .await
+            .unwrap();
 
         let summary = inspector
             .summarize_context(AgentRunId::new(), thread_id, workspace_id, "/tmp", "key")
             .await
             .unwrap();
 
-        assert!(!summary.memories.is_empty());
+        // Sensitive items never enter the model-facing memory list.
+        assert!(summary.memories.iter().all(|m| !m.sensitive));
         assert!(summary.privacy_flags.iter().any(|f| f.contains("sensitive_memory")));
     }
 

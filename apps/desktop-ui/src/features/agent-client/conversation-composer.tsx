@@ -27,6 +27,7 @@ import {
   resolveQueuedOrchestrationStart,
 } from "./orchestration-queue";
 import type { ThinkingControlState } from "./model-thinking-prefs";
+import { ComposerContextIndicator } from "@/features/memory/composer-context-indicator";
 import { cn } from "@/lib/utils";
 
 const EMPTY_PATTERNS: PatternHint[] = [];
@@ -377,6 +378,12 @@ export function ConversationComposer({
         }
         disabled={inputDisabled}
         className="h-20 max-h-20 min-h-20 resize-none border-0 px-1 py-1 text-sm leading-6 shadow-none focus-visible:ring-0 focus-visible:ring-offset-0"
+      />
+
+      <ComposerContextIndicator
+        workspaceId={workspaceId}
+        threadId={threadId}
+        draft={content}
       />
 
       {queue.length > 0 && (

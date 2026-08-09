@@ -1,6 +1,9 @@
 //! Persistent `SQLite` store for RAG chunks and embeddings.
 
-use app_models::{AppError, WorkspaceId};
+use app_models::{
+    AppError, RagDocumentMeta, RagDocumentStatus, RagIndexStatus, WorkspaceId,
+};
+use chrono::Utc;
 use sqlx::SqlitePool;
 use tracing::warn;
 
@@ -32,12 +35,34 @@ impl SqliteRagStore {
         dimension: usize,
         chunks: Vec<StoredChunk>,
     ) -> Result<(), AppError> {
-        if chunks.is_empty() {
-            return Ok(());
-        }
+        self.replace_document_chunks(workspace_id, document_path, provider_id, dimension, chunks)
+            .await
+    }
 
+    /// Atomically replace all chunks for one document (delete then insert in one tx).
+    ///
+    /// Prevents mixed old/new chunks during incremental reindex.
+    pub async fn replace_document_chunks(
+        &self,
+        workspace_id: WorkspaceId,
+        document_path: &str,
+        provider_id: &str,
+        dimension: usize,
+        chunks: Vec<StoredChunk>,
+    ) -> Result<(), AppError> {
         let mut tx = self.pool.begin().await.map_err(|e| AppError::Internal {
-            message: format!("rag insert_chunks transaction failed: {e}"),
+            message: format!("rag replace_document_chunks transaction failed: {e}"),
+        })?;
+
+        sqlx::query(
+            "DELETE FROM rag_chunks WHERE workspace_id = ? AND document_path = ?",
+        )
+        .bind(workspace_id.0)
+        .bind(document_path)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| AppError::Internal {
+            message: format!("rag delete document chunks failed: {e}"),
         })?;
 
         let dimension_i64 = i64::try_from(dimension).unwrap_or(0);
@@ -56,7 +81,7 @@ impl SqliteRagStore {
             .bind(embedding_bytes(&chunk.embedding))
             .bind(provider_id)
             .bind(dimension_i64)
-            .bind(chrono::Utc::now())
+            .bind(Utc::now())
             .execute(&mut *tx)
             .await
             .map_err(|e| AppError::Internal {
@@ -65,8 +90,201 @@ impl SqliteRagStore {
         }
 
         tx.commit().await.map_err(|e| AppError::Internal {
-            message: format!("rag insert_chunks commit failed: {e}"),
+            message: format!("rag replace_document_chunks commit failed: {e}"),
         })
+    }
+
+    /// Delete chunks for a single document path.
+    pub async fn delete_document(
+        &self,
+        workspace_id: WorkspaceId,
+        document_path: &str,
+    ) -> Result<(), AppError> {
+        sqlx::query("DELETE FROM rag_chunks WHERE workspace_id = ? AND document_path = ?")
+            .bind(workspace_id.0)
+            .bind(document_path)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| AppError::Internal {
+                message: format!("rag delete_document failed: {e}"),
+            })?;
+        Ok(())
+    }
+
+    /// Upsert document metadata for the incremental index.
+    pub async fn upsert_document_meta(&self, meta: &RagDocumentMeta) -> Result<(), AppError> {
+        sqlx::query(
+            r"
+            INSERT INTO rag_documents (
+                workspace_id, document_path, content_hash, file_size, modified_at,
+                embedding_provider_id, dimension, status, indexed_at, last_error
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(workspace_id, document_path) DO UPDATE SET
+                content_hash = excluded.content_hash,
+                file_size = excluded.file_size,
+                modified_at = excluded.modified_at,
+                embedding_provider_id = excluded.embedding_provider_id,
+                dimension = excluded.dimension,
+                status = excluded.status,
+                indexed_at = excluded.indexed_at,
+                last_error = excluded.last_error
+            ",
+        )
+        .bind(meta.workspace_id.0)
+        .bind(&meta.document_path)
+        .bind(&meta.content_hash)
+        .bind(meta.file_size)
+        .bind(meta.modified_at)
+        .bind(&meta.embedding_provider_id)
+        .bind(meta.dimension)
+        .bind(meta.status.as_str())
+        .bind(meta.indexed_at)
+        .bind(&meta.last_error)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| AppError::Internal {
+            message: format!("upsert rag document meta failed: {e}"),
+        })?;
+        Ok(())
+    }
+
+    /// Load metadata for one document.
+    pub async fn get_document_meta(
+        &self,
+        workspace_id: WorkspaceId,
+        document_path: &str,
+    ) -> Result<Option<RagDocumentMeta>, AppError> {
+        let row = sqlx::query_as::<_, RagDocRow>(
+            r"
+            SELECT workspace_id, document_path, content_hash, file_size, modified_at,
+                   embedding_provider_id, dimension, status, indexed_at, last_error
+            FROM rag_documents
+            WHERE workspace_id = ? AND document_path = ?
+            ",
+        )
+        .bind(workspace_id.0)
+        .bind(document_path)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| AppError::Internal {
+            message: format!("get rag document meta failed: {e}"),
+        })?;
+        row.map(RagDocRow::into_meta).transpose()
+    }
+
+    /// List all document metadata for a workspace.
+    pub async fn list_document_meta(
+        &self,
+        workspace_id: WorkspaceId,
+    ) -> Result<Vec<RagDocumentMeta>, AppError> {
+        let rows = sqlx::query_as::<_, RagDocRow>(
+            r"
+            SELECT workspace_id, document_path, content_hash, file_size, modified_at,
+                   embedding_provider_id, dimension, status, indexed_at, last_error
+            FROM rag_documents
+            WHERE workspace_id = ?
+            ORDER BY document_path
+            ",
+        )
+        .bind(workspace_id.0)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| AppError::Internal {
+            message: format!("list rag document meta failed: {e}"),
+        })?;
+        rows.into_iter().map(RagDocRow::into_meta).collect()
+    }
+
+    /// Delete document metadata (when file is removed).
+    pub async fn delete_document_meta(
+        &self,
+        workspace_id: WorkspaceId,
+        document_path: &str,
+    ) -> Result<(), AppError> {
+        sqlx::query("DELETE FROM rag_documents WHERE workspace_id = ? AND document_path = ?")
+            .bind(workspace_id.0)
+            .bind(document_path)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| AppError::Internal {
+                message: format!("delete rag document meta failed: {e}"),
+            })?;
+        Ok(())
+    }
+
+    /// Aggregate index status for UI.
+    pub async fn index_status(
+        &self,
+        workspace_id: WorkspaceId,
+        provider_id: &str,
+        dimension: usize,
+    ) -> Result<RagIndexStatus, AppError> {
+        let rows = self.list_document_meta(workspace_id).await?;
+        let mut indexed = 0u64;
+        let mut stale = 0u64;
+        let mut failed = 0u64;
+        let mut needs_reindex = 0u64;
+        let mut last_indexed_at = None;
+        for row in &rows {
+            match row.status {
+                RagDocumentStatus::Indexed => {
+                    indexed += 1;
+                    if row.embedding_provider_id != provider_id
+                        || row.dimension != i64::try_from(dimension).unwrap_or(0)
+                    {
+                        needs_reindex += 1;
+                    }
+                }
+                RagDocumentStatus::Stale => stale += 1,
+                RagDocumentStatus::Failed => failed += 1,
+                RagDocumentStatus::NeedsReindex => needs_reindex += 1,
+                RagDocumentStatus::Deleted => {}
+            }
+            if let Some(t) = row.indexed_at {
+                if last_indexed_at.map(|prev| t > prev).unwrap_or(true) {
+                    last_indexed_at = Some(t);
+                }
+            }
+        }
+        Ok(RagIndexStatus {
+            workspace_id,
+            embedding_provider_id: provider_id.to_owned(),
+            dimension: i64::try_from(dimension).unwrap_or(0),
+            indexed,
+            stale,
+            failed,
+            needs_reindex,
+            total_documents: rows.len() as u64,
+            last_indexed_at,
+        })
+    }
+
+    /// Mark all documents as NeedsReindex when provider/dimension changes.
+    pub async fn mark_needs_reindex_for_provider(
+        &self,
+        workspace_id: WorkspaceId,
+        provider_id: &str,
+        dimension: usize,
+    ) -> Result<u64, AppError> {
+        let dim = i64::try_from(dimension).unwrap_or(0);
+        let result = sqlx::query(
+            r"
+            UPDATE rag_documents
+            SET status = 'NeedsReindex'
+            WHERE workspace_id = ?
+              AND (embedding_provider_id != ? OR dimension != ?)
+              AND status != 'Deleted'
+            ",
+        )
+        .bind(workspace_id.0)
+        .bind(provider_id)
+        .bind(dim)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| AppError::Internal {
+            message: format!("mark needs reindex failed: {e}"),
+        })?;
+        Ok(result.rows_affected())
     }
 
     /// Load chunks for a workspace that match the given provider and dimension.
@@ -195,6 +413,37 @@ struct RagContentRow {
     content: String,
 }
 
+#[derive(sqlx::FromRow)]
+struct RagDocRow {
+    workspace_id: uuid::Uuid,
+    document_path: String,
+    content_hash: String,
+    file_size: i64,
+    modified_at: Option<chrono::DateTime<chrono::Utc>>,
+    embedding_provider_id: String,
+    dimension: i64,
+    status: String,
+    indexed_at: Option<chrono::DateTime<chrono::Utc>>,
+    last_error: Option<String>,
+}
+
+impl RagDocRow {
+    fn into_meta(self) -> Result<RagDocumentMeta, AppError> {
+        Ok(RagDocumentMeta {
+            workspace_id: WorkspaceId(self.workspace_id),
+            document_path: self.document_path,
+            content_hash: self.content_hash,
+            file_size: self.file_size,
+            modified_at: self.modified_at,
+            embedding_provider_id: self.embedding_provider_id,
+            dimension: self.dimension,
+            status: RagDocumentStatus::try_from(self.status.as_str())?,
+            indexed_at: self.indexed_at,
+            last_error: self.last_error,
+        })
+    }
+}
+
 /// Convert a little-endian byte blob to a vector of `f32`.
 fn blob_to_f32(bytes: &[u8]) -> Vec<f32> {
     bytes
@@ -229,7 +478,68 @@ mod tests {
         .execute(&pool)
         .await
         .unwrap();
+        sqlx::query(
+            "CREATE TABLE rag_documents (
+                workspace_id BLOB NOT NULL,
+                document_path TEXT NOT NULL,
+                content_hash TEXT NOT NULL,
+                file_size INTEGER NOT NULL,
+                modified_at DATETIME,
+                embedding_provider_id TEXT NOT NULL,
+                dimension INTEGER NOT NULL,
+                status TEXT NOT NULL,
+                indexed_at DATETIME,
+                last_error TEXT,
+                PRIMARY KEY(workspace_id, document_path)
+            )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
         SqliteRagStore::new(pool)
+    }
+
+    #[tokio::test]
+    async fn replace_document_removes_old_chunks() {
+        let store = in_memory_store().await;
+        let workspace_id = WorkspaceId::new();
+        store
+            .insert_chunks(
+                workspace_id,
+                "doc.md",
+                "p",
+                2,
+                vec![StoredChunk {
+                    id: 0,
+                    document_path: "doc.md".into(),
+                    chunk_index: 0,
+                    content: "old".into(),
+                    workspace_id,
+                    embedding: vec![1.0, 0.0],
+                }],
+            )
+            .await
+            .unwrap();
+        store
+            .replace_document_chunks(
+                workspace_id,
+                "doc.md",
+                "p",
+                2,
+                vec![StoredChunk {
+                    id: 0,
+                    document_path: "doc.md".into(),
+                    chunk_index: 0,
+                    content: "new".into(),
+                    workspace_id,
+                    embedding: vec![0.0, 1.0],
+                }],
+            )
+            .await
+            .unwrap();
+        let loaded = store.load_matching_chunks(workspace_id, "p", 2).await.unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].content, "new");
     }
 
     #[tokio::test]

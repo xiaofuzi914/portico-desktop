@@ -718,7 +718,16 @@ export type SubagentRun = z.infer<typeof subagentRunSchema>;
 export const workflowPatternIdSchema = z.string().uuid().brand<"WorkflowPatternId">();
 export type WorkflowPatternId = z.infer<typeof workflowPatternIdSchema>;
 
-export const workflowPatternStatusSchema = z.enum(["active", "suggested", "muted"]);
+export const workflowPatternStatusSchema = z.enum([
+  "active",
+  "suggested",
+  "muted",
+  "rejected",
+  "Active",
+  "Suggested",
+  "Muted",
+  "Rejected",
+]);
 export type WorkflowPatternStatus = z.infer<typeof workflowPatternStatusSchema>;
 
 export const workflowPatternSchema = z.object({
@@ -736,6 +745,14 @@ export const workflowPatternSchema = z.object({
   failure_count: z.number(),
   last_used_at: z.string().datetime().nullable().optional(),
   status: workflowPatternStatusSchema,
+  fingerprint: z.string().nullable().optional(),
+  evidence_count: z.number().optional().default(0),
+  confidence: z.number().optional().default(0),
+  last_success_at: z.string().datetime().nullable().optional(),
+  last_failure_at: z.string().datetime().nullable().optional(),
+  tool_strategy: z.string().optional().default(""),
+  output_kind: z.string().optional().default(""),
+  task_kind: z.string().optional().default(""),
   created_at: z.string().datetime(),
   updated_at: z.string().datetime(),
 });
@@ -904,6 +921,16 @@ export function asMemoryId(id: string): MemoryId {
 export const memoryScopeSchema = z.enum(["Session", "Thread", "Workspace", "User"]);
 export type MemoryScope = z.infer<typeof memoryScopeSchema>;
 
+export const memoryKindSchema = z.enum([
+  "UserPreference",
+  "WorkspaceConvention",
+  "StableFact",
+  "DeliveryPreference",
+  "ToolPreference",
+  "NegativeConstraint",
+]);
+export type MemoryKind = z.infer<typeof memoryKindSchema>;
+
 export const memoryItemSchema = z.object({
   id: memoryIdSchema,
   scope: memoryScopeSchema,
@@ -912,10 +939,238 @@ export const memoryItemSchema = z.object({
   key: z.string().min(1),
   value: z.string(),
   sensitive: z.boolean(),
+  kind: memoryKindSchema.nullable().optional(),
+  source_run_id: agentRunIdSchema.nullable().optional(),
+  confidence: z.number().nullable().optional(),
+  last_used_at: z.string().datetime().nullable().optional(),
+  use_count: z.number().optional().default(0),
   created_at: z.string().datetime(),
   updated_at: z.string().datetime(),
 });
 export type MemoryItem = z.infer<typeof memoryItemSchema>;
+
+export const candidateStatusSchema = z.enum(["Proposed", "Accepted", "Rejected", "Expired"]);
+export type CandidateStatus = z.infer<typeof candidateStatusSchema>;
+
+export const memoryCandidateIdSchema = z.string().uuid().brand<"MemoryCandidateId">();
+export type MemoryCandidateId = z.infer<typeof memoryCandidateIdSchema>;
+
+export const memoryCandidateSchema = z.object({
+  id: memoryCandidateIdSchema,
+  run_id: agentRunIdSchema,
+  workspace_id: workspaceIdSchema.nullable().optional(),
+  thread_id: threadIdSchema.nullable().optional(),
+  scope: memoryScopeSchema,
+  kind: memoryKindSchema,
+  key: z.string(),
+  value: z.string(),
+  fingerprint: z.string(),
+  confidence: z.number(),
+  sensitive: z.boolean(),
+  evidence: z.array(z.string()),
+  status: candidateStatusSchema,
+  extractor_version: z.number().int(),
+  created_at: z.string().datetime(),
+  reviewed_at: z.string().datetime().nullable().optional(),
+});
+export type MemoryCandidate = z.infer<typeof memoryCandidateSchema>;
+
+export const runFeedbackRatingSchema = z.enum(["Helpful", "NotHelpful"]);
+export type RunFeedbackRating = z.infer<typeof runFeedbackRatingSchema>;
+
+export const runFeedbackSchema = z.object({
+  run_id: agentRunIdSchema,
+  rating: runFeedbackRatingSchema,
+  comment: z.string().nullable().optional(),
+  created_at: z.string().datetime(),
+});
+export type RunFeedback = z.infer<typeof runFeedbackSchema>;
+
+export const behaviorPolicySchema = z.object({
+  response_language: z.string().nullable().optional(),
+  response_style: z.string().nullable().optional(),
+  explore_before_edit: z.boolean().optional().default(false),
+  run_tests_after_edit: z.boolean().optional().default(false),
+  preferred_test_commands: z.array(z.string()).optional().default([]),
+  preferred_output_format: z.string().nullable().optional(),
+  memory_ids: z.array(memoryIdSchema).optional().default([]),
+  pattern_ids: z.array(workflowPatternIdSchema).optional().default([]),
+  negative_constraints: z.array(z.string()).optional().default([]),
+});
+export type BehaviorPolicy = z.infer<typeof behaviorPolicySchema>;
+
+export const learningQueueStatusSchema = z.object({
+  queued: z.number().int().nonnegative(),
+  running: z.number().int().nonnegative(),
+  failed: z.number().int().nonnegative(),
+  completed_recent: z.number().int().nonnegative(),
+});
+export type LearningQueueStatus = z.infer<typeof learningQueueStatusSchema>;
+
+export const ragIndexStatusSchema = z.object({
+  workspace_id: workspaceIdSchema,
+  embedding_provider_id: z.string(),
+  dimension: z.number(),
+  indexed: z.number(),
+  stale: z.number(),
+  failed: z.number(),
+  needs_reindex: z.number(),
+  total_documents: z.number(),
+  last_indexed_at: z.string().datetime().nullable().optional(),
+});
+export type RagIndexStatus = z.infer<typeof ragIndexStatusSchema>;
+
+export const ragRefreshResultSchema = z.object({
+  workspace_id: workspaceIdSchema,
+  scanned: z.number(),
+  added: z.number(),
+  updated: z.number(),
+  removed: z.number(),
+  unchanged: z.number(),
+  failed: z.number(),
+});
+export type RagRefreshResult = z.infer<typeof ragRefreshResultSchema>;
+
+export const runLearningSummarySchema = z.object({
+  run_id: agentRunIdSchema,
+  experience: z.any().nullable().optional(),
+  candidates: z.array(memoryCandidateSchema).optional().default([]),
+  feedback: runFeedbackSchema.nullable().optional(),
+  memory_ids_used: z.array(memoryIdSchema).optional().default([]),
+  pattern_ids_used: z.array(workflowPatternIdSchema).optional().default([]),
+  behavior_policy: behaviorPolicySchema.nullable().optional(),
+  outbound_manifest: z
+    .object({
+      provider_kind: z.string(),
+      local_provider: z.boolean(),
+      message_count: z.number().int(),
+      memory_ids: z.array(memoryIdSchema),
+      rag_paths: z.array(z.string()),
+      total_bytes: z.number(),
+      sensitive_content_blocked: z.boolean(),
+    })
+    .nullable()
+    .optional(),
+  recall_scores: z.array(z.tuple([memoryIdSchema, z.number()])).optional().default([]),
+});
+export type RunLearningSummary = z.infer<typeof runLearningSummarySchema>;
+
+export const privacyModeSchema = z.enum([
+  "FullyLocal",
+  "LocalStorageCloudInference",
+  "CloudInferenceAndEmbedding",
+]);
+export type PrivacyMode = z.infer<typeof privacyModeSchema>;
+
+export const traceRetentionModeSchema = z.enum([
+  "FullLocalTrace",
+  "RedactedTrace",
+  "MetadataOnly",
+]);
+export type TraceRetentionMode = z.infer<typeof traceRetentionModeSchema>;
+
+export const privacySettingsSchema = z.object({
+  privacy_mode: privacyModeSchema,
+  trace_retention: traceRetentionModeSchema,
+  auto_discover_candidates: z.boolean(),
+  remote_model_extraction: z.boolean(),
+  auto_promote_patterns: z.boolean(),
+  auto_promote_threshold: z.number().int().positive(),
+});
+export type PrivacySettings = z.infer<typeof privacySettingsSchema>;
+
+export const learningOverviewSchema = z.object({
+  pending_candidates: z.number(),
+  confirmed_preferences: z.number(),
+  active_patterns: z.number(),
+  suggested_patterns: z.number(),
+  recent_candidate_summaries: z.array(z.string()),
+  recent_memory_keys: z.array(z.string()),
+  learning_queue: learningQueueStatusSchema,
+  sensitive_encryption_enabled: z.boolean(),
+  local_storage: z.boolean(),
+});
+export type LearningOverview = z.infer<typeof learningOverviewSchema>;
+
+export const contextItemDispositionSchema = z.enum([
+  "Sent",
+  "BlockedSensitive",
+  "TrimmedByBudget",
+  "NotRelevant",
+  "DisabledForRun",
+  "LocalOnly",
+]);
+export type ContextItemDisposition = z.infer<typeof contextItemDispositionSchema>;
+
+export const contextSnapshotItemSchema = z.object({
+  kind: z.string(),
+  title: z.string(),
+  summary: z.string(),
+  disposition: contextItemDispositionSchema,
+  reason: z.string().nullable().optional(),
+  score: z.number().nullable().optional(),
+  memory_id: memoryIdSchema.nullable().optional(),
+  pattern_id: workflowPatternIdSchema.nullable().optional(),
+  path: z.string().nullable().optional(),
+});
+export type ContextSnapshotItem = z.infer<typeof contextSnapshotItemSchema>;
+
+export const runContextSnapshotSchema = z.object({
+  run_id: agentRunIdSchema,
+  memory_ids: z.array(memoryIdSchema).optional().default([]),
+  pattern_ids: z.array(workflowPatternIdSchema).optional().default([]),
+  behavior_policy: behaviorPolicySchema.nullable().optional(),
+  outbound_manifest: z
+    .object({
+      provider_kind: z.string(),
+      local_provider: z.boolean(),
+      message_count: z.number().int(),
+      memory_ids: z.array(memoryIdSchema),
+      rag_paths: z.array(z.string()),
+      total_bytes: z.number(),
+      sensitive_content_blocked: z.boolean(),
+    })
+    .nullable()
+    .optional(),
+  recall_scores: z.array(z.tuple([memoryIdSchema, z.number()])).optional().default([]),
+  items: z.array(contextSnapshotItemSchema).optional().default([]),
+  learning: runLearningSummarySchema.nullable().optional(),
+});
+export type RunContextSnapshot = z.infer<typeof runContextSnapshotSchema>;
+
+export const learningDataExportSchema = z.object({
+  exported_at: z.string().datetime(),
+  memories: z.array(memoryItemSchema),
+  candidates: z.array(memoryCandidateSchema),
+  patterns: z.array(workflowPatternSchema),
+  privacy: privacySettingsSchema,
+  schema_version: z.number().int(),
+});
+export type LearningDataExport = z.infer<typeof learningDataExportSchema>;
+
+export const workflowPatternPatchSchema = z.object({
+  name: z.string().nullable().optional(),
+  summary: z.string().nullable().optional(),
+  trigger_text: z.string().nullable().optional(),
+  preferred_roles: z.array(z.string()).nullable().optional(),
+  collaboration_style: z.string().nullable().optional(),
+  tool_strategy: z.string().nullable().optional(),
+  output_kind: z.string().nullable().optional(),
+});
+export type WorkflowPatternPatch = z.infer<typeof workflowPatternPatchSchema>;
+
+export const workflowPatternEvidenceSchema = z.object({
+  pattern_id: workflowPatternIdSchema,
+  success_count: z.number(),
+  failure_count: z.number(),
+  evidence_count: z.number(),
+  confidence: z.number(),
+  last_success_at: z.string().datetime().nullable().optional(),
+  last_failure_at: z.string().datetime().nullable().optional(),
+  last_used_at: z.string().datetime().nullable().optional(),
+  status: workflowPatternStatusSchema,
+});
+export type WorkflowPatternEvidence = z.infer<typeof workflowPatternEvidenceSchema>;
 
 export const instructionFileSchema = z.object({
   path: z.string(),
@@ -941,6 +1196,33 @@ export const contextSummarySchema = z.object({
   rag_chunks: z.array(ragChunkSchema),
   estimated_tokens: z.number().int().nonnegative(),
   privacy_flags: z.array(z.string()),
+  recalled_memory_ids: z.array(memoryIdSchema).optional().default([]),
+  pattern_ids: z.array(workflowPatternIdSchema).optional().default([]),
+  behavior_policy: behaviorPolicySchema.nullable().optional(),
+  outbound_manifest: z
+    .object({
+      provider_kind: z.string(),
+      local_provider: z.boolean(),
+      message_count: z.number().int(),
+      memory_ids: z.array(memoryIdSchema),
+      rag_paths: z.array(z.string()),
+      total_bytes: z.number(),
+      sensitive_content_blocked: z.boolean(),
+    })
+    .nullable()
+    .optional(),
+  context_budget: z
+    .object({
+      model_context_tokens: z.number(),
+      reserved_output_tokens: z.number(),
+      reserved_tool_tokens: z.number(),
+      transcript_tokens: z.number(),
+      instruction_tokens: z.number(),
+      memory_tokens: z.number(),
+      rag_tokens: z.number(),
+    })
+    .nullable()
+    .optional(),
 });
 export type ContextSummary = z.infer<typeof contextSummarySchema>;
 

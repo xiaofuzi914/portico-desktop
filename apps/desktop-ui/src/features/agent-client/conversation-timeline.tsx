@@ -319,6 +319,15 @@ export function ConversationTimeline({
               const isHighlighted = Boolean(
                 highlightMessageId && msgId && msgId === highlightMessageId,
               );
+              const runIsTerminal =
+                !isRunningTurn &&
+                (!runId ||
+                  !activeRunId ||
+                  runId !== activeRunId ||
+                  activeRunStatus === "Completed" ||
+                  activeRunStatus === "Failed" ||
+                  activeRunStatus === "Cancelled" ||
+                  activeRunStatus === "Interrupted");
               return (
                 <ConversationEventBlock
                   key={block.id}
@@ -329,6 +338,7 @@ export function ConversationTimeline({
                   retryDisabled={retryDisabled}
                   isRunning={isRunningTurn}
                   isHighlighted={isHighlighted}
+                  runIsTerminal={runIsTerminal}
                 />
               );
             })}

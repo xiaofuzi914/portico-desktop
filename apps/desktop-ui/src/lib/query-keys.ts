@@ -78,6 +78,23 @@ export const automationKeys = {
   list: (workspaceId: WorkspaceId | null = null) => ["automations", workspaceId] as const,
 };
 
+export const learningKeys = {
+  all: ["learning"] as const,
+  overview: () => [...learningKeys.all, "overview"] as const,
+  candidates: (status: string | null = "Proposed") =>
+    [...learningKeys.all, "candidates", status] as const,
+  candidate: (id: string) => [...learningKeys.all, "candidate", id] as const,
+  runSummary: (runId: AgentRunId) => [...learningKeys.all, "run", runId] as const,
+  privacy: () => [...learningKeys.all, "privacy"] as const,
+  patterns: (scope: string, workspaceId: WorkspaceId | null = null) =>
+    [...learningKeys.all, "patterns", scope, workspaceId] as const,
+};
+
+export const ragKeys = {
+  all: ["rag"] as const,
+  workspaceStatus: (workspaceId: WorkspaceId) => [...ragKeys.all, "status", workspaceId] as const,
+};
+
 export const pluginKeys = {
   list: () => ["plugins"] as const,
   available: () => ["plugins", "available"] as const,

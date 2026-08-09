@@ -5,7 +5,9 @@ pub mod audit_logger;
 pub mod context;
 pub mod events;
 pub mod executor;
+pub mod learning;
 pub mod notification_center;
+pub mod outcome_evaluator;
 pub mod provider_registry;
 pub mod repo_root_provider;
 pub mod run_spec;
@@ -49,6 +51,8 @@ pub use approval_broker::{ApprovalBroker, ApprovalExecutionOutcome, ExecutionGra
 pub use audit_logger::SqliteAuditLogger;
 pub use context::ContextInspector;
 pub use events::{EventBus, EventStream, MemoryEventBus, RuntimeEvent};
+pub use learning::LearningCoordinator;
+pub use outcome_evaluator::{evaluate_outcome, provisional_outcome, OutcomeEvidence};
 pub use executor::{
     AgentExecutionOutcome, AgentExecutor, AgentExecutorResolver, MockAgentExecutor,
     ResolvedAgentExecutor,

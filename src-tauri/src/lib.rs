@@ -54,6 +54,7 @@ pub mod cli_auth_import;
 pub mod commands;
 pub mod embedding_setup;
 pub mod error;
+mod memory_cipher;
 mod pattern_ports;
 mod plugin_github;
 mod plugin_package;
@@ -270,6 +271,43 @@ pub fn run() {
             let pattern_store: Arc<dyn app_memory::PatternStore> = Arc::new(
                 app_memory::SqlitePatternStore::new(runtime.storage().pool().clone()),
             );
+            // Single-agent path: Active patterns synthesize BehaviorPolicy in ContextInspector.
+            runtime
+                .context_inspector()
+                .set_pattern_store(pattern_store.clone());
+            // Sensitive memory encryption (AES-GCM, vault master key derived).
+            #[cfg(not(feature = "desktop-e2e"))]
+            {
+                if let Ok(cipher) = memory_cipher::VaultMemoryCipher::open(&app_data_dir) {
+                    runtime.inject_memory_cipher(Arc::new(cipher));
+                    let _ = tauri::async_runtime::block_on(runtime.migrate_sensitive_memories());
+                }
+            }
+            // Learning closed loop: ExperienceEvent → candidates / pattern evidence.
+            let learning = Arc::new(app_runtime::LearningCoordinator::new(
+                runtime.storage().pool().clone(),
+                runtime.storage().clone(),
+                runtime.task_queue(),
+                pattern_store.clone(),
+            ));
+            let runtime = runtime.with_learning(learning.clone());
+            // Background learning worker (best-effort; never blocks UI).
+            let learning_worker = learning.clone();
+            tauri::async_runtime::spawn(async move {
+                let worker_id = format!("learning-{}", uuid::Uuid::new_v4());
+                loop {
+                    match learning_worker.process_next_job(&worker_id).await {
+                        Ok(true) => {}
+                        Ok(false) => {
+                            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                        }
+                        Err(err) => {
+                            eprintln!("learning worker error: {err}");
+                            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                        }
+                    }
+                }
+            });
             let pattern_adapter =
                 Arc::new(pattern_ports::PatternStoreAdapter::new(pattern_store.clone()));
             let pattern_source: Arc<dyn app_workflows::PatternSource> = pattern_adapter.clone();
@@ -468,6 +506,21 @@ pub fn run() {
             commands::memory::search_rag,
             commands::memory::rebuild_rag_index,
             commands::memory::get_feature_capabilities,
+            commands::memory::list_memory_candidates,
+            commands::memory::accept_memory_candidate,
+            commands::memory::reject_memory_candidate,
+            commands::memory::expire_memory_candidate,
+            commands::memory::submit_run_feedback,
+            commands::memory::get_run_learning_summary,
+            commands::memory::get_learning_queue_status,
+            commands::memory::get_rag_index_status,
+            commands::memory::refresh_changed_rag_documents,
+            commands::memory::get_learning_overview,
+            commands::memory::get_privacy_settings,
+            commands::memory::update_privacy_settings,
+            commands::memory::clear_learning_data,
+            commands::memory::get_run_context_snapshot,
+            commands::memory::export_learning_data,
             commands::orchestrator::list_agents,
             commands::orchestrator::recall_workflow_patterns,
             commands::orchestrator::list_workflow_patterns,
@@ -485,6 +538,10 @@ pub fn run() {
             commands::orchestrator::list_thread_orchestrations,
             commands::orchestrator::cancel_orchestration,
             commands::orchestrator::mute_workflow_pattern,
+            commands::orchestrator::accept_workflow_pattern,
+            commands::orchestrator::reject_workflow_pattern,
+            commands::orchestrator::edit_workflow_pattern,
+            commands::orchestrator::list_workflow_pattern_evidence,
             commands::canvas::get_or_create_project_canvas,
             commands::canvas::get_or_create_thread_canvas,
             commands::canvas::get_canvas_snapshot,
